@@ -1,66 +1,359 @@
+//! All parameter and enum definitions for the Sushi synthesizer.
+//!
+//! The parameter IDs are part of the plugin's public interface (they are used
+//! by hosts for automation and for saving presets), so they must never change.
+
 use nice_plug::prelude::*;
 
 /// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Waveform {
     Sine,
+    Triangle,
     #[default]
     Saw,
     Square,
+    Pulse,
+}
+
+/// The available filter topologies.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum FilterMode {
+    #[default]
+    Lowpass,
+    Highpass,
+    Bandpass,
+    Notch,
+}
+
+/// The shapes an LFO can produce.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum LfoWaveform {
+    #[default]
+    Sine,
+    Triangle,
+    Saw,
+    Square,
+    #[name = "S&H"]
+    SampleHold,
+}
+
+/// The destination an LFO modulates.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum LfoTarget {
+    #[default]
+    Off,
+    Pitch,
+    Filter,
+    Amp,
+    #[name = "Pulse Width"]
+    PulseWidth,
+}
+
+/// How incoming notes are turned into voices.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum PolyMode {
+    #[default]
+    Poly,
+    Mono,
+    Legato,
+}
+
+/// A `0..1` parameter that is displayed as a percentage.
+fn percentage_param(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
+        .with_value_to_string(formatters::v2s_f32_percentage(0))
+        .with_string_to_value(formatters::s2v_f32_percentage())
+        .with_unit("%")
+}
+
+/// A time parameter in milliseconds. The range is skewed towards the short end
+/// so that the interesting (fast) part of the range gets most of the travel.
+fn time_param(name: &str, default: f32, max: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min: 0.0,
+            max,
+            factor: FloatRange::skew_factor(-2.0),
+        },
+    )
+    .with_step_size(0.1)
+    .with_unit(" ms")
+}
+
+/// A frequency parameter in Hertz, skewed towards the low end.
+fn frequency_param(name: &str, default: f32, min: f32, max: f32, skew: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min,
+            max,
+            factor: FloatRange::skew_factor(skew),
+        },
+    )
+    .with_unit(" Hz")
 }
 
 #[derive(Params)]
 pub struct SushiParams {
-    /// Master output gain, stored as a linear amplitude.
-    #[id = "gain"]
-    pub gain: FloatParam,
+    // --- Oscillator 1 -----------------------------------------------------
+    #[id = "osc1_wave"]
+    pub osc1_wave: EnumParam<Waveform>,
 
-    #[id = "wave"]
-    pub waveform: EnumParam<Waveform>,
+    #[id = "osc1_octave"]
+    pub osc1_octave: IntParam,
 
-    /// Filter cutoff in Hz.
+    #[id = "osc1_semi"]
+    pub osc1_semi: IntParam,
+
+    #[id = "osc1_fine"]
+    pub osc1_fine: FloatParam,
+
+    #[id = "osc1_pw"]
+    pub osc1_pw: FloatParam,
+
+    #[id = "osc1_level"]
+    pub osc1_level: FloatParam,
+
+    // --- Oscillator 2 -----------------------------------------------------
+    #[id = "osc2_wave"]
+    pub osc2_wave: EnumParam<Waveform>,
+
+    #[id = "osc2_octave"]
+    pub osc2_octave: IntParam,
+
+    #[id = "osc2_semi"]
+    pub osc2_semi: IntParam,
+
+    #[id = "osc2_fine"]
+    pub osc2_fine: FloatParam,
+
+    #[id = "osc2_pw"]
+    pub osc2_pw: FloatParam,
+
+    #[id = "osc2_level"]
+    pub osc2_level: FloatParam,
+
+    // --- Mixer ------------------------------------------------------------
+    #[id = "noise_level"]
+    pub noise_level: FloatParam,
+
+    #[id = "unison"]
+    pub unison: IntParam,
+
+    #[id = "detune"]
+    pub detune: FloatParam,
+
+    #[id = "spread"]
+    pub spread: FloatParam,
+
+    // --- Voice allocation -------------------------------------------------
+    #[id = "poly_mode"]
+    pub poly_mode: EnumParam<PolyMode>,
+
+    #[id = "glide"]
+    pub glide: FloatParam,
+
+    // --- Output -----------------------------------------------------------
+    #[id = "volume"]
+    pub volume: FloatParam,
+
+    // --- Filter -----------------------------------------------------------
+    #[id = "filter_mode"]
+    pub filter_mode: EnumParam<FilterMode>,
+
     #[id = "cutoff"]
     pub cutoff: FloatParam,
 
-    /// Filter resonance, `0..1`.
-    #[id = "reso"]
+    #[id = "resonance"]
     pub resonance: FloatParam,
 
-    /// Amplitude envelope attack time in milliseconds.
-    #[id = "attack"]
-    pub attack: FloatParam,
+    #[id = "filter_env_amount"]
+    pub filter_env_amount: FloatParam,
 
-    /// Amplitude envelope decay time in milliseconds.
-    #[id = "decay"]
-    pub decay: FloatParam,
+    #[id = "filter_keytrack"]
+    pub filter_keytrack: FloatParam,
 
-    /// Amplitude envelope sustain level, `0..1`.
-    #[id = "sustain"]
-    pub sustain: FloatParam,
+    #[id = "filter_drive"]
+    pub filter_drive: FloatParam,
 
-    /// Amplitude envelope release time in milliseconds.
-    #[id = "release"]
-    pub release: FloatParam,
+    // --- Filter envelope --------------------------------------------------
+    #[id = "fe_attack"]
+    pub fe_attack: FloatParam,
+
+    #[id = "fe_decay"]
+    pub fe_decay: FloatParam,
+
+    #[id = "fe_sustain"]
+    pub fe_sustain: FloatParam,
+
+    #[id = "fe_release"]
+    pub fe_release: FloatParam,
+
+    // --- Amplitude envelope -----------------------------------------------
+    #[id = "ae_attack"]
+    pub ae_attack: FloatParam,
+
+    #[id = "ae_decay"]
+    pub ae_decay: FloatParam,
+
+    #[id = "ae_sustain"]
+    pub ae_sustain: FloatParam,
+
+    #[id = "ae_release"]
+    pub ae_release: FloatParam,
+
+    // --- LFO 1 ------------------------------------------------------------
+    #[id = "lfo1_wave"]
+    pub lfo1_wave: EnumParam<LfoWaveform>,
+
+    #[id = "lfo1_rate"]
+    pub lfo1_rate: FloatParam,
+
+    #[id = "lfo1_amount"]
+    pub lfo1_amount: FloatParam,
+
+    #[id = "lfo1_target"]
+    pub lfo1_target: EnumParam<LfoTarget>,
+
+    // --- LFO 2 ------------------------------------------------------------
+    #[id = "lfo2_wave"]
+    pub lfo2_wave: EnumParam<LfoWaveform>,
+
+    #[id = "lfo2_rate"]
+    pub lfo2_rate: FloatParam,
+
+    #[id = "lfo2_amount"]
+    pub lfo2_amount: FloatParam,
+
+    #[id = "lfo2_target"]
+    pub lfo2_target: EnumParam<LfoTarget>,
+
+    // --- Chorus -----------------------------------------------------------
+    #[id = "chorus_mix"]
+    pub chorus_mix: FloatParam,
+
+    #[id = "chorus_rate"]
+    pub chorus_rate: FloatParam,
+
+    #[id = "chorus_depth"]
+    pub chorus_depth: FloatParam,
+
+    // --- Delay ------------------------------------------------------------
+    #[id = "delay_time"]
+    pub delay_time: FloatParam,
+
+    #[id = "delay_feedback"]
+    pub delay_feedback: FloatParam,
+
+    #[id = "delay_mix"]
+    pub delay_mix: FloatParam,
+
+    // --- Reverb -----------------------------------------------------------
+    #[id = "reverb_mix"]
+    pub reverb_mix: FloatParam,
+
+    #[id = "reverb_decay"]
+    pub reverb_decay: FloatParam,
 }
 
 impl Default for SushiParams {
     fn default() -> Self {
         Self {
-            gain: FloatParam::new(
-                "Gain",
-                util::db_to_gain(-12.0),
+            // --- Oscillator 1 -------------------------------------------------
+            osc1_wave: EnumParam::new("OSC 1 Wave", Waveform::Saw),
+            osc1_octave: IntParam::new("OSC 1 Octave", 0, IntRange::Linear { min: -2, max: 2 }),
+            osc1_semi: IntParam::new("OSC 1 Semi", 0, IntRange::Linear { min: -12, max: 12 }),
+            osc1_fine: FloatParam::new(
+                "OSC 1 Fine",
+                0.0,
                 FloatRange::Linear {
-                    min: util::db_to_gain(-36.0),
-                    max: util::db_to_gain(0.0),
+                    min: -100.0,
+                    max: 100.0,
                 },
             )
-            .with_smoother(SmoothingStyle::Logarithmic(5.0))
+            .with_step_size(1.0)
+            .with_unit(" cents"),
+            osc1_pw: FloatParam::new(
+                "OSC 1 PW",
+                0.5,
+                FloatRange::Linear {
+                    min: 0.05,
+                    max: 0.95,
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage())
+            .with_unit("%"),
+            osc1_level: percentage_param("OSC 1 Level", 0.6),
+
+            // --- Oscillator 2 -------------------------------------------------
+            osc2_wave: EnumParam::new("OSC 2 Wave", Waveform::Saw),
+            osc2_octave: IntParam::new("OSC 2 Octave", -1, IntRange::Linear { min: -2, max: 2 }),
+            osc2_semi: IntParam::new("OSC 2 Semi", 0, IntRange::Linear { min: -12, max: 12 }),
+            osc2_fine: FloatParam::new(
+                "OSC 2 Fine",
+                0.0,
+                FloatRange::Linear {
+                    min: -100.0,
+                    max: 100.0,
+                },
+            )
+            .with_step_size(1.0)
+            .with_unit(" cents"),
+            osc2_pw: FloatParam::new(
+                "OSC 2 PW",
+                0.5,
+                FloatRange::Linear {
+                    min: 0.05,
+                    max: 0.95,
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage())
+            .with_unit("%"),
+            osc2_level: percentage_param("OSC 2 Level", 0.4),
+
+            // --- Mixer --------------------------------------------------------
+            noise_level: percentage_param("Noise", 0.0),
+            unison: IntParam::new("Unison", 1, IntRange::Linear { min: 1, max: 4 }),
+            detune: FloatParam::new(
+                "Detune",
+                12.0,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 50.0,
+                },
+            )
+            .with_unit(" cents"),
+            spread: percentage_param("Spread", 0.5),
+
+            // --- Voice allocation ---------------------------------------------
+            poly_mode: EnumParam::new("Poly Mode", PolyMode::Poly),
+            glide: time_param("Glide", 0.0, 2_000.0),
+
+            // --- Output -------------------------------------------------------
+            volume: FloatParam::new(
+                "Volume",
+                util::db_to_gain(-6.0),
+                FloatRange::Linear {
+                    min: util::db_to_gain(-60.0),
+                    max: util::db_to_gain(6.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(10.0))
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
-            waveform: EnumParam::new("Waveform", Waveform::default()),
+            .with_string_to_value(formatters::s2v_f32_gain_to_db())
+            .with_unit(" dB"),
+
+            // --- Filter -------------------------------------------------------
+            filter_mode: EnumParam::new("Filter Mode", FilterMode::Lowpass),
             cutoff: FloatParam::new(
                 "Cutoff",
-                8_000.0,
+                3_000.0,
                 FloatRange::Skewed {
                     min: 20.0,
                     max: 20_000.0,
@@ -70,53 +363,141 @@ impl Default for SushiParams {
             .with_smoother(SmoothingStyle::Logarithmic(10.0))
             .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
-            resonance: FloatParam::new(
-                "Resonance",
-                0.2,
+            resonance: percentage_param("Resonance", 0.2)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+            filter_env_amount: FloatParam::new(
+                "Filter Env",
+                0.4,
                 FloatRange::Linear {
-                    min: 0.0,
-                    max: 0.99,
+                    min: -1.0,
+                    max: 1.0,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(10.0))
             .with_value_to_string(formatters::v2s_f32_percentage(0))
-            .with_string_to_value(formatters::s2v_f32_percentage()),
-            attack: FloatParam::new(
-                "Attack",
-                10.0,
+            .with_string_to_value(formatters::s2v_f32_percentage())
+            .with_unit("%"),
+            filter_keytrack: percentage_param("Keytrack", 0.3)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+            filter_drive: percentage_param("Drive", 0.0),
+
+            // --- Filter envelope ----------------------------------------------
+            fe_attack: time_param("Filter Env Attack", 5.0, 4_000.0),
+            fe_decay: time_param("Filter Env Decay", 400.0, 4_000.0),
+            fe_sustain: percentage_param("Filter Env Sustain", 0.3),
+            fe_release: time_param("Filter Env Release", 300.0, 4_000.0),
+
+            // --- Amplitude envelope -------------------------------------------
+            ae_attack: time_param("Amp Env Attack", 5.0, 4_000.0),
+            ae_decay: time_param("Amp Env Decay", 800.0, 4_000.0),
+            ae_sustain: percentage_param("Amp Env Sustain", 0.7),
+            ae_release: time_param("Amp Env Release", 400.0, 8_000.0),
+
+            // --- LFO 1 --------------------------------------------------------
+            lfo1_wave: EnumParam::new("LFO 1 Wave", LfoWaveform::Sine),
+            lfo1_rate: frequency_param("LFO 1 Rate", 5.0, 0.01, 40.0, -2.0)
+                .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            lfo1_amount: percentage_param("LFO 1 Amount", 0.0),
+            lfo1_target: EnumParam::new("LFO 1 Target", LfoTarget::Off),
+
+            // --- LFO 2 --------------------------------------------------------
+            lfo2_wave: EnumParam::new("LFO 2 Wave", LfoWaveform::Triangle),
+            lfo2_rate: frequency_param("LFO 2 Rate", 0.5, 0.01, 40.0, -2.0)
+                .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            lfo2_amount: percentage_param("LFO 2 Amount", 0.0),
+            lfo2_target: EnumParam::new("LFO 2 Target", LfoTarget::Off),
+
+            // --- Chorus -------------------------------------------------------
+            chorus_mix: percentage_param("Chorus Mix", 0.0)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+            chorus_rate: frequency_param("Chorus Rate", 0.8, 0.05, 8.0, -1.0)
+                .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            chorus_depth: percentage_param("Chorus Depth", 0.5)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+
+            // --- Delay --------------------------------------------------------
+            delay_time: FloatParam::new(
+                "Delay Time",
+                350.0,
                 FloatRange::Skewed {
-                    min: 0.0,
-                    max: 2_000.0,
-                    factor: FloatRange::skew_factor(-2.0),
+                    min: 10.0,
+                    max: 1_500.0,
+                    factor: FloatRange::skew_factor(-1.0),
                 },
             )
             .with_step_size(0.1)
-            .with_unit(" ms"),
-            decay: FloatParam::new(
-                "Decay",
-                300.0,
-                FloatRange::Skewed {
+            .with_unit(" ms")
+            .with_smoother(SmoothingStyle::Linear(10.0)),
+            delay_feedback: FloatParam::new(
+                "Delay Feedback",
+                0.3,
+                FloatRange::Linear {
                     min: 0.0,
-                    max: 4_000.0,
-                    factor: FloatRange::skew_factor(-2.0),
+                    max: 0.95,
                 },
             )
-            .with_step_size(0.1)
-            .with_unit(" ms"),
-            sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
-                .with_value_to_string(formatters::v2s_f32_percentage(0))
-                .with_string_to_value(formatters::s2v_f32_percentage()),
-            release: FloatParam::new(
-                "Release",
-                400.0,
-                FloatRange::Skewed {
-                    min: 0.0,
-                    max: 8_000.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                },
-            )
-            .with_step_size(0.1)
-            .with_unit(" ms"),
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage())
+            .with_unit("%")
+            .with_smoother(SmoothingStyle::Linear(10.0)),
+            delay_mix: percentage_param("Delay Mix", 0.0)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+
+            // --- Reverb -------------------------------------------------------
+            reverb_mix: percentage_param("Reverb Mix", 0.0)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+            reverb_decay: percentage_param("Reverb Decay", 0.6)
+                .with_smoother(SmoothingStyle::Linear(10.0)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_spec() {
+        let params = SushiParams::default();
+
+        assert_eq!(params.osc1_wave.value(), Waveform::Saw);
+        assert_eq!(params.osc1_octave.value(), 0);
+        assert_eq!(params.osc1_semi.value(), 0);
+        assert_eq!(params.osc1_fine.value(), 0.0);
+        assert_eq!(params.osc1_pw.value(), 0.5);
+        assert_eq!(params.osc1_level.value(), 0.6);
+
+        assert_eq!(params.osc2_wave.value(), Waveform::Saw);
+        assert_eq!(params.osc2_octave.value(), -1);
+        assert_eq!(params.osc2_level.value(), 0.4);
+
+        assert_eq!(params.unison.value(), 1);
+        assert_eq!(params.detune.value(), 12.0);
+        assert_eq!(params.spread.value(), 0.5);
+        assert_eq!(params.poly_mode.value(), PolyMode::Poly);
+        assert_eq!(params.glide.value(), 0.0);
+        assert_eq!(params.filter_mode.value(), FilterMode::Lowpass);
+        assert_eq!(params.cutoff.value(), 3_000.0);
+        assert_eq!(params.resonance.value(), 0.2);
+        assert_eq!(params.filter_env_amount.value(), 0.4);
+        assert_eq!(params.filter_keytrack.value(), 0.3);
+        assert_eq!(params.filter_drive.value(), 0.0);
+        assert_eq!(params.fe_attack.value(), 5.0);
+        assert_eq!(params.fe_decay.value(), 400.0);
+        assert_eq!(params.fe_sustain.value(), 0.3);
+        assert_eq!(params.fe_release.value(), 300.0);
+        assert_eq!(params.ae_attack.value(), 5.0);
+        assert_eq!(params.ae_decay.value(), 800.0);
+        assert_eq!(params.ae_sustain.value(), 0.7);
+        assert_eq!(params.ae_release.value(), 400.0);
+        assert_eq!(params.lfo1_wave.value(), LfoWaveform::Sine);
+        assert_eq!(params.lfo1_rate.value(), 5.0);
+        assert_eq!(params.lfo2_wave.value(), LfoWaveform::Triangle);
+        assert_eq!(params.lfo2_rate.value(), 0.5);
+        assert_eq!(params.chorus_rate.value(), 0.8);
+        assert_eq!(params.chorus_depth.value(), 0.5);
+        assert_eq!(params.delay_time.value(), 350.0);
+        assert_eq!(params.delay_feedback.value(), 0.3);
+        assert_eq!(params.reverb_decay.value(), 0.6);
     }
 }

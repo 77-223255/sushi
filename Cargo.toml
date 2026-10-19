@@ -17,6 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 nice-plug = { version = "0.4.2", features = ["standalone"] }
+nice-plug-egui = "0.6.0"
+egui = { version = "0.37.0", features = ["default_fonts"] }
+rtrb = "0.4.0"
 
 # A little optimization in dev builds so the synth is playable without --release.
 [profile.dev]

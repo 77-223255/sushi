@@ -12,6 +12,13 @@ pub struct EnvCoeffs {
     sustain: f32,
 }
 
+impl Default for EnvCoeffs {
+    /// 48 kHz, 5 ms attack, 300 ms decay, 0.7 sustain and 400 ms release.
+    fn default() -> Self {
+        Self::new(5.0, 300.0, 0.7, 400.0, 48_000.0)
+    }
+}
+
 impl EnvCoeffs {
     pub fn new(
         attack_ms: f32,
@@ -103,6 +110,11 @@ impl Adsr {
             Stage::Sustain => {
                 // Glide to the sustain level so parameter changes don't click.
                 self.level += (coeffs.sustain - self.level) * 0.005;
+                // A sustain level of zero would otherwise decay into the
+                // denormal range.
+                if self.level.abs() < 1e-6 {
+                    self.level = 0.0;
+                }
             }
             Stage::Release => {
                 self.level *= coeffs.release_coef;
@@ -152,5 +164,41 @@ mod tests {
             }
         }
         assert!(env.is_finished());
+    }
+
+    #[test]
+    fn attack_takes_the_configured_time() {
+        let coeffs = EnvCoeffs::new(10.0, 300.0, 0.7, 400.0, 48_000.0);
+        let mut env = Adsr::default();
+        env.gate_on();
+
+        // Halfway through a 10 ms attack the level should be around 0.5.
+        for _ in 0..240 {
+            env.next(&coeffs);
+        }
+        let level = env.next(&coeffs);
+        assert!(
+            (level - 0.5).abs() < 0.05,
+            "the attack was at {level} after 5 ms"
+        );
+    }
+
+    #[test]
+    fn release_falls_off_quickly() {
+        let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
+        let mut env = Adsr::default();
+        env.gate_on();
+        for _ in 0..480 {
+            env.next(&coeffs);
+        }
+        assert!(env.next(&coeffs) > 0.9);
+
+        env.gate_off();
+        // The release coefficient puts the -60 dB point at the configured time.
+        for _ in 0..(0.3 * 48_000.0) as usize {
+            env.next(&coeffs);
+        }
+        let level = env.next(&coeffs);
+        assert!(level < 0.01, "the release was at {level} after 300 ms");
     }
 }

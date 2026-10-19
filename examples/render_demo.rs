@@ -9,10 +9,8 @@
 //! ```
 
 use nice_plug::midi::{Channel, Key};
-use std::f32::consts::PI;
-use sushi::Waveform;
-use sushi::dsp::adsr::EnvCoeffs;
-use sushi::dsp::voice::Voice;
+use sushi::dsp::voice::{Voice, VoiceSettings};
+use sushi::params::{FilterMode, LfoTarget, Waveform};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const DURATION: f32 = 6.0;
@@ -30,7 +28,36 @@ fn main() -> std::io::Result<()> {
         events.push((start + 0.38, false, *note));
     }
 
-    let env = EnvCoeffs::new(10.0, 300.0, 0.7, 400.0, SAMPLE_RATE);
+    // A slightly detuned sawtooth pair with a slow filter sweep and a bit of
+    // chorus on top.
+    let settings = VoiceSettings {
+        osc1: sushi::dsp::voice::OscSettings {
+            waveform: Waveform::Saw,
+            pulse_width: 0.5,
+            level: 0.6,
+            semitones: 0.0,
+        },
+        osc2: sushi::dsp::voice::OscSettings {
+            waveform: Waveform::Square,
+            pulse_width: 0.5,
+            level: 0.25,
+            semitones: -12.0,
+        },
+        noise_level: 0.0,
+        filter_mode: FilterMode::Lowpass,
+        resonance: 0.35,
+        filter_env_octaves: 2.0,
+        filter_keytrack: 0.3,
+        filter_drive: 0.2,
+        unison: 2,
+        detune_cents: 12.0,
+        spread: 0.6,
+        glide_step: 1.0,
+        lfo1_amount: 0.15,
+        lfo1_target: LfoTarget::Filter,
+        ..VoiceSettings::default()
+    };
+
     let mut voices: Vec<Voice> = Vec::new();
     let mut next_voice_id = 0u64;
     let mut event_idx = 0;
@@ -42,17 +69,17 @@ fn main() -> std::io::Result<()> {
             let (_, is_on, note) = events[event_idx];
             if is_on {
                 voices.push(Voice::new(
-                    note as i32,
+                    next_voice_id as i32,
                     Channel::Number(0),
                     Key::Number(note),
                     next_voice_id,
                     0.9,
-                    SAMPLE_RATE,
+                    &settings,
                 ));
                 next_voice_id += 1;
             } else if let Some(voice) = voices
                 .iter_mut()
-                .find(|voice| voice.key == Key::Number(note) && !voice.releasing)
+                .find(|voice| voice.key() == Key::Number(note) && !voice.is_releasing())
             {
                 voice.release();
             }
@@ -61,16 +88,18 @@ fn main() -> std::io::Result<()> {
 
         // Slow filter sweep to show off the state variable filter.
         let cutoff = 400.0 * (8_000.0 / 400.0f32).powf(time / DURATION);
-        let g = (PI * cutoff / SAMPLE_RATE).tan();
-        let k = 1.6;
 
-        let mut mix = 0.0;
+        let mut left = 0.0;
+        let mut right = 0.0;
         for voice in voices.iter_mut() {
-            mix += voice.next_sample(Waveform::Saw, g, k, &env);
+            let (voice_left, voice_right) =
+                voice.next_sample(&settings, cutoff, 0.0, 0.0, SAMPLE_RATE);
+            left += voice_left;
+            right += voice_right;
         }
         voices.retain(|voice| !voice.is_finished());
 
-        *sample = (mix * 0.25).tanh();
+        *sample = ((left + right) * 0.5).tanh();
     }
 
     std::fs::create_dir_all("target")?;
