@@ -1,0 +1,7 @@
+/target
+*.clap
+*.vst3
+*.so
+*.dylib
+*.dll
+.DS_Store
