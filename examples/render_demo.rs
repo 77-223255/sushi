@@ -58,6 +58,9 @@ fn main() -> std::io::Result<()> {
         // A little drift, so that the voices are not perfectly in tune.
         drift_amount: 0.4,
         velocity_amount: 0.5,
+        // A slow vibrato, driven by the value of the second LFO.
+        lfo2_amount: 0.12,
+        lfo2_target: LfoTarget::Pitch,
         ..VoiceSettings::default()
     };
 
@@ -91,14 +94,15 @@ fn main() -> std::io::Result<()> {
 
         // Slow filter sweep to show off the state variable filter.
         let cutoff = 400.0 * (8_000.0 / 400.0f32).powf(time / DURATION);
-        // A slow bipolar modulation, like the step sequencer would produce.
-        let step_value = (time * 0.7).sin() * 0.5;
+        // A slow bipolar modulation, which the second LFO turns into a
+        // gentle vibrato.
+        let lfo2 = (time * 0.7).sin() * 0.5;
 
         let mut left = 0.0;
         let mut right = 0.0;
         for voice in voices.iter_mut() {
             let (voice_left, voice_right) =
-                voice.next_sample(&settings, cutoff, 0.0, 0.0, step_value, SAMPLE_RATE);
+                voice.next_sample(&settings, cutoff, 0.0, lfo2, SAMPLE_RATE);
             left += voice_left;
             right += voice_right;
         }

@@ -10,6 +10,7 @@
 mod presets;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -22,6 +23,7 @@ use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
 use crate::params::SushiParams;
+use crate::patch;
 use presets::{PRESETS, Rng};
 
 // --- Win95 / Pascal grey palette -------------------------------------------
@@ -47,10 +49,14 @@ const LCD_FG: Color32 = Color32::from_rgb(0x40, 0xE0, 0x60);
 const LED_GREEN: Color32 = Color32::from_rgb(0x30, 0xD0, 0x40);
 /// The color of the light of the clip meter.
 const LED_RED: Color32 = Color32::from_rgb(0xE0, 0x30, 0x30);
-/// The color of the lights of the sequencer and of the arpeggiator.
+/// The color of the lights of the arpeggiator.
 const LED_AMBER: Color32 = Color32::from_rgb(0xE0, 0xA0, 0x20);
 /// The color of a light that is switched off.
 const LED_OFF: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+/// The color of the text of a status line that reports a success.
+const STATUS_OK: Color32 = Color32::from_rgb(0x00, 0x60, 0x00);
+/// The color of the text of a status line that reports a problem.
+const STATUS_ERROR: Color32 = Color32::from_rgb(0x90, 0x10, 0x10);
 
 // --- Layout -----------------------------------------------------------------
 
@@ -66,6 +72,8 @@ const GROUP_WIDTH: f32 = 230.0;
 /// The width of a group box that holds two columns. The two columns are as
 /// wide as a single group box, so that the rows line up with the content.
 const DOUBLE_GROUP_WIDTH: f32 = 2.0 * GROUP_WIDTH + GROUP_GAP;
+/// The width of a group box that holds three columns.
+const TRIPLE_GROUP_WIDTH: f32 = 3.0 * GROUP_WIDTH + 2.0 * GROUP_GAP;
 /// The gap between two group boxes.
 const GROUP_GAP: f32 = 8.0;
 /// The padding inside a group box.
@@ -90,10 +98,6 @@ const ROW_D_HEIGHT: f32 = 126.0;
 const SLIDER_WIDTH: f32 = 16.0;
 /// The width of the sliders of the macros.
 const MACRO_SLIDER_WIDTH: f32 = 24.0;
-/// The width of the sliders of the steps of the sequencer.
-const MINI_SLIDER_WIDTH: f32 = 12.0;
-/// The height of the sliders of the steps of the sequencer.
-const MINI_SLIDER_HEIGHT: f32 = 52.0;
 /// The height of the slider handle.
 const HANDLE_HEIGHT: f32 = 10.0;
 /// How far the handle is kept away from the edges of the groove.
@@ -101,13 +105,8 @@ const GROOVE_INSET: f32 = 3.0;
 /// The size of the numeric value fields.
 const FIELD_WIDTH: f32 = 40.0;
 const FIELD_HEIGHT: f32 = 14.0;
-/// The size of the numeric value fields of the steps.
-const MINI_FIELD_WIDTH: f32 = 24.0;
-const MINI_FIELD_HEIGHT: f32 = 12.0;
 /// The height of the captions above the controls.
 const LABEL_HEIGHT: f32 = 11.0;
-/// The height of the captions of the sub sections.
-const SECTION_HEIGHT: f32 = 12.0;
 /// The diameter of the small lights.
 const LED_SIZE: f32 = 6.0;
 /// The number of the lights of the voice meter.
@@ -120,10 +119,33 @@ const VOICE_LED_HEIGHT: f32 = 8.0;
 const VOICE_LED_GAP: f32 = 2.0;
 /// The gap between the caption of the voice meter and its lights.
 const VOICE_METER_GAP: f32 = 8.0;
+/// The number of the lights of the position strip of the arpeggiator.
+const POS_LEDS: usize = 16;
+/// The width of a light of the position strip of the arpeggiator.
+const POS_LED_WIDTH: f32 = 6.0;
+/// The height of a light of the position strip of the arpeggiator.
+const POS_LED_HEIGHT: f32 = 8.0;
+/// The gap between two lights of the position strip of the arpeggiator.
+const POS_LED_GAP: f32 = 2.0;
+/// The width of the position strip of the arpeggiator.
+const POS_STRIP_WIDTH: f32 =
+    POS_LEDS as f32 * POS_LED_WIDTH + (POS_LEDS as f32 - 1.0) * POS_LED_GAP;
+/// The gap between the sliders and the position strip of the arpeggiator.
+const POS_STRIP_GAP: f32 = 12.0;
+/// The width of the button of the patch browser in the header.
+const PATCHES_BUTTON_WIDTH: f32 = 62.0;
+/// The width of the window of the patch browser.
+const PATCH_WINDOW_WIDTH: f32 = 430.0;
+/// The longest name that the display of the header shows.
+const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
 const CHECK_SIZE: f32 = 12.0;
 /// The height of the buttons of the radio pair.
 const RADIO_HEIGHT: f32 = 14.0;
+/// The hint that tells the user that the folder has to be applied with SET.
+const FOLDER_HINT: &str = "Press SET to apply the folder";
+/// The caption that is shown when the folder of the patches is still empty.
+const NO_PATCHES: &str = "No patches yet - use SAVE";
 
 /// The height of the sliders of the first row.
 const SLIDER_A: f32 = 80.0;
@@ -148,11 +170,6 @@ const HISTORY_LEN: usize = 4096;
 /// How long the light of the arpeggiator stays on.
 const ARP_LIGHT_TIME: Duration = Duration::from_millis(120);
 
-/// The ids of the eight steps of the sequencer.
-const STEP_IDS: [&str; 8] = [
-    "step_1", "step_2", "step_3", "step_4", "step_5", "step_6", "step_7", "step_8",
-];
-
 // --- The editor -------------------------------------------------------------
 
 /// The number of widgets of every kind that were drawn in the last frame.
@@ -160,7 +177,6 @@ const STEP_IDS: [&str; 8] = [
 #[derive(Clone, Copy, Debug, Default)]
 struct Counts {
     sliders: usize,
-    mini: usize,
     popups: usize,
     checks: usize,
     radios: usize,
@@ -171,7 +187,6 @@ struct Counts {
 #[derive(Clone, Copy)]
 enum Widget {
     Slider,
-    Mini,
     Popup,
     Check,
     Radio,
@@ -195,6 +210,8 @@ struct EditorState {
     arp_light: bool,
     /// When the light of the arpeggiator was switched on.
     arp_light_at: Instant,
+    /// The position of the arpeggiator in its pattern.
+    arp_step: usize,
     /// The peak level of the samples of the last frame.
     activity: f32,
     /// Whether the samples of the last frame were clipping.
@@ -208,9 +225,25 @@ struct EditorState {
     /// The places of the radio buttons of the last frame.
     #[cfg(test)]
     radio_rects: Vec<egui::Rect>,
-    /// The places of the small sliders of the steps of the last frame.
-    #[cfg(test)]
-    mini_rects: Vec<egui::Rect>,
+    /// The configuration of the patch browser.
+    patch_config: patch::PatchConfig,
+    /// Whether the window of the patch browser is open.
+    patch_open: bool,
+    /// The folder in which the patches are stored, as it is shown in the
+    /// patch browser.
+    patch_dir_text: String,
+    /// The name of the patch that is saved by the patch browser.
+    patch_name: String,
+    /// The patches of the folder.
+    patch_files: Vec<PathBuf>,
+    /// The last message of the patch browser.
+    patch_status: String,
+    /// Whether the last message of the patch browser reports a problem.
+    patch_status_error: bool,
+    /// Whether the patch browser has to ask before it overwrites a file.
+    patch_confirm_overwrite: bool,
+    /// The name of the patch of the user that is loaded.
+    patch_active: Option<String>,
 }
 
 impl EditorState {
@@ -220,7 +253,6 @@ impl EditorState {
         let counts = &mut self.counts;
         match widget {
             Widget::Slider => counts.sliders += 1,
-            Widget::Mini => counts.mini += 1,
             Widget::Popup => counts.popups += 1,
             Widget::Check => counts.checks += 1,
             Widget::Radio => counts.radios += 1,
@@ -234,10 +266,10 @@ pub struct SushiEditor {
     history: VecDeque<f32>,
     gui_ctx: Option<GuiContext>,
     state: EditorState,
-    /// The index of the step that the sequencer is playing.
-    step_index: Arc<AtomicUsize>,
     /// The number of arpeggiator triggers.
     arp_led: Arc<AtomicUsize>,
+    /// The position of the arpeggiator in its pattern.
+    arp_position: Arc<AtomicUsize>,
     /// The number of voices that are currently playing.
     voice_count: Arc<AtomicUsize>,
 }
@@ -247,11 +279,11 @@ impl SushiEditor {
     pub fn new(
         params: Arc<SushiParams>,
         scope_rx: rtrb::Consumer<f32>,
-        step_index: Arc<AtomicUsize>,
         arp_led: Arc<AtomicUsize>,
+        arp_position: Arc<AtomicUsize>,
         voice_count: Arc<AtomicUsize>,
     ) -> Self {
-        Self {
+        let mut editor = Self {
             params,
             scope_rx,
             history: VecDeque::with_capacity(HISTORY_LEN),
@@ -265,6 +297,7 @@ impl SushiEditor {
                 arp_counter: 0,
                 arp_light: false,
                 arp_light_at: Instant::now(),
+                arp_step: 0,
                 activity: 0.0,
                 clipping: 0.0,
                 #[cfg(test)]
@@ -273,13 +306,41 @@ impl SushiEditor {
                 check_rects: Vec::new(),
                 #[cfg(test)]
                 radio_rects: Vec::new(),
-                #[cfg(test)]
-                mini_rects: Vec::new(),
+                patch_config: patch::PatchConfig::default(),
+                patch_open: false,
+                patch_dir_text: String::new(),
+                patch_name: String::new(),
+                patch_files: Vec::new(),
+                patch_status: String::new(),
+                patch_status_error: false,
+                patch_confirm_overwrite: false,
+                patch_active: None,
             },
-            step_index,
             arp_led,
+            arp_position,
             voice_count,
-        }
+        };
+        editor.init_patch_state();
+        editor
+    }
+
+    /// Reads the configuration of the patch browser and fills the list of the
+    /// patches of the folder. No folder is created here: the folder only
+    /// appears when a patch is saved.
+    fn init_patch_state(&mut self) {
+        self.state.patch_config = patch::load_config();
+        self.state.patch_dir_text = self
+            .state
+            .patch_config
+            .patch_dir
+            .to_string_lossy()
+            .into_owned();
+        self.state.patch_name = PRESETS[self.state.preset_index].name.to_string();
+        self.state.patch_files = patch::list_patches(&self.state.patch_config.patch_dir);
+        self.state.patch_status.clear();
+        self.state.patch_status_error = false;
+        self.state.patch_confirm_overwrite = false;
+        self.state.patch_active = None;
     }
 
     /// Takes the samples of the scope out of the ring buffer.
@@ -326,6 +387,12 @@ impl SushiEditor {
         } else if self.state.arp_light_at.elapsed() > ARP_LIGHT_TIME {
             self.state.arp_light = false;
         }
+
+        // The position of the arpeggiator, for the strip of lights.
+        self.state.arp_step = self
+            .arp_position
+            .load(Ordering::Relaxed)
+            .min(POS_LEDS.saturating_sub(1));
     }
 }
 
@@ -339,6 +406,7 @@ impl NiceEguiApp for SushiEditor {
         self.gui_ctx = Some(nice_gui_ctx);
         while self.scope_rx.pop().is_ok() {}
         self.history.clear();
+        self.init_patch_state();
 
         apply_theme(&egui_ctx);
         Ok(())
@@ -400,14 +468,12 @@ impl SushiEditor {
         // the panel and the text buffers can be used at the same time.
         let params = self.params.as_ref();
         let history = &self.history;
-        let step_index = &self.step_index;
         let voice_count = &self.voice_count;
         let mut ctx = Ctx {
             params,
             setter: &setter,
             state: &mut self.state,
             history,
-            step_index,
             voice_count,
         };
 
@@ -423,10 +489,91 @@ impl SushiEditor {
         row_b(ui, row_b_rect, &mut ctx);
         row_c(ui, row_c_rect, &mut ctx);
         row_d(ui, row_d_rect, &mut ctx);
+
+        // The window of the patch browser floats above the panel.
+        ctx.patch_window(ui);
     }
 }
 
 // --- The header -------------------------------------------------------------
+
+/// The places of the widgets of the header.
+struct HeaderRects {
+    /// The button of the previous factory preset.
+    previous: Rect,
+    /// The display that shows the name of the sound.
+    display: Rect,
+    /// The button of the next factory preset.
+    next: Rect,
+    /// The button that mutates the sound.
+    mutate: Rect,
+    /// The button that opens the patch browser.
+    patches: Rect,
+    /// The meter that shows the number of the voices that are playing.
+    meter: Rect,
+}
+
+/// The places of the widgets of the header.
+fn header_rects(rect: Rect) -> HeaderRects {
+    // The presets.
+    let preset_x = rect.left() + 150.0;
+    let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5;
+    let previous = Rect::from_min_size(egui::pos2(preset_x, button_y), egui::vec2(22.0, 28.0));
+    let display = Rect::from_min_size(
+        egui::pos2(preset_x + 26.0, button_y),
+        egui::vec2(160.0, 28.0),
+    );
+    let next = Rect::from_min_size(
+        egui::pos2(preset_x + 190.0, button_y),
+        egui::vec2(22.0, 28.0),
+    );
+    let mutate = Rect::from_min_size(
+        egui::pos2(preset_x + 216.0, button_y),
+        egui::vec2(62.0, 28.0),
+    );
+    let patches = Rect::from_min_size(
+        egui::pos2(mutate.right() + 4.0, button_y),
+        egui::vec2(PATCHES_BUTTON_WIDTH, 28.0),
+    );
+
+    // The meter that shows how many voices are playing. It sits in the free
+    // space between the patches and the lights of the activity meter.
+    let meter = Rect::from_min_max(
+        egui::pos2(patches.right() + 8.0, rect.top()),
+        egui::pos2(rect.right() - 194.0, rect.bottom()),
+    );
+
+    HeaderRects {
+        previous,
+        display,
+        next,
+        mutate,
+        patches,
+        meter,
+    }
+}
+
+/// The text that the display of the header shows.
+///
+/// The display shows the name of the patch of the user, if one is loaded, and
+/// the name of the factory preset otherwise. A star marks a sound that was
+/// changed after it was loaded.
+fn display_text(state: &EditorState) -> String {
+    let dirty = if state.dirty { "*" } else { "" };
+    match &state.patch_active {
+        Some(name) => format!("{}{dirty}", truncate_name(name, LCD_NAME_LENGTH)),
+        None => format!(
+            "{:02} {}{dirty}",
+            state.preset_index + 1,
+            PRESETS[state.preset_index].name
+        ),
+    }
+}
+
+/// Cuts a name off, so that it fits into the display of the header.
+fn truncate_name(name: &str, length: usize) -> String {
+    name.chars().take(length).collect()
+}
 
 /// Draws the header: the wordmark, the presets and the oscilloscope.
 fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
@@ -471,50 +618,28 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
 
     // The presets.
-    let preset_x = rect.left() + 150.0;
-    let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5;
-    let previous = Rect::from_min_size(egui::pos2(preset_x, button_y), egui::vec2(22.0, 28.0));
-    let display = Rect::from_min_size(
-        egui::pos2(preset_x + 26.0, button_y),
-        egui::vec2(160.0, 28.0),
-    );
-    let next = Rect::from_min_size(
-        egui::pos2(preset_x + 190.0, button_y),
-        egui::vec2(22.0, 28.0),
-    );
-    let mutate = Rect::from_min_size(
-        egui::pos2(preset_x + 216.0, button_y),
-        egui::vec2(62.0, 28.0),
-    );
+    let rects = header_rects(rect);
 
     let index = ctx.state.preset_index;
-    let name = PRESETS[index].name;
-    let text = format!(
-        "{:02} {name}{}",
-        index + 1,
-        if ctx.state.dirty { "*" } else { "" }
-    );
-    lcd(&painter, display, &text);
+    lcd(&painter, rects.display, &display_text(ctx.state));
 
-    if button(ui, previous, "<").clicked() {
+    if button(ui, rects.previous, "<").clicked() {
         ctx.load_preset(index + PRESETS.len() - 1);
     }
-    if button(ui, next, ">").clicked() {
+    if button(ui, rects.next, ">").clicked() {
         ctx.load_preset(index + 1);
     }
-    if button(ui, mutate, "MUTATE").clicked() {
+    if button(ui, rects.mutate, "MUTATE").clicked() {
         ctx.mutate();
     }
+    if button(ui, rects.patches, "PATCHES").clicked() {
+        ctx.state.patch_open = !ctx.state.patch_open;
+    }
 
-    // The meter that shows how many voices are playing. It sits in the free
-    // space between the presets and the lights of the activity meter.
-    let meter = Rect::from_min_max(
-        egui::pos2(mutate.right() + 8.0, rect.top()),
-        egui::pos2(rect.right() - 194.0, rect.bottom()),
-    );
+    // The meter that shows how many voices are playing.
     voice_meter(
         &painter,
-        meter,
+        rects.meter,
         ctx.voice_count.load(Ordering::Relaxed).min(VOICE_LEDS),
     );
 
@@ -863,29 +988,27 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
 }
 
-/// The third row: the step sequencer, the arpeggiator and the voice.
+/// The third row: the arpeggiator and the voice.
+///
+/// The arpeggiator gets three columns, so that all of its parameters and the
+/// strip of lights fit on one line.
 fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     group_row(
         ui,
         "row-c",
         rect,
-        &[DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH],
+        &[TRIPLE_GROUP_WIDTH, GROUP_WIDTH],
         |index, rect, ui| {
             let p = ctx.params;
             match index {
-                0 => group(ui, rect, "STEP", |ui, part| match part {
-                    Part::Header => {
-                        ctx.check(ui, "step_on", &p.step_on, "ON");
-                        ctx.popup(ui, "step_rate", &p.step_rate, 58.0);
-                        ctx.popup(ui, "step_dest", &p.step_dest, 68.0);
-                        ctx.check(ui, "step_smooth", &p.step_smooth, "SMOOTH");
-                    }
-                    Part::Body => steps(ui, ctx),
-                }),
-                1 => group(ui, rect, "ARP", |ui, part| match part {
+                0 => group(ui, rect, "ARP", |ui, part| match part {
                     Part::Header => {
                         ctx.check(ui, "arp_on", &p.arp_on, "ON");
                         ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
+                        text_label(ui, "PATTERN", 9.0, LABEL);
+                        ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
+                        text_label(ui, "RATE", 9.0, LABEL);
+                        ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
                         led(
@@ -896,28 +1019,74 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         );
                     }
                     Part::Body => {
-                        ctx.popup(ui, "arp_pattern", &p.arp_pattern, 84.0);
-                        ctx.popup(ui, "arp_rate", &p.arp_rate, 58.0);
-                        column_row(ui, "arp", 2, COLUMN_GAP, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.int(
-                                    ui,
-                                    "arp_octaves",
-                                    "Oct",
-                                    &p.arp_octaves,
-                                    &Knob::plain(1.0, 3.0, 0, SLIDER_ARP),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "arp_gate",
-                                    "Gate",
-                                    &p.arp_gate,
-                                    &Knob::plain(5.0, 100.0, 0, SLIDER_ARP),
-                                ),
-                                _ => {}
-                            }
-                        });
+                        // The sliders are on the left, the strip of lights that
+                        // shows the position of the arpeggiator on the right.
+                        let body = ui.max_rect();
+                        let slider_rect = Rect::from_min_max(
+                            body.left_top(),
+                            egui::pos2(
+                                body.right() - POS_STRIP_WIDTH - POS_STRIP_GAP,
+                                body.bottom(),
+                            ),
+                        );
+
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .id_salt("sushi-arp-sliders")
+                                .max_rect(slider_rect)
+                                .layout(Layout::top_down(Align::Min)),
+                            |ui| {
+                                let ctx = &mut *ctx;
+                                column_row(ui, "arp", 5, COLUMN_GAP, |index, ui| {
+                                    let p = ctx.params;
+                                    match index {
+                                        0 => ctx.float(
+                                            ui,
+                                            "arp_swing",
+                                            "Swing",
+                                            &p.arp_swing,
+                                            &Knob::plain(0.0, 75.0, 0, SLIDER_ARP),
+                                        ),
+                                        1 => ctx.int(
+                                            ui,
+                                            "arp_octaves",
+                                            "Oct",
+                                            &p.arp_octaves,
+                                            &Knob::plain(1.0, 3.0, 0, SLIDER_ARP),
+                                        ),
+                                        2 => ctx.float(
+                                            ui,
+                                            "arp_gate",
+                                            "Gate",
+                                            &p.arp_gate,
+                                            &Knob::plain(5.0, 100.0, 0, SLIDER_ARP),
+                                        ),
+                                        3 => ctx.int(
+                                            ui,
+                                            "arp_ratchet",
+                                            "Ratchet",
+                                            &p.arp_ratchet,
+                                            &Knob::plain(1.0, 4.0, 0, SLIDER_ARP),
+                                        ),
+                                        4 => ctx.int(
+                                            ui,
+                                            "arp_length",
+                                            "Length",
+                                            &p.arp_length,
+                                            &Knob::plain(1.0, 16.0, 0, SLIDER_ARP),
+                                        ),
+                                        _ => {}
+                                    }
+                                });
+                            },
+                        );
+
+                        // The strip of lights.
+                        let strip = Rect::from_min_size(
+                            egui::pos2(body.right() - POS_STRIP_WIDTH, body.top()),
+                            egui::vec2(POS_STRIP_WIDTH, body.height()),
+                        );
+                        position_strip(&ui.painter_at(strip), strip, ctx.state.arp_step);
                     }
                 }),
                 _ => group(ui, rect, "VOICE", |ui, part| match part {
@@ -1085,70 +1254,6 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
 }
 
-/// Draws the eight steps of the sequencer and the amount next to them.
-fn steps(ui: &mut egui::Ui, ctx: &mut Ctx) {
-    let p = ctx.params;
-    let parameters = [
-        &p.step_1, &p.step_2, &p.step_3, &p.step_4, &p.step_5, &p.step_6, &p.step_7, &p.step_8,
-    ];
-
-    let start = ui.next_widget_position();
-    let width = ui.available_width();
-    let height = ui.available_height();
-    let amount_width = 64.0;
-    let steps_width = width - amount_width - GROUP_GAP;
-    let slot = steps_width / 8.0;
-
-    let current = ctx.step_index.load(Ordering::Relaxed);
-    let playing = p.step_on.value();
-
-    for index in 0..8 {
-        let rect = Rect::from_min_size(
-            egui::pos2(start.x + index as f32 * slot, start.y),
-            egui::vec2(slot, height),
-        );
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .id_salt(("sushi-step", index))
-                .max_rect(rect)
-                .layout(Layout::top_down(Align::Center)),
-            |ui| {
-                ctx.mini_step(
-                    ui,
-                    STEP_IDS[index],
-                    index + 1,
-                    parameters[index],
-                    playing && current == index,
-                );
-            },
-        );
-    }
-
-    // The amount of the sequencer.
-    let rect = Rect::from_min_size(
-        egui::pos2(start.x + steps_width + GROUP_GAP, start.y),
-        egui::vec2(amount_width, height),
-    );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt("sushi-step-amount")
-            .max_rect(rect)
-            .layout(Layout::top_down(Align::Center)),
-        |ui| {
-            let p = ctx.params;
-            ctx.float(
-                ui,
-                "step_amount",
-                "Amount",
-                &p.step_amount,
-                &Knob::percent(SLIDER_C),
-            );
-        },
-    );
-
-    ui.advance_cursor_after_rect(Rect::from_min_size(start, egui::vec2(width, height)));
-}
-
 // --- The widgets of the parameters ------------------------------------------
 
 /// The range and the look of a continuous parameter.
@@ -1281,8 +1386,6 @@ struct Ctx<'a, 'b> {
     state: &'a mut EditorState,
     /// The samples of the oscilloscope.
     history: &'a VecDeque<f32>,
-    /// The index of the step that the sequencer is playing.
-    step_index: &'a Arc<AtomicUsize>,
     /// The number of voices that are currently playing.
     voice_count: &'a Arc<AtomicUsize>,
 }
@@ -1313,6 +1416,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
         if response.changed() {
             self.setter.set_parameter(param, value);
+            self.state.dirty = true;
         }
         if reset {
             self.reset_to_default(id, param);
@@ -1349,6 +1453,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
         if response.changed() {
             self.setter.set_parameter(param, value.round() as i32);
+            self.state.dirty = true;
         }
         if reset {
             self.reset_to_default(id, param);
@@ -1358,60 +1463,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.int_field(ui, id, param, knob, FIELD_WIDTH, FIELD_HEIGHT);
-    }
-
-    /// Draws one step of the sequencer: a light, a small slider, the number
-    /// of the step and a small numeric field.
-    fn mini_step(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: &'static str,
-        number: usize,
-        param: &FloatParam,
-        lit: bool,
-    ) {
-        #[cfg(test)]
-        self.state.count(Widget::Mini);
-
-        // The light that shows the step that is playing.
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
-        led(&ui.painter_at(rect), rect.center(), LED_AMBER, lit);
-
-        // The slider.
-        let knob = Knob::percent(MINI_SLIDER_HEIGHT).with_width(MINI_SLIDER_WIDTH);
-        let mut value = param.value();
-        let response = v_slider(ui, &mut value, &knob);
-        #[cfg(test)]
-        self.state.mini_rects.push(response.rect);
-        // A double click resets the parameter to its factory default. The
-        // reset is done after the value of the click, so that it wins.
-        let reset = response.double_clicked();
-        if self.begin_gesture(id, &response, ui) {
-            self.setter.begin_set_parameter(param);
-        }
-        if response.changed() {
-            self.setter.set_parameter(param, value);
-        }
-        if reset {
-            self.reset_to_default(id, param);
-        }
-        if self.end_gesture(id, &response, ui) {
-            self.setter.end_set_parameter(param);
-        }
-
-        // The number of the step.
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(MINI_FIELD_WIDTH, SECTION_HEIGHT), Sense::hover());
-        ui.painter_at(rect).text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            number.to_string(),
-            FontId::proportional(8.0),
-            LABEL,
-        );
-
-        // The numeric field.
-        self.float_field(ui, id, param, &knob, MINI_FIELD_WIDTH, MINI_FIELD_HEIGHT);
     }
 
     /// Draws the numeric field of a continuous parameter.
@@ -1445,6 +1496,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     self.setter.begin_set_parameter(param);
                     self.setter.set_parameter(param, plain);
                     self.setter.end_set_parameter(param);
+                    self.state.dirty = true;
                     *text = format_number(knob.display(plain), knob.decimals);
                 }
                 _ => {
@@ -1487,6 +1539,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     self.setter.begin_set_parameter(param);
                     self.setter.set_parameter(param, plain);
                     self.setter.end_set_parameter(param);
+                    self.state.dirty = true;
                     *text = format_number(plain as f32, knob.decimals);
                 }
                 _ => {
@@ -1519,6 +1572,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     let variant = T::from_index(index);
                     if ui.selectable_label(current == variant, *name).clicked() {
                         self.setter.set_parameter(param, variant);
+                        self.state.dirty = true;
                     }
                 }
             })
@@ -1529,6 +1583,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if response.double_clicked() {
             self.setter
                 .set_parameter(param, param.default_plain_value());
+            self.state.dirty = true;
         }
     }
 
@@ -1562,8 +1617,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
             // even though the two clicks would switch it twice.
             self.setter
                 .set_parameter(param, param.default_plain_value());
+            self.state.dirty = true;
         } else if response.clicked() {
             self.setter.set_parameter(param, !param.value());
+            self.state.dirty = true;
         }
 
         text_label(ui, label, 9.0, LABEL);
@@ -1616,8 +1673,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 // A double click resets the parameter to its factory default.
                 self.setter
                     .set_parameter(param, param.default_plain_value());
+                self.state.dirty = true;
             } else if response.clicked() {
                 self.setter.set_parameter(param, T::from_index(index));
+                self.state.dirty = true;
             }
         }
     }
@@ -1627,7 +1686,227 @@ impl<'a, 'b> Ctx<'a, 'b> {
         let index = index % PRESETS.len();
         self.state.preset_index = index;
         self.state.dirty = false;
+        // A factory preset replaces the patch of the user.
+        self.state.patch_active = None;
+        self.state.patch_name = PRESETS[index].name.to_string();
         presets::apply(self.params, self.setter, index);
+    }
+
+    /// Draws the window of the patch browser.
+    fn patch_window(&mut self, ui: &egui::Ui) {
+        let mut open = self.state.patch_open;
+        let mut close = false;
+
+        // The window opens in the middle of the panel.
+        let center = ui.ctx().content_rect().center();
+        let position = center - egui::vec2(PATCH_WINDOW_WIDTH * 0.5, 160.0);
+
+        egui::Window::new("PATCHES")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(PATCH_WINDOW_WIDTH)
+            .default_pos(position)
+            .show(ui.ctx(), |ui| {
+                // The folder in which the patches are stored.
+                ui.horizontal(|ui| {
+                    text_label(ui, "FOLDER", 9.0, LABEL);
+                    let width = ui.available_width() - 44.0;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.state.patch_dir_text)
+                            .desired_width(width.max(80.0)),
+                    );
+                    if ui.button("SET").clicked() {
+                        self.set_patch_folder();
+                    }
+                });
+
+                // The hint that the folder of the text field is not the
+                // folder that is in use yet.
+                if !self.folder_is_applied() {
+                    ui.colored_label(MUTED, FOLDER_HINT);
+                }
+
+                // The list of the patches of the folder.
+                ui.horizontal(|ui| {
+                    if ui.button("REFRESH").clicked() {
+                        self.refresh_patch_list();
+                    }
+                    let count = self.state.patch_files.len();
+                    ui.label(format!("{count} patches"));
+                });
+
+                egui::ScrollArea::vertical()
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        let files = self.state.patch_files.clone();
+                        if files.is_empty() {
+                            // An empty folder would leave a blank panel
+                            // behind, so it gets a caption.
+                            ui.colored_label(MUTED, NO_PATCHES);
+                            return;
+                        }
+                        for path in files {
+                            let Some(stem) = path.file_stem() else {
+                                continue;
+                            };
+                            let name = stem.to_string_lossy().into_owned();
+                            if ui.selectable_label(false, name).clicked() {
+                                self.load_patch_file(&path);
+                            }
+                        }
+                    });
+
+                ui.separator();
+
+                // The name of the patch and the button that saves it.
+                ui.horizontal(|ui| {
+                    text_label(ui, "NAME", 9.0, LABEL);
+                    let width = ui.available_width() - 48.0;
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.state.patch_name)
+                            .desired_width(width.max(80.0)),
+                    );
+                    if response.changed() {
+                        // A new name is a new file, so the file does not have
+                        // to be confirmed again.
+                        self.state.patch_confirm_overwrite = false;
+                    }
+                    if ui.button("SAVE").clicked() {
+                        self.save_patch();
+                    }
+                });
+
+                // The message of the last action.
+                let color = if self.state.patch_status_error {
+                    STATUS_ERROR
+                } else {
+                    STATUS_OK
+                };
+                ui.colored_label(color, &self.state.patch_status);
+
+                if ui.button("CLOSE").clicked() {
+                    close = true;
+                }
+            });
+
+        if close {
+            self.state.patch_open = false;
+        } else {
+            self.state.patch_open = open;
+        }
+    }
+
+    /// The folder in which the patches are stored.
+    ///
+    /// It is the folder that was applied with SET, not the text of the field,
+    /// so that the browser always works in the folder that was chosen.
+    fn patch_dir(&self) -> PathBuf {
+        self.state.patch_config.patch_dir.clone()
+    }
+
+    /// Whether the folder of the text field is the folder that is in use.
+    fn folder_is_applied(&self) -> bool {
+        Path::new(self.state.patch_dir_text.trim()) == self.state.patch_config.patch_dir
+    }
+
+    /// Reads the list of the patches of the folder again.
+    fn refresh_patch_list(&mut self) {
+        if !self.folder_is_applied() {
+            // The folder of the text field is not the folder that is in use,
+            // so the list is not read from the wrong folder.
+            self.set_status(FOLDER_HINT.to_string(), true);
+            return;
+        }
+
+        self.state.patch_files = patch::list_patches(&self.patch_dir());
+        // A new list means that the files may have changed, so a pending
+        // confirmation does not belong to any of them anymore.
+        self.state.patch_confirm_overwrite = false;
+    }
+
+    /// Loads a patch of the folder into the synthesizer.
+    fn load_patch_file(&mut self, path: &Path) {
+        match patch::load_patch(path, self.params, self.setter) {
+            Ok(name) => {
+                // The patch that is loaded is not the one that was waiting
+                // for a confirmation anymore.
+                self.state.patch_confirm_overwrite = false;
+                self.state.patch_active = Some(name.clone());
+                self.state.patch_name = name.clone();
+                self.state.dirty = false;
+                self.set_status(format!("Loaded {name}"), false);
+            }
+            Err(error) => {
+                self.set_status(error, true);
+            }
+        }
+    }
+
+    /// Saves the current sound as a patch of the folder.
+    fn save_patch(&mut self) {
+        if !self.folder_is_applied() {
+            // The patch would end up in the wrong folder.
+            self.set_status(FOLDER_HINT.to_string(), true);
+            return;
+        }
+
+        let dir = self.patch_dir();
+        let name = patch::sanitize_file_name(&self.state.patch_name);
+        let path = dir.join(format!("{name}.json"));
+
+        if path.exists() && !self.state.patch_confirm_overwrite {
+            // The file is not overwritten without a second click.
+            self.state.patch_confirm_overwrite = true;
+            self.set_status("File exists - click SAVE again".to_string(), true);
+            return;
+        }
+
+        match patch::save_patch(&dir, &name, self.params) {
+            Ok(_) => {
+                self.state.patch_confirm_overwrite = false;
+                self.state.patch_name = name.clone();
+                self.state.patch_active = Some(name);
+                self.state.dirty = false;
+                self.refresh_patch_list();
+                self.set_status("Saved".to_string(), false);
+            }
+            Err(error) => {
+                self.set_status(error, true);
+            }
+        }
+    }
+
+    /// Sets the folder in which the patches are stored.
+    fn set_patch_folder(&mut self) {
+        let text = self.state.patch_dir_text.trim().to_string();
+        if text.is_empty() {
+            // An empty folder would be the working directory of the process.
+            self.set_status("The folder must not be empty".to_string(), true);
+            return;
+        }
+
+        let path = absolute_path(&expand_home(&text));
+        let config = patch::PatchConfig {
+            patch_dir: path.clone(),
+        };
+
+        if let Err(error) = patch::save_config(&config) {
+            self.set_status(format!("The folder could not be saved: {error}"), true);
+            return;
+        }
+
+        self.state.patch_config = config;
+        self.state.patch_dir_text = path.to_string_lossy().into_owned();
+        self.state.patch_confirm_overwrite = false;
+        self.refresh_patch_list();
+        self.set_status("Folder set".to_string(), false);
+    }
+
+    /// Writes a message into the status line of the patch browser.
+    fn set_status(&mut self, message: String, error: bool) {
+        self.state.patch_status = message;
+        self.state.patch_status_error = error;
     }
 
     /// Mutates the current sound a little bit.
@@ -1640,6 +1919,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
     /// inside of the automation gesture of the widget, so that the host
     /// records it like any other change of the parameter.
     fn reset_to_default<P: Param>(&mut self, id: &'static str, param: &P) {
+        // The sound was changed by the user, so it is marked as dirty.
+        self.state.dirty = true;
+
         if !self.state.gestures.contains(id) {
             // The gesture was already closed (a very fast click), so the
             // reset gets a gesture of its own.
@@ -1903,13 +2185,7 @@ fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob) -> egui::Response {
 
     // The groove.
     sunken(&painter, rect, FIELD);
-    // The small sliders of the sequencer need a thinner frame.
-    let inset = if knob.width <= MINI_SLIDER_WIDTH {
-        2.0
-    } else {
-        GROOVE_INSET
-    };
-    let track = rect.shrink(inset);
+    let track = rect.shrink(GROOVE_INSET);
 
     // The part of the groove below the handle is filled in.
     let handle_height = (knob.height * 0.13).clamp(4.0, HANDLE_HEIGHT);
@@ -1929,7 +2205,7 @@ fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob) -> egui::Response {
     // The handle itself: a full width band inside the groove.
     let handle = Rect::from_center_size(
         egui::pos2(rect.center().x, handle_center),
-        egui::vec2(knob.width - 2.0 * inset, handle_height),
+        egui::vec2(knob.width - 2.0 * GROOVE_INSET, handle_height),
     );
     raised(&painter, handle, BUTTON);
 
@@ -2050,6 +2326,48 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize) {
             Rect::from_min_size(
                 egui::pos2(x, top),
                 egui::vec2(VOICE_LED_WIDTH, VOICE_LED_HEIGHT),
+            ),
+            CornerRadius::ZERO,
+            color,
+        );
+    }
+}
+
+/// The strip of lights that shows the position of the arpeggiator.
+///
+/// The light of the step that is currently playing shines amber, the other
+/// ones are dark.
+fn position_strip(painter: &egui::Painter, rect: Rect, position: usize) {
+    painter.text(
+        egui::pos2(rect.center().x, rect.top() + LABEL_HEIGHT * 0.5),
+        Align2::CENTER_CENTER,
+        "POS",
+        FontId::proportional(9.0),
+        LABEL,
+    );
+
+    let row_width = POS_LEDS as f32 * POS_LED_WIDTH + (POS_LEDS as f32 - 1.0) * POS_LED_GAP;
+    let left = (rect.center().x - row_width * 0.5).round();
+    let top = rect.top() + LABEL_HEIGHT + 4.0;
+
+    // The lights sit in a sunken frame.
+    let frame = Rect::from_min_size(
+        egui::pos2(left - 3.0, top - 3.0),
+        egui::vec2(row_width + 6.0, POS_LED_HEIGHT + 6.0),
+    );
+    sunken(painter, frame, BG);
+
+    for index in 0..POS_LEDS {
+        let x = left + index as f32 * (POS_LED_WIDTH + POS_LED_GAP);
+        let color = if index == position {
+            LED_AMBER
+        } else {
+            LED_OFF
+        };
+        painter.rect_filled(
+            Rect::from_min_size(
+                egui::pos2(x, top),
+                egui::vec2(POS_LED_WIDTH, POS_LED_HEIGHT),
             ),
             CornerRadius::ZERO,
             color,
@@ -2184,6 +2502,31 @@ fn to_percent(value: f32) -> f32 {
 /// Converts a percentage into a 0..1 value.
 fn from_percent(value: f32) -> f32 {
     value / 100.0
+}
+
+// --- The patch browser -------------------------------------------------------
+
+/// Expands a leading `~/` into the home directory of the user.
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty())
+    {
+        return PathBuf::from(home).join(rest);
+    }
+
+    PathBuf::from(path)
+}
+
+/// The absolute path of a folder.
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    match std::env::current_dir() {
+        Ok(current) => current.join(path),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 // --- The theme ---------------------------------------------------------------
@@ -2326,6 +2669,7 @@ fn raised(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patch::test_support::ENV_LOCK;
     use nice_plug::params::internals::ParamPtr;
     use std::cell::Cell;
 
@@ -2334,6 +2678,35 @@ mod tests {
         static GESTURES: Cell<usize> = const { Cell::new(0) };
         /// The number of parameter values that have been set.
         static SETS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A counter that makes the names of the temporary folders unique.
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A folder in the temporary directory that is removed again when it is
+    /// dropped.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        /// Creates a folder with the given name.
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "sushi-editor-{name}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("the temporary folder could not be created");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     struct Stub;
@@ -2364,14 +2737,29 @@ mod tests {
     fn make_editor() -> (egui::Context, SushiEditor, Arc<SushiParams>) {
         let params = Arc::new(SushiParams::default());
         let (_tx, rx) = rtrb::RingBuffer::new(1024);
-        let step_index = Arc::new(AtomicUsize::new(0));
         let arp_led = Arc::new(AtomicUsize::new(0));
+        let arp_position = Arc::new(AtomicUsize::new(0));
         let voice_count = Arc::new(AtomicUsize::new(0));
-        let mut editor = SushiEditor::new(params.clone(), rx, step_index, arp_led, voice_count);
+        let mut editor = SushiEditor::new(params.clone(), rx, arp_led, arp_position, voice_count);
         let ctx = egui::Context::default();
         editor.gui_ctx = Some(GuiContext::new(Arc::new(Stub)));
         apply_theme(&ctx);
         (ctx, editor, params)
+    }
+
+    /// The context that the widgets of the panel use.
+    fn make_ctx<'a, 'b>(
+        editor: &'a mut SushiEditor,
+        params: &'a SushiParams,
+        setter: &'b ParamSetter<'b>,
+    ) -> Ctx<'a, 'b> {
+        Ctx {
+            params,
+            setter,
+            state: &mut editor.state,
+            history: &editor.history,
+            voice_count: &editor.voice_count,
+        }
     }
 
     fn input(events: Vec<egui::Event>) -> egui::RawInput {
@@ -2444,6 +2832,21 @@ mod tests {
             .collect()
     }
 
+    /// Runs a few frames, so that the animations of the panel can settle.
+    fn settle(ctx: &egui::Context, editor: &mut SushiEditor) -> egui::FullOutput {
+        let mut last = None;
+        for step in 0..10 {
+            let mut raw = input(vec![]);
+            raw.time = Some(step as f64 * 0.05);
+            let mut output = ctx.run_ui(raw, |ui| {
+                editor.draw(ui);
+            });
+            output.textures_delta.clear();
+            last = Some(output);
+        }
+        last.unwrap()
+    }
+
     /// Clicks at the given position.
     fn click(pos: egui::Pos2) -> Vec<egui::RawInput> {
         vec![
@@ -2481,10 +2884,9 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 50, "unexpected number of sliders");
-        assert_eq!(counts.mini, 8, "unexpected number of step sliders");
-        assert_eq!(counts.popups, 12, "unexpected number of popups");
-        assert_eq!(counts.checks, 4, "unexpected number of check boxes");
+        assert_eq!(counts.sliders, 52, "unexpected number of sliders");
+        assert_eq!(counts.popups, 10, "unexpected number of popups");
+        assert_eq!(counts.checks, 2, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
 
@@ -2494,13 +2896,14 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The synthesizer has 75 parameters: 58 of them are continuous, 13 are
-        // choices and 4 are switches.
-        let continuous = counts.sliders + counts.mini;
-        assert_eq!(continuous, 58);
+        // The synthesizer has 65 parameters: 52 of them are on the panel as
+        // sliders, 10 are choices, 2 are switches and one is a pair of
+        // buttons. Every one of them can be reached.
+        let continuous = counts.sliders;
+        assert_eq!(continuous, 52);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            75
+            65
         );
     }
 
@@ -2509,7 +2912,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 50, "unexpected number of sliders");
+        assert_eq!(sliders.len(), 52, "unexpected number of sliders");
         // The cutoff slider is the first one of the third group of the first
         // row.
         let rect = sliders[10];
@@ -2832,41 +3235,22 @@ mod tests {
     }
 
     #[test]
-    fn double_clicking_a_step_slider_resets_it_to_the_default() {
-        let (ctx, mut editor, params) = make_editor();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The first step of the sequencer.
-        let rect = editor.state.mini_rects[0];
-
-        // A click at the top of the slider moves it away from its default.
-        let top = egui::pos2(rect.center().x, rect.top() + 4.0);
-        run_frames(&ctx, &mut editor, click(top));
-        assert_ne!(params.step_1.value(), 0.5);
-
-        // The double click puts it back to its default.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, double_click(rect.center()));
-        let step = params.step_1.value();
-        assert!((step - 0.5).abs() < 0.001, "the step was not reset: {step}");
-    }
-
-    #[test]
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The first check box is the switch of the step sequencer.
+        // The first check box is the switch of the arpeggiator.
         let rect = editor.state.check_rects[0];
         let pos = rect.center();
 
         // A single click switches the check box on.
         run_frames(&ctx, &mut editor, click(pos));
-        assert!(params.step_on.value());
+        assert!(params.arp_on.value());
 
         // The double click puts it back to its default, even though the two
         // clicks would switch it twice.
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(pos));
-        assert!(!params.step_on.value());
+        assert!(!params.arp_on.value());
     }
 
     #[test]
@@ -2951,5 +3335,558 @@ mod tests {
             pos.x + size.x < MARGIN + 150.0,
             "the hint overlaps the presets: {pos:?} {size:?}"
         );
+    }
+
+    #[test]
+    fn the_patches_button_does_not_overlap_the_voice_meter() {
+        let rect = Rect::from_min_size(
+            egui::pos2(MARGIN, MARGIN),
+            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, HEADER_HEIGHT),
+        );
+        let rects = header_rects(rect);
+
+        // The button of the patch browser sits between the mutation and the
+        // meter of the voices.
+        assert!(rects.patches.left() >= rects.mutate.right());
+        assert!(!rects.patches.intersects(rects.meter));
+        // The meter still fits between the button and the lights of the
+        // activity meter.
+        assert!(rects.meter.right() <= rect.right() - 194.0);
+        assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH);
+    }
+
+    #[test]
+    fn editing_a_parameter_marks_the_sound_as_dirty() {
+        let (ctx, mut editor, _params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert!(
+            !editor.state.dirty,
+            "the sound was dirty before it was edited"
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        // The cutoff slider is the first one of the third group of the first
+        // row.
+        let rect = sliders[10];
+
+        // A click on the slider changes the sound.
+        run_frames(&ctx, &mut editor, click(rect.center()));
+        assert!(editor.state.dirty, "the sound was not marked as dirty");
+
+        // A factory preset is a clean sound again.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == ">")
+            .expect("the header has no next button");
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+        assert!(!editor.state.dirty, "the preset did not clean the sound up");
+    }
+
+    #[test]
+    fn a_reset_marks_the_sound_as_dirty() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let rect = sliders[10];
+
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+
+        assert!(
+            editor.state.dirty,
+            "the reset did not mark the sound as dirty"
+        );
+    }
+
+    #[test]
+    fn switching_a_check_box_marks_the_sound_as_dirty() {
+        let (ctx, mut editor, _params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = editor.state.check_rects[0];
+
+        run_frames(&ctx, &mut editor, click(rect.center()));
+
+        assert!(
+            editor.state.dirty,
+            "the check box did not mark the sound as dirty"
+        );
+    }
+
+    #[test]
+    fn the_patches_button_opens_the_patch_browser() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "PATCHES")
+            .expect("the header has no patch button");
+        let button = pos + egui::vec2(2.0, 2.0);
+
+        assert!(!editor.state.patch_open);
+        run_frames(&ctx, &mut editor, click(button));
+        assert!(editor.state.patch_open);
+    }
+
+    #[test]
+    fn the_patch_browser_shows_its_contents() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.patch_open = true;
+
+        // The window fades in, so it needs a few frames.
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+
+        for expected in ["FOLDER", "SET", "REFRESH", "NAME", "SAVE", "CLOSE"] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "the browser has no {expected}: {names:?}"
+            );
+        }
+
+        // The button in the corner of the window closes it.
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "CLOSE")
+            .expect("the browser has no close button");
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+
+        assert!(!editor.state.patch_open);
+    }
+
+    #[test]
+    fn a_patch_can_be_saved_and_loaded() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("browser");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+        editor.state.dirty = true;
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+
+        // Save the patch.
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        let path = dir.path.join("MY PATCH.json");
+        assert!(path.exists(), "the patch was not written");
+        assert_eq!(editor.state.patch_status, "Saved");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+        assert!(!editor.state.dirty);
+        assert_eq!(editor.state.patch_files.len(), 1);
+
+        // Change the sound and load the patch again.
+        setter.set_parameter(&params.cutoff, 500.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&path);
+        }
+
+        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
+        assert_eq!(editor.state.patch_status, "Loaded MY PATCH");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+    }
+
+    #[test]
+    fn a_patch_can_be_loaded_from_the_list_of_the_browser() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("list");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // The name of the patch is changed, so that the entry of the list can
+        // be told apart from the field of the name.
+        editor.state.patch_name = "SOMETHING ELSE".to_string();
+        editor.state.patch_active = None;
+        editor.state.patch_open = true;
+        let output = settle(&ctx, &mut editor);
+
+        let positions: Vec<egui::Pos2> = texts(&output)
+            .into_iter()
+            .filter(|(text, _)| text == "MY PATCH")
+            .map(|(_, pos)| pos)
+            .collect();
+        assert_eq!(positions.len(), 1, "the patch is not in the list");
+
+        // Change the sound and load the patch from the list.
+        setter.set_parameter(&params.cutoff, 500.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(positions[0] + egui::vec2(2.0, 2.0)),
+        );
+
+        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+    }
+
+    #[test]
+    fn a_patch_is_not_overwritten_without_a_confirmation() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("overwrite");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+        assert_eq!(editor.state.patch_status, "Saved");
+
+        // The second save asks first.
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+        assert_eq!(editor.state.patch_status, "File exists - click SAVE again");
+        assert!(editor.state.patch_confirm_overwrite);
+
+        // The third save overwrites the file.
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+        assert_eq!(editor.state.patch_status, "Saved");
+        assert!(!editor.state.patch_confirm_overwrite);
+    }
+
+    #[test]
+    fn a_pending_confirmation_is_forgotten_when_a_patch_is_loaded() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("confirm");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+        assert_eq!(editor.state.patch_status, "Saved");
+
+        // The second save asks before it overwrites the file.
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+        assert!(editor.state.patch_confirm_overwrite);
+
+        // A patch that is loaded is a different file, so the confirmation of
+        // the old one is forgotten.
+        let other = dir.path.join("OTHER.json");
+        std::fs::write(
+            &other,
+            r#"{"format":"sushi-patch","version":1,"name":"OTHER","params":{"cutoff":800.0}}"#,
+        )
+        .expect("the patch was not written");
+
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&other);
+        }
+
+        assert_eq!(editor.state.patch_active.as_deref(), Some("OTHER"));
+        assert!(
+            !editor.state.patch_confirm_overwrite,
+            "the confirmation was not forgotten"
+        );
+    }
+
+    #[test]
+    fn a_refresh_forgets_a_pending_confirmation() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("refresh");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        editor.state.patch_confirm_overwrite = true;
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.refresh_patch_list();
+        }
+
+        assert!(
+            !editor.state.patch_confirm_overwrite,
+            "the confirmation was not forgotten"
+        );
+    }
+
+    #[test]
+    fn the_browser_uses_the_folder_that_was_applied() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("applied");
+        let other = TempDir::new("typed");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        // A folder that was typed in but not applied is not used.
+        editor.state.patch_dir_text = other.path.to_string_lossy().into_owned();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        assert_eq!(editor.state.patch_status, FOLDER_HINT);
+        assert!(!dir.path.join("MY PATCH.json").exists());
+        assert!(!other.path.join("MY PATCH.json").exists());
+
+        // The same is true for the list of the patches.
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.refresh_patch_list();
+        }
+        assert_eq!(editor.state.patch_status, FOLDER_HINT);
+    }
+
+    #[test]
+    fn an_empty_folder_is_not_applied() {
+        let (_ctx, mut editor, params) = make_editor();
+        let before = editor.state.patch_config.patch_dir.clone();
+        editor.state.patch_dir_text = "   ".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.set_patch_folder();
+        }
+
+        assert_eq!(editor.state.patch_status, "The folder must not be empty");
+        assert!(editor.state.patch_status_error);
+        // The folder was not changed.
+        assert_eq!(editor.state.patch_config.patch_dir, before);
+    }
+
+    #[test]
+    fn the_browser_hints_at_the_folder_that_has_to_be_applied() {
+        let (ctx, mut editor, _params) = make_editor();
+        let dir = TempDir::new("hint");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_open = true;
+
+        // The folder of the text field is the folder that is in use, so there
+        // is no hint.
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            !names.contains(&FOLDER_HINT.to_string()),
+            "the browser has a hint: {names:?}"
+        );
+
+        // A folder that was typed in is not in use yet.
+        editor.state.patch_dir_text = "/somewhere/else".to_string();
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&FOLDER_HINT.to_string()),
+            "the browser has no hint: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_browser_says_when_there_are_no_patches() {
+        let (ctx, mut editor, _params) = make_editor();
+        let dir = TempDir::new("empty");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_files.clear();
+        editor.state.patch_open = true;
+
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&NO_PATCHES.to_string()),
+            "the browser has no caption: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_display_shows_the_name_of_the_patch() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.patch_active = Some("MY PATCH".to_string());
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"MY PATCH".to_string()),
+            "the display does not show the patch: {names:?}"
+        );
+
+        // A sound that was changed is marked with a star.
+        editor.state.dirty = true;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"MY PATCH*".to_string()),
+            "the display does not mark the patch: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_factory_preset_replaces_the_patch_of_the_user() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.patch_active = Some("MY PATCH".to_string());
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == ">")
+            .expect("the header has no next button");
+        let button = pos + egui::vec2(2.0, 2.0);
+
+        run_frames(&ctx, &mut editor, click(button));
+
+        assert!(editor.state.patch_active.is_none());
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"02 GLASS KEYS".to_string()),
+            "the display does not show the preset: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_folder_of_the_patches_can_be_changed() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let old = std::env::var_os("XDG_CONFIG_HOME");
+        let home = TempDir::new("config");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &home.path);
+        }
+
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("patches");
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.set_patch_folder();
+        }
+
+        assert_eq!(editor.state.patch_status, "Folder set");
+        assert_eq!(editor.state.patch_dir_text, dir.path.to_string_lossy());
+        // The folder was written into the configuration file.
+        assert_eq!(patch::load_config().patch_dir, dir.path);
+
+        match old {
+            Some(value) => unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            },
+        }
+    }
+
+    #[test]
+    fn a_tilde_in_the_folder_is_expanded() {
+        let path = expand_home("~/Music");
+        let home = std::env::var_os("HOME").expect("the user has no home");
+        assert_eq!(path, PathBuf::from(home).join("Music"));
+        // A path that does not start with a tilde stays as it is.
+        assert_eq!(expand_home("/tmp/patches"), PathBuf::from("/tmp/patches"));
+    }
+
+    #[test]
+    fn the_pattern_popup_knows_the_as_played_pattern() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"Up".to_string()),
+            "the pattern popup is missing: {names:?}"
+        );
+
+        // The popup holds every pattern, the as played one among them.
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "Up")
+            .unwrap();
+        let button = pos + egui::vec2(2.0, 2.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(button)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![]),
+            ],
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"As Played".to_string()),
+            "the popup has no as played pattern: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_position_strip_lights_the_current_step() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.arp_position.store(5, Ordering::Relaxed);
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // Only the light of the fifth step shines.
+        let lights: Vec<egui::Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if rect.fill == LED_AMBER
+                        && rect.rect.width() == POS_LED_WIDTH
+                        && rect.rect.height() == POS_LED_HEIGHT =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(lights.len(), 1, "the strip does not have one lit light");
     }
 }

@@ -2412,6 +2412,7 @@ dependencies = [
  "nice-plug",
  "nice-plug-egui",
  "rtrb",
+ "serde_json",
 ]
 
 [[package]]

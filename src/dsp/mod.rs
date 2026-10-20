@@ -6,5 +6,4 @@ pub mod filter;
 pub mod fx;
 pub mod lfo;
 pub mod osc;
-pub mod step;
 pub mod voice;

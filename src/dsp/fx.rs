@@ -9,9 +9,16 @@ use std::f32::consts::PI;
 const CHORUS_BASE_DELAY: f32 = 0.012;
 /// The maximum modulation depth of the chorus in seconds.
 const CHORUS_MAX_DEPTH: f32 = 0.004;
+/// The frequency of the lowpass of the wet signal of the chorus, in Hz.
+const CHORUS_LOWPASS: f32 = 8_000.0;
 /// The maximum delay time of the delay line in seconds.
 const DELAY_MAX_TIME: f32 = 2.0;
-
+/// The frequency of the lowpass in the feedback path of the delay, in Hz.
+const DELAY_LOWPASS: f32 = 5_000.0;
+/// The pre delay of the reverb, in seconds.
+const REVERB_PREDELAY: f32 = 0.015;
+/// The frequency of the lowpass of the input of the reverb, in Hz.
+const REVERB_LOWPASS: f32 = 8_000.0;
 /// The comb filter tunings of the reverb, in samples.
 const COMB_TUNINGS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
 /// The allpass filter tunings of the reverb, in samples.
@@ -22,6 +29,8 @@ const STEREO_SPREAD: usize = 23;
 const REVERB_DAMPING: f32 = 0.25;
 /// The input gain of the reverb.
 const REVERB_INPUT_GAIN: f32 = 0.015;
+/// The mix below which an effect is switched off completely.
+const BYPASS_MIX: f32 = 1e-4;
 
 /// The parameters of the effect chain.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +60,18 @@ impl Default for FxParams {
     }
 }
 
+/// The coefficient of a one-pole lowpass at the given frequency.
+#[inline]
+fn lowpass_coefficient(frequency: f32, sample_rate: f32) -> f32 {
+    1.0 - (-2.0 * PI * frequency / sample_rate.max(1.0)).exp()
+}
+
+/// Flushes a value that is too small to be heard to exactly zero.
+#[inline]
+fn flush_denormal(value: f32) -> f32 {
+    if value.abs() < 1e-20 { 0.0 } else { value }
+}
+
 /// A damped comb filter with a lowpass in its feedback path.
 struct Comb {
     buffer: Vec<f32>,
@@ -73,9 +94,7 @@ impl Comb {
         self.filter_store = output * (1.0 - damping) + self.filter_store * damping;
         // Flush the denormal state, so that the comb doesn't drag the CPU down
         // with it once the signal has died away.
-        if self.filter_store.abs() < 1e-20 {
-            self.filter_store = 0.0;
-        }
+        self.filter_store = flush_denormal(self.filter_store);
         self.buffer[self.index] = input + self.filter_store * feedback;
         self.index = (self.index + 1) % self.buffer.len();
         output
@@ -126,15 +145,34 @@ pub struct Fx {
     chorus_right: Vec<f32>,
     chorus_index: usize,
     chorus_phase: f32,
+    /// The state of the lowpass of the wet signal.
+    chorus_lp_left: f32,
+    chorus_lp_right: f32,
+    /// The coefficient of the lowpass of the wet signal.
+    chorus_coefficient: f32,
 
     // The ping-pong delay.
     delay_left: Vec<f32>,
     delay_right: Vec<f32>,
     delay_index: usize,
+    /// The state of the lowpass in the feedback path.
+    delay_lp_left: f32,
+    delay_lp_right: f32,
+    /// The coefficient of the lowpass in the feedback path.
+    delay_coefficient: f32,
 
     // The reverb.
     combs: [Vec<Comb>; 2],
     allpasses: [Vec<Allpass>; 2],
+    /// The delay line of the pre delay.
+    predelay_left: Vec<f32>,
+    predelay_right: Vec<f32>,
+    predelay_index: usize,
+    /// The state of the lowpass of the input.
+    reverb_lp_left: f32,
+    reverb_lp_right: f32,
+    /// The coefficient of the lowpass of the input.
+    reverb_coefficient: f32,
 }
 
 impl Fx {
@@ -146,6 +184,7 @@ impl Fx {
         let chorus_len =
             (sample_rate * (CHORUS_BASE_DELAY + CHORUS_MAX_DEPTH + 0.002)).ceil() as usize + 2;
         let delay_len = (sample_rate * DELAY_MAX_TIME).ceil() as usize + 2;
+        let predelay_len = (sample_rate * REVERB_PREDELAY).ceil() as usize + 2;
 
         let mut combs: [Vec<Comb>; 2] = [Vec::new(), Vec::new()];
         let mut allpasses: [Vec<Allpass>; 2] = [Vec::new(), Vec::new()];
@@ -167,11 +206,23 @@ impl Fx {
             chorus_right: vec![0.0; chorus_len],
             chorus_index: 0,
             chorus_phase: 0.0,
+            chorus_lp_left: 0.0,
+            chorus_lp_right: 0.0,
+            chorus_coefficient: lowpass_coefficient(CHORUS_LOWPASS, sample_rate),
             delay_left: vec![0.0; delay_len],
             delay_right: vec![0.0; delay_len],
             delay_index: 0,
+            delay_lp_left: 0.0,
+            delay_lp_right: 0.0,
+            delay_coefficient: lowpass_coefficient(DELAY_LOWPASS, sample_rate),
             combs,
             allpasses,
+            predelay_left: vec![0.0; predelay_len],
+            predelay_right: vec![0.0; predelay_len],
+            predelay_index: 0,
+            reverb_lp_left: 0.0,
+            reverb_lp_right: 0.0,
+            reverb_coefficient: lowpass_coefficient(REVERB_LOWPASS, sample_rate),
         }
     }
 
@@ -181,9 +232,18 @@ impl Fx {
         self.chorus_right.fill(0.0);
         self.chorus_index = 0;
         self.chorus_phase = 0.0;
+        self.chorus_lp_left = 0.0;
+        self.chorus_lp_right = 0.0;
         self.delay_left.fill(0.0);
         self.delay_right.fill(0.0);
         self.delay_index = 0;
+        self.delay_lp_left = 0.0;
+        self.delay_lp_right = 0.0;
+        self.predelay_left.fill(0.0);
+        self.predelay_right.fill(0.0);
+        self.predelay_index = 0;
+        self.reverb_lp_left = 0.0;
+        self.reverb_lp_right = 0.0;
         for channel in 0..2 {
             for comb in &mut self.combs[channel] {
                 comb.reset();
@@ -208,6 +268,13 @@ impl Fx {
 
     /// A two tap chorus with a quadrature LFO.
     fn process_chorus(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let mix = params.chorus_mix.clamp(0.0, 1.0);
+        if mix <= BYPASS_MIX {
+            // The chorus is switched off, so the dry signal is passed through
+            // without touching the delay lines.
+            return (left, right);
+        }
+
         let sample_rate = self.sample_rate;
 
         // The LFO.
@@ -229,10 +296,18 @@ impl Fx {
         self.chorus_right[index] = right;
         self.chorus_index = (index + 1) % self.chorus_left.len();
 
-        let wet_left = read_interpolated(&self.chorus_left, index, delay_left);
-        let wet_right = read_interpolated(&self.chorus_right, index, delay_right);
+        let mut wet_left = read_interpolated(&self.chorus_left, index, delay_left);
+        let mut wet_right = read_interpolated(&self.chorus_right, index, delay_right);
 
-        let mix = params.chorus_mix.clamp(0.0, 1.0);
+        // The wet signal is lowpassed, so that the chorus does not sound
+        // harsh.
+        self.chorus_lp_left += (wet_left - self.chorus_lp_left) * self.chorus_coefficient;
+        self.chorus_lp_right += (wet_right - self.chorus_lp_right) * self.chorus_coefficient;
+        self.chorus_lp_left = flush_denormal(self.chorus_lp_left);
+        self.chorus_lp_right = flush_denormal(self.chorus_lp_right);
+        wet_left = self.chorus_lp_left;
+        wet_right = self.chorus_lp_right;
+
         (
             left * (1.0 - mix) + wet_left * mix,
             right * (1.0 - mix) + wet_right * mix,
@@ -241,6 +316,12 @@ impl Fx {
 
     /// A ping-pong delay with a fractional read position.
     fn process_delay(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let mix = params.delay_mix.clamp(0.0, 1.0);
+        if mix <= BYPASS_MIX {
+            // The delay is switched off, so the dry signal is passed through.
+            return (left, right);
+        }
+
         let len = self.delay_left.len();
         let max_delay = (len - 2) as f32;
         let delay = (params.delay_time_s * self.sample_rate).clamp(1.0, max_delay);
@@ -250,12 +331,22 @@ impl Fx {
         let wet_left = read_interpolated(&self.delay_left, self.delay_index, delay);
         let wet_right = read_interpolated(&self.delay_right, self.delay_index, delay);
 
+        // The feedback is damped and softly clipped, so that a long feedback
+        // does not build up into a howl.
+        let mut feedback_left = (wet_right * feedback).tanh();
+        let mut feedback_right = (wet_left * feedback).tanh();
+        self.delay_lp_left += (feedback_left - self.delay_lp_left) * self.delay_coefficient;
+        self.delay_lp_right += (feedback_right - self.delay_lp_right) * self.delay_coefficient;
+        self.delay_lp_left = flush_denormal(self.delay_lp_left);
+        self.delay_lp_right = flush_denormal(self.delay_lp_right);
+        feedback_left = self.delay_lp_left;
+        feedback_right = self.delay_lp_right;
+
         // Ping-pong: the left channel is fed by the right one and vice versa.
-        self.delay_left[self.delay_index] = left + wet_right * feedback;
-        self.delay_right[self.delay_index] = right + wet_left * feedback;
+        self.delay_left[self.delay_index] = left + feedback_left;
+        self.delay_right[self.delay_index] = right + feedback_right;
         self.delay_index = (self.delay_index + 1) % len;
 
-        let mix = params.delay_mix.clamp(0.0, 1.0);
         (
             left * (1.0 - mix) + wet_left * mix,
             right * (1.0 - mix) + wet_right * mix,
@@ -265,11 +356,31 @@ impl Fx {
     /// A compact freeverb style reverb: eight damped comb filters followed by
     /// four allpass filters per channel.
     fn process_reverb(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
-        let feedback = 0.7 + 0.28 * params.reverb_decay.clamp(0.0, 1.0);
         let mix = params.reverb_mix.clamp(0.0, 1.0);
+        if mix <= BYPASS_MIX {
+            // The reverb is switched off, so the dry signal is passed through.
+            return (left, right);
+        }
 
-        let wet_left = self.reverb_channel(0, left * REVERB_INPUT_GAIN, feedback);
-        let wet_right = self.reverb_channel(1, right * REVERB_INPUT_GAIN, feedback);
+        // The pre delay: the signal of the reverb starts a little bit later
+        // than the dry signal.
+        let index = self.predelay_index;
+        let delayed_left = self.predelay_left[index];
+        let delayed_right = self.predelay_right[index];
+        self.predelay_left[index] = left;
+        self.predelay_right[index] = right;
+        self.predelay_index = (index + 1) % self.predelay_left.len();
+
+        // The input of the reverb is lowpassed.
+        self.reverb_lp_left += (delayed_left - self.reverb_lp_left) * self.reverb_coefficient;
+        self.reverb_lp_right += (delayed_right - self.reverb_lp_right) * self.reverb_coefficient;
+        self.reverb_lp_left = flush_denormal(self.reverb_lp_left);
+        self.reverb_lp_right = flush_denormal(self.reverb_lp_right);
+
+        let feedback = 0.7 + 0.28 * params.reverb_decay.clamp(0.0, 1.0);
+
+        let wet_left = self.reverb_channel(0, self.reverb_lp_left * REVERB_INPUT_GAIN, feedback);
+        let wet_right = self.reverb_channel(1, self.reverb_lp_right * REVERB_INPUT_GAIN, feedback);
 
         (left + wet_left * mix, right + wet_right * mix)
     }
@@ -312,11 +423,23 @@ impl Default for Fx {
             chorus_right: Vec::new(),
             chorus_index: 0,
             chorus_phase: 0.0,
+            chorus_lp_left: 0.0,
+            chorus_lp_right: 0.0,
+            chorus_coefficient: 0.0,
             delay_left: Vec::new(),
             delay_right: Vec::new(),
             delay_index: 0,
+            delay_lp_left: 0.0,
+            delay_lp_right: 0.0,
+            delay_coefficient: 0.0,
             combs: [Vec::new(), Vec::new()],
             allpasses: [Vec::new(), Vec::new()],
+            predelay_left: Vec::new(),
+            predelay_right: Vec::new(),
+            predelay_index: 0,
+            reverb_lp_left: 0.0,
+            reverb_lp_right: 0.0,
+            reverb_coefficient: 0.0,
         }
     }
 }
@@ -354,8 +477,25 @@ mod tests {
 
         for _ in 0..1_000 {
             let (left, right) = fx.process(0.5, -0.5, &params);
-            assert!((left - 0.5).abs() < 1e-6);
-            assert!((right + 0.5).abs() < 1e-6);
+            assert_eq!(left, 0.5);
+            assert_eq!(right, -0.5);
+        }
+    }
+
+    #[test]
+    fn a_tiny_mix_is_a_bypass() {
+        let mut fx = Fx::new(48_000.0);
+        let params = FxParams {
+            chorus_mix: 1e-5,
+            delay_mix: 1e-5,
+            reverb_mix: 1e-5,
+            ..FxParams::default()
+        };
+
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.5, -0.5, &params);
+            assert_eq!(left, 0.5);
+            assert_eq!(right, -0.5);
         }
     }
 
@@ -385,5 +525,31 @@ mod tests {
             (first_repeat - 4_800).abs() < 8,
             "the repeat came at {first_repeat}"
         );
+    }
+
+    #[test]
+    fn the_wet_path_stays_bounded() {
+        let mut fx = Fx::new(48_000.0);
+        let params = FxParams {
+            chorus_mix: 1.0,
+            chorus_rate: 0.8,
+            chorus_depth: 0.5,
+            delay_time_s: 0.35,
+            delay_feedback: 0.95,
+            delay_mix: 1.0,
+            reverb_mix: 1.0,
+            reverb_decay: 1.0,
+        };
+
+        // A loud signal that is fed back again and again must not run away.
+        let mut peak: f32 = 0.0;
+        for sample in 0..48_000 {
+            let input = if sample % 480 == 0 { 0.9 } else { 0.0 };
+            let (left, right) = fx.process(input, input, &params);
+            assert!(left.is_finite() && right.is_finite());
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+
+        assert!(peak < 10.0, "the wet signal ran away ({peak})");
     }
 }

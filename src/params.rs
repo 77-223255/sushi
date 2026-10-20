@@ -77,9 +77,12 @@ pub enum ArpPattern {
     Down,
     UpDown,
     Random,
+    /// The notes are played in the order in which they were pressed down.
+    #[name = "As Played"]
+    AsPlayed,
 }
 
-/// The note division of the arpeggiator and of the step sequencer.
+/// The note division of the arpeggiator.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum NoteDiv {
     #[name = "1/4"]
@@ -103,15 +106,6 @@ impl NoteDiv {
             NoteDiv::ThirtySecond => 0.125,
         }
     }
-}
-
-/// The destination the step sequencer modulates.
-#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
-pub enum StepDest {
-    Pitch,
-    #[default]
-    Filter,
-    Shape,
 }
 
 /// A `0..1` parameter that is displayed as a percentage.
@@ -158,12 +152,6 @@ fn bipolar_param(name: &str, default: f32) -> FloatParam {
             .map(|value| value / 100.0)
     }))
     .with_unit("%")
-}
-
-/// A step of the modulation sequencer. The steps are smoothed a bit more
-/// gently than the macros, so that they still feel like discrete steps.
-fn step_param(name: &str, default: f32) -> FloatParam {
-    percentage_param(name, default).with_smoother(SmoothingStyle::Linear(5.0))
 }
 
 /// A frequency parameter in Hertz, skewed towards the low end.
@@ -384,45 +372,14 @@ pub struct SushiParams {
     #[id = "arp_latch"]
     pub arp_latch: BoolParam,
 
-    // --- Step sequencer ----------------------------------------------------
-    #[id = "step_on"]
-    pub step_on: BoolParam,
+    #[id = "arp_swing"]
+    pub arp_swing: FloatParam,
 
-    #[id = "step_rate"]
-    pub step_rate: EnumParam<NoteDiv>,
+    #[id = "arp_length"]
+    pub arp_length: IntParam,
 
-    #[id = "step_dest"]
-    pub step_dest: EnumParam<StepDest>,
-
-    #[id = "step_amount"]
-    pub step_amount: FloatParam,
-
-    #[id = "step_smooth"]
-    pub step_smooth: BoolParam,
-
-    #[id = "step_1"]
-    pub step_1: FloatParam,
-
-    #[id = "step_2"]
-    pub step_2: FloatParam,
-
-    #[id = "step_3"]
-    pub step_3: FloatParam,
-
-    #[id = "step_4"]
-    pub step_4: FloatParam,
-
-    #[id = "step_5"]
-    pub step_5: FloatParam,
-
-    #[id = "step_6"]
-    pub step_6: FloatParam,
-
-    #[id = "step_7"]
-    pub step_7: FloatParam,
-
-    #[id = "step_8"]
-    pub step_8: FloatParam,
+    #[id = "arp_ratchet"]
+    pub arp_ratchet: IntParam,
 }
 
 impl Default for SushiParams {
@@ -647,22 +604,21 @@ impl Default for SushiParams {
             }))
             .with_unit("%"),
             arp_latch: BoolParam::new("Arp Latch", false),
-
-            // --- Step sequencer ----------------------------------------------
-            step_on: BoolParam::new("Step Sequencer", false),
-            step_rate: EnumParam::new("Step Rate", NoteDiv::Eighth),
-            step_dest: EnumParam::new("Step Dest", StepDest::Filter),
-            step_amount: percentage_param("Step Amount", 0.0)
-                .with_smoother(SmoothingStyle::Linear(20.0)),
-            step_smooth: BoolParam::new("Step Smooth", true),
-            step_1: step_param("Step 1", 0.5),
-            step_2: step_param("Step 2", 0.65),
-            step_3: step_param("Step 3", 0.35),
-            step_4: step_param("Step 4", 0.8),
-            step_5: step_param("Step 5", 0.5),
-            step_6: step_param("Step 6", 0.7),
-            step_7: step_param("Step 7", 0.3),
-            step_8: step_param("Step 8", 0.6),
+            arp_swing: FloatParam::new(
+                "Arp Swing",
+                0.0,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 75.0,
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_rounded(0))
+            .with_string_to_value(Arc::new(|text: &str| {
+                text.trim().trim_end_matches('%').trim().parse::<f32>().ok()
+            }))
+            .with_unit("%"),
+            arp_length: IntParam::new("Arp Length", 16, IntRange::Linear { min: 1, max: 16 }),
+            arp_ratchet: IntParam::new("Arp Ratchet", 1, IntRange::Linear { min: 1, max: 4 }),
         }
     }
 }
@@ -734,24 +690,9 @@ mod tests {
         assert_eq!(params.arp_octaves.value(), 1);
         assert_eq!(params.arp_gate.value(), 60.0);
         assert!(!params.arp_latch.value());
-
-        assert!(!params.step_on.value());
-        assert_eq!(params.step_rate.value(), NoteDiv::Eighth);
-        assert_eq!(params.step_dest.value(), StepDest::Filter);
-        assert_eq!(params.step_amount.value(), 0.0);
-        assert!(params.step_smooth.value());
-
-        let steps = [
-            params.step_1.value(),
-            params.step_2.value(),
-            params.step_3.value(),
-            params.step_4.value(),
-            params.step_5.value(),
-            params.step_6.value(),
-            params.step_7.value(),
-            params.step_8.value(),
-        ];
-        assert_eq!(steps, [0.5, 0.65, 0.35, 0.8, 0.5, 0.7, 0.3, 0.6]);
+        assert_eq!(params.arp_swing.value(), 0.0);
+        assert_eq!(params.arp_length.value(), 16);
+        assert_eq!(params.arp_ratchet.value(), 1);
     }
 
     #[test]
@@ -765,8 +706,10 @@ mod tests {
     #[test]
     fn the_variants_have_readable_names() {
         assert_eq!(NoteDiv::variants(), ["1/4", "1/8", "1/16", "1/32"]);
-        assert_eq!(ArpPattern::variants(), ["Up", "Down", "UpDown", "Random"]);
-        assert_eq!(StepDest::variants(), ["Pitch", "Filter", "Shape"]);
+        assert_eq!(
+            ArpPattern::variants(),
+            ["Up", "Down", "UpDown", "Random", "As Played"]
+        );
         assert_eq!(Character::variants(), ["Silk", "Grit"]);
     }
 }

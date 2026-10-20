@@ -7,10 +7,14 @@ use std::f32::consts::PI;
 use super::adsr::{Adsr, EnvCoeffs};
 use super::filter::Svf;
 use super::osc::{Noise, Oscillator};
-use crate::params::{FilterMode, LfoTarget, StepDest, Waveform};
+use crate::params::{FilterMode, LfoTarget, Waveform};
 
 /// The maximum number of unison voices per oscillator.
 pub const MAX_UNISON: usize = 4;
+
+/// The number of samples between two updates of the pitch and of the filter.
+/// The ear does not notice the difference, but the CPU does.
+const CONTROL_RATE: u32 = 8;
 
 /// The rate of the drift, in Hz. The drift is a slow random modulation of the
 /// pitch and the cutoff.
@@ -24,6 +28,9 @@ const DRIFT_PITCH: f32 = 0.06;
 
 /// The maximum cutoff drift, in octaves.
 const DRIFT_CUTOFF: f32 = 0.2;
+
+/// The frequency of the DC blocker, in Hz.
+const DC_BLOCKER_FREQUENCY: f32 = 20.0;
 
 /// The frequency ratio of a single unison voice, relative to the base
 /// frequency. `offset` is the position of the voice in the unison bank, in the
@@ -97,11 +104,6 @@ pub struct VoiceSettings {
     /// How much the voice drifts, `0..1`. The value is already scaled by the
     /// character of the sound.
     pub drift_amount: f32,
-    /// The destination of the step sequencer.
-    pub step_dest: StepDest,
-    /// The amount of the step sequencer, `0..1`. The value that is handed to
-    /// the voice is already scaled by it.
-    pub step_amount: f32,
     /// Whether the harsh character is active. It adds a bit of filter drive.
     pub character_grit: bool,
 }
@@ -132,10 +134,39 @@ impl Default for VoiceSettings {
             lfo2_target: LfoTarget::Off,
             velocity_amount: 0.0,
             drift_amount: 0.0,
-            step_dest: StepDest::Filter,
-            step_amount: 0.0,
             character_grit: false,
         }
+    }
+}
+
+/// A one-pole highpass that takes the DC offset out of the signal.
+#[derive(Debug, Clone, Copy, Default)]
+struct DcBlocker {
+    /// The previous input sample.
+    input: f32,
+    /// The previous output sample.
+    output: f32,
+    /// The feedback of the filter, which is the one of a highpass at 20 Hz.
+    coefficient: f32,
+    /// The sample rate that the coefficient was computed for.
+    rate: f32,
+}
+
+impl DcBlocker {
+    #[inline]
+    fn process(&mut self, input: f32, sample_rate: f32) -> f32 {
+        if self.rate != sample_rate {
+            self.rate = sample_rate;
+            self.coefficient = 1.0 - (2.0 * PI * DC_BLOCKER_FREQUENCY / sample_rate.max(1.0)).exp();
+        }
+
+        let output = input - self.input + self.coefficient * self.output;
+        self.input = input;
+
+        // Flush the denormal state, so that the filter doesn't drag the CPU
+        // down with it once the signal has died away.
+        self.output = if output.abs() < 1e-20 { 0.0 } else { output };
+        output
     }
 }
 
@@ -169,6 +200,22 @@ pub struct Voice {
     filter_env: Adsr,
     filter_left: Svf,
     filter_right: Svf,
+    dc_left: DcBlocker,
+    dc_right: DcBlocker,
+
+    /// The counter of the control rate. The pitch and the filter are only
+    /// updated every eighth sample.
+    control_counter: u32,
+    /// The current level of the filter envelope.
+    filter_env_level: f32,
+    /// The phase increment of the unison voices of the first oscillator.
+    phase_delta1: [f32; MAX_UNISON],
+    /// The phase increment of the unison voices of the second oscillator.
+    phase_delta2: [f32; MAX_UNISON],
+    /// The coefficient of the filter.
+    g: f32,
+    /// The damping of the filter.
+    k: f32,
 
     /// The phase of the drift, `0..1`.
     drift_phase: f32,
@@ -178,6 +225,8 @@ pub struct Voice {
     drift_value: f32,
     /// The random number generator of the drift.
     drift_rng: u32,
+    /// The random number generator of the phases of the oscillators.
+    phase_rng: u32,
 }
 
 impl Voice {
@@ -206,6 +255,13 @@ impl Voice {
         let drift_phase = (next_random(&mut drift_rng) * 0.5 + 0.5).clamp(0.0, 1.0);
         let drift_target = next_random(&mut drift_rng);
 
+        // The phases of the oscillators are random as well, so that a chord
+        // does not cancel itself out.
+        let mut phase_rng = 0x2545_F491 ^ (internal_voice_id as u32).wrapping_mul(0x9E37_79B9);
+        if phase_rng == 0 {
+            phase_rng = 0x2545_F491;
+        }
+
         let mut voice = Self {
             voice_id,
             channel,
@@ -224,10 +280,19 @@ impl Voice {
             filter_env,
             filter_left: Svf::new(),
             filter_right: Svf::new(),
+            dc_left: DcBlocker::default(),
+            dc_right: DcBlocker::default(),
+            control_counter: CONTROL_RATE - 1,
+            filter_env_level: 0.0,
+            phase_delta1: [0.0; MAX_UNISON],
+            phase_delta2: [0.0; MAX_UNISON],
+            g: 0.0,
+            k: 2.0,
             drift_phase,
             drift_target,
             drift_value: 0.0,
             drift_rng,
+            phase_rng,
         };
 
         voice.reset_osc_phases();
@@ -293,43 +358,41 @@ impl Voice {
     }
 
     /// Renders a single stereo sample. `lfo1` and `lfo2` are the current global
-    /// LFO values in the `-1..1` range. `step_value` is the value of the step
-    /// sequencer, already scaled by its amount.
+    /// LFO values in the `-1..1` range.
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     pub fn next_sample(
         &mut self,
         settings: &VoiceSettings,
         cutoff_hz: f32,
         lfo1: f32,
         lfo2: f32,
-        step_value: f32,
         sample_rate: f32,
     ) -> (f32, f32) {
         let sample_rate = sample_rate.max(1.0);
 
         // The envelopes.
         let amp = self.amp_env.next(&settings.amp_env);
-        let filter_env = self.filter_env.next(&settings.filter_env);
+        self.filter_env_level = self.filter_env.next(&settings.filter_env);
 
         // The LFO destinations.
         let (pitch_semitones, filter_octaves, amp_scale, pulse_width_offset) =
             lfo_modulation(settings, lfo1, lfo2);
 
-        // The step sequencer.
-        let (step_pitch, step_filter, step_shape) = step_modulation(settings, step_value);
-        let pulse_width_offset = pulse_width_offset + step_shape;
-
         // The drift.
         self.update_drift(sample_rate);
-        let drift_pitch = self.drift_value * settings.drift_amount * DRIFT_PITCH;
-        let drift_filter = self.drift_value * settings.drift_amount * DRIFT_CUTOFF;
 
-        // The pitch, with optional glide.
-        self.current_pitch += (self.target_pitch - self.current_pitch) * settings.glide_step;
-        let base_frequency = util::f32_midi_key_to_freq(
-            self.current_pitch + pitch_semitones + step_pitch + drift_pitch,
-        );
+        // The control rate. The pitch and the filter are updated every eighth
+        // sample only, which saves a lot of CPU time.
+        self.control_counter = (self.control_counter + 1) % CONTROL_RATE;
+        if self.control_counter == 0 {
+            self.update_control(
+                settings,
+                cutoff_hz,
+                pitch_semitones,
+                filter_octaves,
+                sample_rate,
+            );
+        }
 
         let unison = self.unison.clamp(1, MAX_UNISON);
         let unison_gain = 1.0 / (unison as f32).sqrt();
@@ -342,26 +405,22 @@ impl Voice {
             &mut left,
             &mut right,
             &settings.osc1,
-            base_frequency,
+            &self.phase_delta1,
             unison,
             unison_gain,
-            settings.detune_cents,
             settings.spread,
             pulse_width_offset,
-            sample_rate,
         );
         render_oscillator(
             &mut self.osc2_bank,
             &mut left,
             &mut right,
             &settings.osc2,
-            base_frequency,
+            &self.phase_delta2,
             unison,
             unison_gain,
-            settings.detune_cents,
             settings.spread,
             pulse_width_offset,
-            sample_rate,
         );
 
         // The noise generator is shared by both channels. It is kept at half
@@ -370,17 +429,9 @@ impl Voice {
         left += noise;
         right += noise;
 
-        // The filter.
-        let key = self.key.number_or_middle_c() as f32;
-        let octaves = settings.filter_env_octaves * filter_env
-            + settings.filter_keytrack * (key - 60.0) / 12.0
-            + settings.velocity_amount * self.velocity_raw * 1.5
-            + filter_octaves
-            + step_filter
-            + drift_filter;
-        let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
-        let g = (PI * cutoff / sample_rate).tan();
-        let k = 2.0 - 1.98 * settings.resonance;
+        // A high resonance would make the filter gain a lot of energy, so the
+        // input of the filter is turned down a little.
+        let attenuation = 1.0 / (1.0 + 0.35 * settings.resonance);
 
         // The harsh character adds a bit of drive to the filter.
         let drive = if settings.character_grit {
@@ -389,25 +440,81 @@ impl Voice {
             settings.filter_drive.clamp(0.0, 1.0)
         };
 
-        let left = self
-            .filter_left
-            .process(left, g, k, settings.filter_mode, drive);
-        let right = self
-            .filter_right
-            .process(right, g, k, settings.filter_mode, drive);
+        let left = self.filter_left.process(
+            left * attenuation,
+            self.g,
+            self.k,
+            settings.filter_mode,
+            drive,
+        );
+        let right = self.filter_right.process(
+            right * attenuation,
+            self.g,
+            self.k,
+            settings.filter_mode,
+            drive,
+        );
+
+        // The DC blocker, which takes the offset of the wave out of the
+        // signal.
+        let left = self.dc_left.process(left, sample_rate);
+        let right = self.dc_right.process(right, sample_rate);
 
         // The amplifier.
         let gain = amp * self.velocity * amp_scale;
         (left * gain, right * gain)
     }
 
-    /// Gives every unison oscillator a different starting phase so that the
-    /// unison voices don't start in lockstep.
+    /// Updates the pitch and the filter of the voice. This only happens every
+    /// eighth sample.
+    fn update_control(
+        &mut self,
+        settings: &VoiceSettings,
+        cutoff_hz: f32,
+        pitch_semitones: f32,
+        filter_octaves: f32,
+        sample_rate: f32,
+    ) {
+        // The pitch, with optional glide.
+        self.current_pitch += (self.target_pitch - self.current_pitch) * settings.glide_step;
+        let drift_pitch = self.drift_value * settings.drift_amount * DRIFT_PITCH;
+        let base_frequency =
+            util::f32_midi_key_to_freq(self.current_pitch + pitch_semitones + drift_pitch);
+
+        // The filter.
+        let key = self.key.number_or_middle_c() as f32;
+        let drift_filter = self.drift_value * settings.drift_amount * DRIFT_CUTOFF;
+        let octaves = settings.filter_env_octaves * self.filter_env_level
+            + settings.filter_keytrack * (key - 60.0) / 12.0
+            + settings.velocity_amount * self.velocity_raw * 1.5
+            + filter_octaves
+            + drift_filter;
+        let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
+        self.g = (PI * cutoff / sample_rate).tan();
+        self.k = 2.0 - 1.98 * settings.resonance;
+
+        // The phase increments of the unison voices.
+        let unison = self.unison.clamp(1, MAX_UNISON);
+        let frequency1 = base_frequency * 2f32.powf(settings.osc1.semitones / 12.0);
+        let frequency2 = base_frequency * 2f32.powf(settings.osc2.semitones / 12.0);
+        for index in 0..unison {
+            let offset = unison_offset(index, unison);
+            let ratio = unison_detune_ratio(settings.detune_cents, offset);
+            self.phase_delta1[index] = (frequency1 * ratio / sample_rate).clamp(0.0, 0.5);
+            self.phase_delta2[index] = (frequency2 * ratio / sample_rate).clamp(0.0, 0.5);
+        }
+    }
+
+    /// Gives every unison oscillator a random starting phase, so that the
+    /// unison voices do not start in lockstep and a chord does not cancel
+    /// itself out. The phases are random, but they are the same for every run
+    /// of the same voice.
     fn reset_osc_phases(&mut self) {
         for index in 0..MAX_UNISON {
-            let phase = (index as f32 * 0.37).fract();
-            self.osc1_bank[index].set_phase(phase);
-            self.osc2_bank[index].set_phase(phase);
+            let phase1 = next_random(&mut self.phase_rng) * 0.5 + 0.5;
+            let phase2 = next_random(&mut self.phase_rng) * 0.5 + 0.5;
+            self.osc1_bank[index].set_phase(phase1);
+            self.osc2_bank[index].set_phase(phase2);
         }
     }
 
@@ -445,23 +552,17 @@ fn render_oscillator(
     left: &mut f32,
     right: &mut f32,
     osc: &OscSettings,
-    base_frequency: f32,
+    phase_deltas: &[f32; MAX_UNISON],
     unison: usize,
     unison_gain: f32,
-    detune_cents: f32,
     spread: f32,
     pulse_width_offset: f32,
-    sample_rate: f32,
 ) {
     let pulse_width = (osc.pulse_width + pulse_width_offset).clamp(0.05, 0.95);
-    let frequency = base_frequency * 2f32.powf(osc.semitones);
 
     for (index, oscillator) in bank.iter_mut().take(unison).enumerate() {
         let offset = unison_offset(index, unison);
-        let ratio = unison_detune_ratio(detune_cents, offset);
-        let phase_delta = (frequency * ratio / sample_rate).clamp(0.0, 0.5);
-
-        let sample = oscillator.next(phase_delta, osc.waveform, pulse_width);
+        let sample = oscillator.next(phase_deltas[index], osc.waveform, pulse_width);
 
         // Equal power panning.
         let pan = (offset * spread).clamp(-1.0, 1.0);
@@ -507,19 +608,6 @@ fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, 
     )
 }
 
-/// Calculates the modulation of the step sequencer.
-///
-/// Returns the pitch offset in semitones, the filter offset in octaves and the
-/// pulse width offset.
-#[inline]
-fn step_modulation(settings: &VoiceSettings, step_value: f32) -> (f32, f32, f32) {
-    match settings.step_dest {
-        StepDest::Pitch => (step_value * 2.0, 0.0, 0.0),
-        StepDest::Filter => (0.0, step_value * 4.0, 0.0),
-        StepDest::Shape => (0.0, 0.0, step_value * 0.4),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +618,71 @@ mod tests {
         Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, settings)
     }
 
+    /// The frequency of the voice, measured by its zero crossings.
+    fn measure_frequency(voice: &mut Voice, settings: &VoiceSettings) -> f32 {
+        let mut crossings = 0;
+        let mut previous = 0.0;
+        for _ in 0..(SAMPLE_RATE as usize * 2) {
+            let (left, _) = voice.next_sample(settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            if previous < 0.0 && left >= 0.0 {
+                crossings += 1;
+            }
+            previous = left;
+        }
+        crossings as f32 / 2.0
+    }
+
+    #[test]
+    fn the_oscillators_are_tuned_to_their_octave() {
+        // The first oscillator plays the note itself.
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                waveform: Waveform::Sine,
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            ..VoiceSettings::default()
+        };
+        let mut first = voice(&settings);
+        let frequency = measure_frequency(&mut first, &settings);
+
+        // The key 60 is a small C, which is 261.6 Hz.
+        assert!(
+            (frequency - 261.6).abs() < 5.0,
+            "the oscillator played at {frequency} Hz"
+        );
+
+        // The second oscillator is an octave lower.
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                semitones: -12.0,
+                pulse_width: 0.5,
+            },
+            filter_env_octaves: 0.0,
+            ..VoiceSettings::default()
+        };
+        let mut second = voice(&settings);
+        let frequency = measure_frequency(&mut second, &settings);
+
+        assert!(
+            (frequency - 130.8).abs() < 5.0,
+            "the oscillator played at {frequency} Hz"
+        );
+    }
+
     #[test]
     fn a_voice_produces_audio() {
         let settings = VoiceSettings::default();
@@ -537,7 +690,7 @@ mod tests {
 
         let mut peak: f32 = 0.0;
         for _ in 0..4_800 {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             assert!(left.is_finite() && right.is_finite());
             peak = peak.max(left.abs()).max(right.abs());
         }
@@ -570,8 +723,8 @@ mod tests {
 
         let mut difference = 0.0;
         for _ in 0..512 {
-            let (a, _) = voice_single.next_sample(&single, 2_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = voice_unison.next_sample(&unison, 2_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (a, _) = voice_single.next_sample(&single, 2_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = voice_unison.next_sample(&unison, 2_000.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
@@ -587,7 +740,7 @@ mod tests {
         let mut voice = voice(&settings);
 
         for _ in 0..480 {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
         }
         assert!(!voice.is_finished());
 
@@ -595,7 +748,7 @@ mod tests {
         assert!(voice.is_releasing());
 
         for _ in 0..48_000 {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             if voice.is_finished() {
                 break;
             }
@@ -619,8 +772,8 @@ mod tests {
         // different from a voice that starts on that key.
         let mut difference = 0.0;
         for _ in 0..480 {
-            let (a, _) = gliding.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = direct.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (a, _) = gliding.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = direct.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
@@ -640,7 +793,7 @@ mod tests {
 
         // The drift is slow, so a few seconds are enough to see it move.
         for _ in 0..(SAMPLE_RATE as usize * 4) {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             assert!(left.is_finite() && right.is_finite());
             assert!(
                 (-1.0..=1.0).contains(&voice.drift_value),
@@ -659,46 +812,87 @@ mod tests {
     }
 
     #[test]
-    fn the_step_modulates_the_pitch() {
+    fn the_voices_start_with_different_phases() {
         let settings = VoiceSettings {
-            step_dest: StepDest::Pitch,
+            unison: 4,
+            noise_level: 0.0,
+            drift_amount: 0.0,
             ..VoiceSettings::default()
         };
-        let mut plain = voice(&settings);
-        let mut stepped = voice(&settings);
 
+        let mut first = Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, &settings);
+        let mut second = Voice::new(2, Channel::Number(0), Key::Number(60), 1, 1.0, &settings);
+
+        // The phases of the two voices are not the same, so that a chord does
+        // not cancel itself out.
         let mut difference = 0.0;
         for _ in 0..512 {
-            let (a, _) = plain.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = stepped.next_sample(&settings, 3_000.0, 0.0, 0.0, 1.0, SAMPLE_RATE);
-            difference += (a - b).abs();
-        }
-
-        assert!(
-            difference > 0.1,
-            "the step did not change the pitch (difference {difference})"
-        );
-    }
-
-    #[test]
-    fn the_step_modulates_the_filter() {
-        let settings = VoiceSettings {
-            step_dest: StepDest::Filter,
-            ..VoiceSettings::default()
-        };
-        let mut plain = voice(&settings);
-        let mut stepped = voice(&settings);
-
-        let mut difference = 0.0;
-        for _ in 0..512 {
-            let (a, _) = plain.next_sample(&settings, 500.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = stepped.next_sample(&settings, 500.0, 0.0, 0.0, 1.0, SAMPLE_RATE);
+            let (a, _) = first.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = second.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
         assert!(
             difference > 0.01,
-            "the step did not change the filter (difference {difference})"
+            "the voices started with the same phases (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn the_voices_are_reproducible() {
+        let settings = VoiceSettings {
+            unison: 4,
+            noise_level: 0.0,
+            drift_amount: 0.0,
+            ..VoiceSettings::default()
+        };
+
+        let mut first = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &settings);
+        let mut second = Voice::new(2, Channel::Number(0), Key::Number(60), 7, 1.0, &settings);
+
+        // The same voice always gets the same phases.
+        for _ in 0..512 {
+            let (a, _) = first.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = second.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn the_dc_blocker_removes_the_offset_of_the_wave() {
+        // A pulse wave with a duty cycle of 25 % has a lot of DC offset.
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Pulse,
+                pulse_width: 0.25,
+                level: 1.0,
+                semitones: 0.0,
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            ..VoiceSettings::default()
+        };
+        let mut voice = voice(&settings);
+
+        // The envelope has to settle first.
+        for _ in 0..4_800 {
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for _ in 0..4_800 {
+            let (left, _) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            sum += left;
+            count += 1.0;
+        }
+        let offset = sum / count;
+
+        assert!(
+            offset.abs() < 0.02,
+            "the wave still had an offset of {offset}"
         );
     }
 
@@ -715,8 +909,8 @@ mod tests {
 
         let mut difference = 0.0;
         for _ in 0..512 {
-            let (a, _) = quiet.next_sample(&settings, 300.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = loud.next_sample(&settings, 300.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (a, _) = quiet.next_sample(&settings, 300.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = loud.next_sample(&settings, 300.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
@@ -727,26 +921,21 @@ mod tests {
     }
 
     #[test]
-    fn the_step_modulation_math_is_sane() {
+    fn the_resonance_does_not_blow_the_filter_up() {
         let settings = VoiceSettings {
-            step_dest: StepDest::Pitch,
+            resonance: 1.0,
+            filter_env_octaves: 0.0,
             ..VoiceSettings::default()
         };
-        assert_eq!(step_modulation(&settings, 1.0), (2.0, 0.0, 0.0));
-        assert_eq!(step_modulation(&settings, -1.0), (-2.0, 0.0, 0.0));
+        let mut voice = voice(&settings);
 
-        let settings = VoiceSettings {
-            step_dest: StepDest::Filter,
-            ..VoiceSettings::default()
-        };
-        assert_eq!(step_modulation(&settings, 1.0), (0.0, 4.0, 0.0));
-        assert_eq!(step_modulation(&settings, -1.0), (0.0, -4.0, 0.0));
+        let mut peak: f32 = 0.0;
+        for _ in 0..4_800 {
+            let (left, right) = voice.next_sample(&settings, 800.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+            peak = peak.max(left.abs()).max(right.abs());
+        }
 
-        let settings = VoiceSettings {
-            step_dest: StepDest::Shape,
-            ..VoiceSettings::default()
-        };
-        assert_eq!(step_modulation(&settings, 1.0), (0.0, 0.0, 0.4));
-        assert_eq!(step_modulation(&settings, -1.0), (0.0, 0.0, -0.4));
+        assert!(peak < 25.0, "the filter gained too much energy ({peak})");
     }
 }

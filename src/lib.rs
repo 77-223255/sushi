@@ -15,12 +15,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub mod dsp;
 mod editor;
 pub mod params;
+pub mod patch;
 
 use dsp::adsr::EnvCoeffs;
 use dsp::arp::Arp;
 use dsp::fx::{Fx, FxParams};
 use dsp::lfo::Lfo;
-use dsp::step::StepSequencer;
 use dsp::voice::{OscSettings, Voice, VoiceSettings};
 use editor::{SushiEditor, WINDOW_HEIGHT, WINDOW_WIDTH};
 use params::Character;
@@ -82,12 +82,11 @@ pub struct Sushi {
 
     /// The arpeggiator.
     arp: Arp,
-    /// The step sequencer.
-    step: StepSequencer,
-    /// The index of the step that is currently playing.
-    step_index: Arc<AtomicUsize>,
     /// The number of arpeggiator triggers. The GUI uses it to flash a light.
     arp_led: Arc<AtomicUsize>,
+    /// The position of the arpeggiator in its pattern. The GUI shows it in
+    /// the strip of lights of the arpeggiator.
+    arp_position: Arc<AtomicUsize>,
     /// The number of voices that are currently playing. The GUI shows it in a
     /// small meter of the header.
     voice_count: Arc<AtomicUsize>,
@@ -122,9 +121,8 @@ impl Default for Sushi {
             fx: Fx::default(),
 
             arp: Arp::new(),
-            step: StepSequencer::new(),
-            step_index: Arc::new(AtomicUsize::new(0)),
             arp_led: Arc::new(AtomicUsize::new(0)),
+            arp_position: Arc::new(AtomicUsize::new(0)),
             voice_count: Arc::new(AtomicUsize::new(0)),
             arp_voice_id: None,
             next_arp_voice_id: FIRST_ARP_VOICE_ID,
@@ -213,8 +211,6 @@ impl Sushi {
             lfo2_target: params.lfo2_target.value(),
             velocity_amount: params.velocity.smoothed.next_step(steps),
             drift_amount: 0.0,
-            step_dest: params.step_dest.value(),
-            step_amount: params.step_amount.smoothed.next_step(steps),
             character_grit: false,
         }
     }
@@ -234,12 +230,6 @@ impl Sushi {
         }
     }
 
-    /// The index of the step that is currently playing. The editor uses it to
-    /// highlight the step of the sequencer.
-    pub fn step_index(&self) -> Arc<AtomicUsize> {
-        self.step_index.clone()
-    }
-
     /// The number of arpeggiator triggers. The editor uses it to flash a
     /// light whenever the arpeggiator plays a note.
     pub fn arp_led(&self) -> Arc<AtomicUsize> {
@@ -250,6 +240,12 @@ impl Sushi {
     /// show the meter of the header.
     pub fn voice_count(&self) -> Arc<AtomicUsize> {
         self.voice_count.clone()
+    }
+
+    /// The position of the arpeggiator in its pattern. The editor uses it to
+    /// light up the strip of the arpeggiator.
+    pub fn arp_position(&self) -> Arc<AtomicUsize> {
+        self.arp_position.clone()
     }
 
     /// Puts the voice of the arpeggiator into its release stage.
@@ -646,8 +642,8 @@ impl Plugin for Sushi {
             SushiEditor::new(
                 self.params.clone(),
                 scope_rx,
-                self.step_index.clone(),
                 self.arp_led.clone(),
+                self.arp_position.clone(),
                 self.voice_count.clone(),
             ),
         )
@@ -664,7 +660,6 @@ impl Plugin for Sushi {
         // audio thread never has to allocate.
         self.fx = Fx::new(self.sample_rate);
         self.arp.reset();
-        self.step.reset();
         true
     }
 
@@ -677,13 +672,12 @@ impl Plugin for Sushi {
         self.lfo2 = Lfo::new(LFO2_SEED);
         self.fx.reset();
         self.arp.reset();
-        self.step.reset();
         self.arp_voice_id = None;
         self.arp_was_on = false;
         self.tone_left = 0.0;
         self.tone_right = 0.0;
-        self.step_index.store(0, Ordering::Relaxed);
         self.arp_led.store(0, Ordering::Relaxed);
+        self.arp_position.store(0, Ordering::Relaxed);
         self.voice_count.store(0, Ordering::Relaxed);
     }
 
@@ -703,8 +697,7 @@ impl Plugin for Sushi {
         let sample_rate = self.sample_rate.max(1.0);
         let steps = num_samples as u32;
 
-        // The transport of the host, which runs the arpeggiator and the step
-        // sequencer.
+        // The transport of the host, which runs the arpeggiator.
         let bpm = context.transport().tempo.unwrap_or(120.0);
         let beats_per_sample = bpm / (60.0 * sample_rate as f64);
 
@@ -747,6 +740,9 @@ impl Plugin for Sushi {
         let arp_division = self.params.arp_rate.value().beats();
         let arp_octaves = self.params.arp_octaves.value().clamp(1, 3) as u8;
         let arp_gate = self.params.arp_gate.value();
+        let arp_swing = self.params.arp_swing.value();
+        let arp_length = self.params.arp_length.value().clamp(1, 16) as usize;
+        let arp_ratchet = self.params.arp_ratchet.value().clamp(1, 4) as usize;
 
         if arp_on != self.arp_was_on {
             if arp_on {
@@ -761,22 +757,6 @@ impl Plugin for Sushi {
             }
             self.arp_was_on = arp_on;
         }
-
-        // The step sequencer.
-        let step_on = self.params.step_on.value();
-        let step_division = self.params.step_rate.value().beats();
-        let step_smooth = self.params.step_smooth.value();
-        let step_amount = settings.step_amount;
-        let step_values = [
-            self.params.step_1.smoothed.next_step(steps),
-            self.params.step_2.smoothed.next_step(steps),
-            self.params.step_3.smoothed.next_step(steps),
-            self.params.step_4.smoothed.next_step(steps),
-            self.params.step_5.smoothed.next_step(steps),
-            self.params.step_6.smoothed.next_step(steps),
-            self.params.step_7.smoothed.next_step(steps),
-            self.params.step_8.smoothed.next_step(steps),
-        ];
 
         // The output channels are looked up once, so that the sample loop
         // doesn't have to iterate over all of them for every single sample.
@@ -870,29 +850,17 @@ impl Plugin for Sushi {
                     arp_gate,
                     arp_pattern,
                     arp_octaves,
-                    sample_rate,
+                    arp_swing,
+                    arp_length,
+                    arp_ratchet,
                 );
                 if tick.release {
                     self.release_arp_voice();
                 }
                 if let Some((key, velocity)) = tick.trigger {
+                    self.arp_position
+                        .store(self.arp.position() % 16, Ordering::Relaxed);
                     self.start_arp_voice(context, sample_idx as u32, key, velocity, &settings);
-                }
-            }
-
-            // The step sequencer.
-            let mut step_value = 0.0;
-            if step_on {
-                let (value, index) = self.step.tick(
-                    beats_per_sample,
-                    step_division,
-                    &step_values,
-                    step_smooth,
-                    sample_rate,
-                );
-                step_value = value * step_amount;
-                if self.step_index.load(Ordering::Relaxed) != index {
-                    self.step_index.store(index, Ordering::Relaxed);
                 }
             }
 
@@ -926,7 +894,7 @@ impl Plugin for Sushi {
                 }
 
                 let (voice_left, voice_right) =
-                    voice.next_sample(&settings, cutoff, lfo1, lfo2, step_value, sample_rate);
+                    voice.next_sample(&settings, cutoff, lfo1, lfo2, sample_rate);
                 left += voice_left;
                 right += voice_right;
             }

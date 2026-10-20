@@ -1,396 +1,446 @@
 //! The factory presets of Sushi and the mutation of the current sound.
 //!
-//! A preset is a list of parameter values that is written on top of the
-//! defaults of the synthesizer. The mutation takes the current sound and
-//! moves a handful of musical parameters a little bit, so that new sounds
-//! can be found without a piano keyboard.
+//! A preset is a patch in the same JSON format that the patch files use, so
+//! that a preset is read with exactly the same code as a patch that the user
+//! saved. The factory defaults are written first, so that a preset always
+//! sounds the same, no matter what was played before it.
 
 use nice_plug::prelude::*;
+use nice_plug::tracing::warn;
+use serde_json::Value;
 
-use crate::params::{
-    ArpPattern, Character, FilterMode, LfoTarget, LfoWaveform, NoteDiv, PolyMode, StepDest,
-    SushiParams, Waveform,
-};
-
-/// A value that a preset can write into a parameter.
-#[derive(Clone, Copy, Debug)]
-pub enum Value {
-    /// A floating point parameter.
-    Float(f32),
-    /// A parameter that is shown in decibels but stored as a gain.
-    Decibels(f32),
-    /// An integer parameter.
-    Int(i32),
-    /// A boolean parameter.
-    Bool(bool),
-    /// The waveform of an oscillator.
-    Wave(Waveform),
-    /// The mode of the filter.
-    Filter(FilterMode),
-    /// The waveform of an LFO.
-    LfoWave(LfoWaveform),
-    /// The destination of an LFO.
-    LfoTarget(LfoTarget),
-    /// The way the notes are turned into voices.
-    Poly(PolyMode),
-    /// The character of the sound.
-    Character(Character),
-    /// The pattern of the arpeggiator.
-    ArpPattern(ArpPattern),
-    /// The note division of the arpeggiator or of the sequencer.
-    NoteDiv(NoteDiv),
-    /// The destination of the step sequencer.
-    StepDest(StepDest),
-}
-
-/// Defines the table of all the parameters of the synthesizer.
-///
-/// Every parameter is listed exactly once, with the kind of value it takes
-/// and the conversion of that value into the plain value of the parameter.
-macro_rules! parameters {
-    ($( $id:literal => $field:ident : $kind:ident $convert:expr ),* $(,)?) => {
-        /// Writes the default value of every parameter into the host.
-        pub fn apply_defaults(params: &SushiParams, setter: &ParamSetter) {
-            $(
-                setter.set_parameter(&params.$field, params.$field.default_plain_value());
-            )*
-        }
-
-        /// Writes a single value into the parameter with the given id.
-        ///
-        /// Values that don't fit the parameter are ignored.
-        fn set_value(params: &SushiParams, setter: &ParamSetter, id: &str, value: Value) {
-            match (id, value) {
-                $(
-                    ($id, Value::$kind(raw)) => {
-                        setter.set_parameter(&params.$field, ($convert)(raw));
-                    }
-                )*
-                _ => {}
-            }
-        }
-    };
-}
-
-parameters! {
-    "osc1_wave" => osc1_wave: Wave(|value: Waveform| value),
-    "osc1_octave" => osc1_octave: Int(|value: i32| value),
-    "osc1_semi" => osc1_semi: Int(|value: i32| value),
-    "osc1_fine" => osc1_fine: Float(|value: f32| value),
-    "osc1_pw" => osc1_pw: Float(|value: f32| value),
-    "osc1_level" => osc1_level: Float(|value: f32| value),
-    "osc2_wave" => osc2_wave: Wave(|value: Waveform| value),
-    "osc2_octave" => osc2_octave: Int(|value: i32| value),
-    "osc2_semi" => osc2_semi: Int(|value: i32| value),
-    "osc2_fine" => osc2_fine: Float(|value: f32| value),
-    "osc2_pw" => osc2_pw: Float(|value: f32| value),
-    "osc2_level" => osc2_level: Float(|value: f32| value),
-    "noise_level" => noise_level: Float(|value: f32| value),
-    "unison" => unison: Int(|value: i32| value),
-    "detune" => detune: Float(|value: f32| value),
-    "spread" => spread: Float(|value: f32| value),
-    "poly_mode" => poly_mode: Poly(|value: PolyMode| value),
-    "glide" => glide: Float(|value: f32| value),
-    "volume" => volume: Decibels(|value: f32| util::db_to_gain(value)),
-    "filter_mode" => filter_mode: Filter(|value: FilterMode| value),
-    "cutoff" => cutoff: Float(|value: f32| value),
-    "resonance" => resonance: Float(|value: f32| value),
-    "filter_env_amount" => filter_env_amount: Float(|value: f32| value),
-    "filter_keytrack" => filter_keytrack: Float(|value: f32| value),
-    "filter_drive" => filter_drive: Float(|value: f32| value),
-    "fe_attack" => fe_attack: Float(|value: f32| value),
-    "fe_decay" => fe_decay: Float(|value: f32| value),
-    "fe_sustain" => fe_sustain: Float(|value: f32| value),
-    "fe_release" => fe_release: Float(|value: f32| value),
-    "ae_attack" => ae_attack: Float(|value: f32| value),
-    "ae_decay" => ae_decay: Float(|value: f32| value),
-    "ae_sustain" => ae_sustain: Float(|value: f32| value),
-    "ae_release" => ae_release: Float(|value: f32| value),
-    "lfo1_wave" => lfo1_wave: LfoWave(|value: LfoWaveform| value),
-    "lfo1_rate" => lfo1_rate: Float(|value: f32| value),
-    "lfo1_amount" => lfo1_amount: Float(|value: f32| value),
-    "lfo1_target" => lfo1_target: LfoTarget(|value: LfoTarget| value),
-    "lfo2_wave" => lfo2_wave: LfoWave(|value: LfoWaveform| value),
-    "lfo2_rate" => lfo2_rate: Float(|value: f32| value),
-    "lfo2_amount" => lfo2_amount: Float(|value: f32| value),
-    "lfo2_target" => lfo2_target: LfoTarget(|value: LfoTarget| value),
-    "chorus_mix" => chorus_mix: Float(|value: f32| value),
-    "chorus_rate" => chorus_rate: Float(|value: f32| value),
-    "chorus_depth" => chorus_depth: Float(|value: f32| value),
-    "delay_time" => delay_time: Float(|value: f32| value),
-    "delay_feedback" => delay_feedback: Float(|value: f32| value),
-    "delay_mix" => delay_mix: Float(|value: f32| value),
-    "reverb_mix" => reverb_mix: Float(|value: f32| value),
-    "reverb_decay" => reverb_decay: Float(|value: f32| value),
-    "macro_bright" => macro_bright: Float(|value: f32| value),
-    "macro_motion" => macro_motion: Float(|value: f32| value),
-    "macro_space" => macro_space: Float(|value: f32| value),
-    "character" => character: Character(|value: Character| value),
-    "drift" => drift: Float(|value: f32| value),
-    "velocity" => velocity: Float(|value: f32| value),
-    "tone" => tone: Float(|value: f32| value),
-    "arp_on" => arp_on: Bool(|value: bool| value),
-    "arp_pattern" => arp_pattern: ArpPattern(|value: ArpPattern| value),
-    "arp_rate" => arp_rate: NoteDiv(|value: NoteDiv| value),
-    "arp_octaves" => arp_octaves: Int(|value: i32| value),
-    "arp_gate" => arp_gate: Float(|value: f32| value),
-    "arp_latch" => arp_latch: Bool(|value: bool| value),
-    "step_on" => step_on: Bool(|value: bool| value),
-    "step_rate" => step_rate: NoteDiv(|value: NoteDiv| value),
-    "step_dest" => step_dest: StepDest(|value: StepDest| value),
-    "step_amount" => step_amount: Float(|value: f32| value),
-    "step_smooth" => step_smooth: Bool(|value: bool| value),
-    "step_1" => step_1: Float(|value: f32| value),
-    "step_2" => step_2: Float(|value: f32| value),
-    "step_3" => step_3: Float(|value: f32| value),
-    "step_4" => step_4: Float(|value: f32| value),
-    "step_5" => step_5: Float(|value: f32| value),
-    "step_6" => step_6: Float(|value: f32| value),
-    "step_7" => step_7: Float(|value: f32| value),
-    "step_8" => step_8: Float(|value: f32| value),
-}
+use crate::params::SushiParams;
+use crate::patch;
 
 /// A factory preset of the synthesizer.
 pub struct Preset {
     /// The name of the preset, as it is shown in the display of the editor.
     pub name: &'static str,
-    /// The values that differ from the defaults of the synthesizer.
-    pub values: &'static [(&'static str, Value)],
+    /// The patch of the preset, in the JSON format of the patch files.
+    pub json: &'static str,
 }
 
 /// The factory presets of the synthesizer.
 pub const PRESETS: &[Preset] = &[
     Preset {
         name: "INIT PAD",
-        values: &[
-            ("osc2_wave", Value::Wave(Waveform::Triangle)),
-            ("osc2_octave", Value::Int(-1)),
-            ("osc2_semi", Value::Int(7)),
-            ("cutoff", Value::Float(900.0)),
-            ("resonance", Value::Float(0.15)),
-            ("filter_env_amount", Value::Float(0.25)),
-            ("fe_attack", Value::Float(300.0)),
-            ("fe_decay", Value::Float(900.0)),
-            ("fe_sustain", Value::Float(0.4)),
-            ("fe_release", Value::Float(900.0)),
-            ("ae_attack", Value::Float(200.0)),
-            ("ae_decay", Value::Float(600.0)),
-            ("ae_sustain", Value::Float(0.8)),
-            ("ae_release", Value::Float(700.0)),
-            ("lfo1_rate", Value::Float(0.3)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Filter)),
-            ("unison", Value::Int(2)),
-            ("spread", Value::Float(0.6)),
-            ("chorus_mix", Value::Float(0.3)),
-            ("reverb_mix", Value::Float(0.25)),
-            ("volume", Value::Decibels(-4.0)),
-        ],
+        json: r#"{
+            "osc2_wave": "Triangle",
+            "osc2_octave": -1,
+            "osc2_semi": 7,
+            "cutoff": 900.0,
+            "resonance": 0.15,
+            "filter_env_amount": 0.25,
+            "fe_attack": 300.0,
+            "fe_decay": 900.0,
+            "fe_sustain": 0.4,
+            "fe_release": 900.0,
+            "ae_attack": 200.0,
+            "ae_decay": 600.0,
+            "ae_sustain": 0.8,
+            "ae_release": 700.0,
+            "lfo1_rate": 0.3,
+            "lfo1_target": "Filter",
+            "unison": 2,
+            "spread": 0.6,
+            "chorus_mix": 0.3,
+            "reverb_mix": 0.25,
+            "volume": 0.63
+        }"#,
     },
     Preset {
         name: "GLASS KEYS",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Sine)),
-            ("osc2_wave", Value::Wave(Waveform::Triangle)),
-            ("osc2_octave", Value::Int(1)),
-            ("cutoff", Value::Float(4_200.0)),
-            ("resonance", Value::Float(0.1)),
-            ("filter_env_amount", Value::Float(0.15)),
-            ("fe_attack", Value::Float(2.0)),
-            ("fe_decay", Value::Float(1_200.0)),
-            ("fe_sustain", Value::Float(0.1)),
-            ("fe_release", Value::Float(1_200.0)),
-            ("ae_attack", Value::Float(3.0)),
-            ("ae_decay", Value::Float(1_500.0)),
-            ("ae_sustain", Value::Float(0.05)),
-            ("ae_release", Value::Float(1_500.0)),
-            ("lfo2_rate", Value::Float(4.5)),
-            ("lfo2_target", Value::LfoTarget(LfoTarget::Pitch)),
-            ("glide", Value::Float(60.0)),
-            ("delay_mix", Value::Float(0.25)),
-            ("delay_feedback", Value::Float(0.4)),
-            ("reverb_mix", Value::Float(0.3)),
-            ("velocity", Value::Float(0.7)),
-        ],
+        json: r#"{
+            "osc1_wave": "Pulse",
+            "osc1_pw": 0.4,
+            "osc2_wave": "Triangle",
+            "osc2_octave": 1,
+            "osc2_level": 0.35,
+            "cutoff": 4200.0,
+            "resonance": 0.1,
+            "filter_env_amount": 0.15,
+            "fe_attack": 2.0,
+            "fe_decay": 900.0,
+            "fe_sustain": 0.1,
+            "fe_release": 900.0,
+            "ae_attack": 3.0,
+            "ae_decay": 1200.0,
+            "ae_sustain": 0.15,
+            "ae_release": 1000.0,
+            "chorus_mix": 0.3,
+            "reverb_mix": 0.3,
+            "velocity": 0.7,
+            "macro_bright": 0.65,
+            "volume": 0.63
+        }"#,
     },
     Preset {
-        name: "GRIT BASS",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Saw)),
-            ("osc2_wave", Value::Wave(Waveform::Square)),
-            ("osc2_octave", Value::Int(-1)),
-            ("cutoff", Value::Float(420.0)),
-            ("resonance", Value::Float(0.55)),
-            ("filter_drive", Value::Float(0.4)),
-            ("filter_env_amount", Value::Float(0.6)),
-            ("fe_attack", Value::Float(2.0)),
-            ("fe_decay", Value::Float(180.0)),
-            ("fe_sustain", Value::Float(0.15)),
-            ("fe_release", Value::Float(200.0)),
-            ("ae_attack", Value::Float(2.0)),
-            ("ae_decay", Value::Float(300.0)),
-            ("ae_sustain", Value::Float(0.6)),
-            ("ae_release", Value::Float(200.0)),
-            ("poly_mode", Value::Poly(PolyMode::Mono)),
-            ("unison", Value::Int(3)),
-            ("detune", Value::Float(25.0)),
-            ("character", Value::Character(Character::Grit)),
-            ("tone", Value::Float(0.3)),
-        ],
+        name: "JUNO PAD",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Saw",
+            "osc2_octave": -1,
+            "osc2_level": 0.5,
+            "unison": 2,
+            "detune": 10.0,
+            "spread": 0.4,
+            "cutoff": 1800.0,
+            "resonance": 0.15,
+            "filter_env_amount": 0.2,
+            "fe_attack": 200.0,
+            "fe_decay": 800.0,
+            "fe_sustain": 0.35,
+            "fe_release": 600.0,
+            "ae_attack": 250.0,
+            "ae_decay": 900.0,
+            "ae_sustain": 0.85,
+            "ae_release": 900.0,
+            "chorus_mix": 0.55,
+            "chorus_depth": 0.6,
+            "reverb_mix": 0.35,
+            "reverb_decay": 0.7,
+            "character": "Silk",
+            "drift": 0.2,
+            "volume": 0.63
+        }"#,
     },
     Preset {
-        name: "PLUCK",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Square)),
-            ("osc2_wave", Value::Wave(Waveform::Saw)),
-            ("osc2_octave", Value::Int(1)),
-            ("cutoff", Value::Float(1_800.0)),
-            ("resonance", Value::Float(0.35)),
-            ("filter_env_amount", Value::Float(0.7)),
-            ("fe_attack", Value::Float(1.0)),
-            ("fe_decay", Value::Float(220.0)),
-            ("fe_sustain", Value::Float(0.0)),
-            ("fe_release", Value::Float(250.0)),
-            ("ae_attack", Value::Float(1.0)),
-            ("ae_decay", Value::Float(260.0)),
-            ("ae_sustain", Value::Float(0.0)),
-            ("ae_release", Value::Float(300.0)),
-            ("lfo1_rate", Value::Float(6.0)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Filter)),
-            ("delay_mix", Value::Float(0.3)),
-            ("delay_feedback", Value::Float(0.35)),
-            ("reverb_mix", Value::Float(0.15)),
-            ("macro_bright", Value::Float(0.55)),
-        ],
+        name: "PROPHET BRASS",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Saw",
+            "osc2_fine": 8.0,
+            "osc2_level": 0.5,
+            "unison": 2,
+            "detune": 14.0,
+            "spread": 0.35,
+            "cutoff": 1200.0,
+            "resonance": 0.25,
+            "filter_env_amount": 0.55,
+            "filter_drive": 0.35,
+            "fe_attack": 5.0,
+            "fe_decay": 400.0,
+            "fe_sustain": 0.4,
+            "fe_release": 200.0,
+            "ae_attack": 8.0,
+            "ae_decay": 400.0,
+            "ae_sustain": 0.8,
+            "ae_release": 250.0,
+            "poly_mode": "Legato",
+            "glide": 20.0,
+            "character": "Grit",
+            "tone": 0.1,
+            "reverb_mix": 0.15,
+            "volume": 0.63
+        }"#,
     },
     Preset {
-        name: "WIDE BRASS",
-        values: &[
-            ("osc2_wave", Value::Wave(Waveform::Saw)),
-            ("osc2_octave", Value::Int(1)),
-            ("osc2_semi", Value::Int(7)),
-            ("osc2_level", Value::Float(0.5)),
-            ("cutoff", Value::Float(1_200.0)),
-            ("resonance", Value::Float(0.25)),
-            ("filter_env_amount", Value::Float(0.3)),
-            ("ae_attack", Value::Float(60.0)),
-            ("ae_decay", Value::Float(400.0)),
-            ("ae_sustain", Value::Float(0.85)),
-            ("ae_release", Value::Float(400.0)),
-            ("lfo1_rate", Value::Float(5.2)),
-            ("lfo1_amount", Value::Float(0.12)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Pitch)),
-            ("poly_mode", Value::Poly(PolyMode::Legato)),
-            ("glide", Value::Float(80.0)),
-            ("unison", Value::Int(4)),
-            ("detune", Value::Float(35.0)),
-            ("spread", Value::Float(0.9)),
-            ("chorus_mix", Value::Float(0.5)),
-            ("chorus_depth", Value::Float(0.7)),
-        ],
+        name: "JUPITER STRINGS",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Saw",
+            "osc2_fine": -6.0,
+            "osc2_level": 0.5,
+            "unison": 3,
+            "detune": 18.0,
+            "spread": 0.85,
+            "cutoff": 2600.0,
+            "resonance": 0.1,
+            "filter_env_amount": 0.15,
+            "fe_attack": 300.0,
+            "fe_sustain": 0.6,
+            "fe_release": 800.0,
+            "ae_attack": 400.0,
+            "ae_decay": 1200.0,
+            "ae_sustain": 0.9,
+            "ae_release": 1500.0,
+            "chorus_mix": 0.6,
+            "chorus_depth": 0.7,
+            "reverb_mix": 0.4,
+            "reverb_decay": 0.75,
+            "macro_space": 0.7,
+            "drift": 0.2,
+            "tone": -0.1,
+            "volume": 0.63
+        }"#,
     },
     Preset {
-        name: "STEP MOTION",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Saw)),
-            ("osc2_wave", Value::Wave(Waveform::Square)),
-            ("cutoff", Value::Float(1_500.0)),
-            ("resonance", Value::Float(0.3)),
-            ("filter_env_amount", Value::Float(0.35)),
-            ("fe_decay", Value::Float(250.0)),
-            ("fe_sustain", Value::Float(0.2)),
-            ("step_on", Value::Bool(true)),
-            ("step_rate", Value::NoteDiv(NoteDiv::Sixteenth)),
-            ("step_dest", Value::StepDest(StepDest::Filter)),
-            ("step_amount", Value::Float(0.6)),
-            ("step_smooth", Value::Bool(false)),
-            ("step_1", Value::Float(0.9)),
-            ("step_2", Value::Float(0.2)),
-            ("step_3", Value::Float(0.7)),
-            ("step_4", Value::Float(0.1)),
-            ("step_5", Value::Float(0.8)),
-            ("step_6", Value::Float(0.3)),
-            ("step_7", Value::Float(0.6)),
-            ("step_8", Value::Float(0.4)),
-            ("filter_mode", Value::Filter(FilterMode::Bandpass)),
-            ("lfo1_wave", Value::LfoWave(LfoWaveform::SampleHold)),
-            ("lfo1_rate", Value::Float(0.8)),
-            ("lfo1_amount", Value::Float(0.15)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Pitch)),
-            ("macro_motion", Value::Float(0.7)),
-        ],
-    },
-    Preset {
-        name: "ARP TOY",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Pulse)),
-            ("osc2_wave", Value::Wave(Waveform::Square)),
-            ("osc2_octave", Value::Int(1)),
-            ("osc1_pw", Value::Float(0.35)),
-            ("cutoff", Value::Float(2_200.0)),
-            ("resonance", Value::Float(0.4)),
-            ("filter_env_amount", Value::Float(0.5)),
-            ("fe_decay", Value::Float(300.0)),
-            ("fe_sustain", Value::Float(0.25)),
-            ("ae_attack", Value::Float(2.0)),
-            ("ae_decay", Value::Float(400.0)),
-            ("ae_sustain", Value::Float(0.5)),
-            ("arp_on", Value::Bool(true)),
-            ("arp_pattern", Value::ArpPattern(ArpPattern::Up)),
-            ("arp_rate", Value::NoteDiv(NoteDiv::Sixteenth)),
-            ("arp_octaves", Value::Int(2)),
-            ("arp_gate", Value::Float(45.0)),
-            ("lfo1_wave", Value::LfoWave(LfoWaveform::Triangle)),
-            ("lfo1_rate", Value::Float(3.0)),
-            ("lfo1_amount", Value::Float(0.1)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Pitch)),
-            ("delay_mix", Value::Float(0.35)),
-            ("reverb_mix", Value::Float(0.3)),
-            ("drift", Value::Float(0.25)),
-            ("macro_motion", Value::Float(0.6)),
-        ],
+        name: "VANGELIS PAD",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Square",
+            "osc2_octave": -1,
+            "osc2_level": 0.35,
+            "unison": 4,
+            "detune": 25.0,
+            "spread": 0.9,
+            "cutoff": 900.0,
+            "resonance": 0.12,
+            "filter_env_amount": 0.2,
+            "fe_attack": 1200.0,
+            "fe_decay": 2000.0,
+            "fe_sustain": 0.5,
+            "fe_release": 2500.0,
+            "ae_attack": 1500.0,
+            "ae_decay": 2000.0,
+            "ae_sustain": 0.9,
+            "ae_release": 3000.0,
+            "chorus_mix": 0.5,
+            "reverb_mix": 0.7,
+            "reverb_decay": 0.85,
+            "macro_space": 0.85,
+            "drift": 0.25,
+            "tone": -0.2,
+            "volume": 0.63
+        }"#,
     },
     Preset {
         name: "SILK STRINGS",
-        values: &[
-            ("osc1_wave", Value::Wave(Waveform::Saw)),
-            ("osc2_wave", Value::Wave(Waveform::Triangle)),
-            ("osc2_semi", Value::Int(5)),
-            ("osc2_level", Value::Float(0.45)),
-            ("cutoff", Value::Float(2_400.0)),
-            ("resonance", Value::Float(0.1)),
-            ("filter_env_amount", Value::Float(0.15)),
-            ("fe_attack", Value::Float(400.0)),
-            ("fe_sustain", Value::Float(0.7)),
-            ("ae_attack", Value::Float(400.0)),
-            ("ae_decay", Value::Float(900.0)),
-            ("ae_sustain", Value::Float(0.9)),
-            ("ae_release", Value::Float(1_200.0)),
-            ("lfo1_rate", Value::Float(0.2)),
-            ("lfo1_amount", Value::Float(0.06)),
-            ("lfo1_target", Value::LfoTarget(LfoTarget::Pitch)),
-            ("unison", Value::Int(3)),
-            ("detune", Value::Float(18.0)),
-            ("spread", Value::Float(0.8)),
-            ("chorus_mix", Value::Float(0.6)),
-            ("reverb_mix", Value::Float(0.45)),
-            ("tone", Value::Float(-0.15)),
-        ],
+        json: r#"{
+            "osc1_wave": "Triangle",
+            "osc2_wave": "Pulse",
+            "osc2_pw": 0.45,
+            "osc2_semi": 5,
+            "osc2_level": 0.4,
+            "unison": 3,
+            "detune": 14.0,
+            "spread": 0.8,
+            "cutoff": 2400.0,
+            "resonance": 0.08,
+            "filter_env_amount": 0.12,
+            "fe_attack": 400.0,
+            "fe_sustain": 0.7,
+            "fe_release": 900.0,
+            "ae_attack": 400.0,
+            "ae_decay": 900.0,
+            "ae_sustain": 0.9,
+            "ae_release": 1200.0,
+            "chorus_mix": 0.6,
+            "reverb_mix": 0.45,
+            "tone": -0.15,
+            "character": "Silk",
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "WIDE BRASS",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Saw",
+            "osc2_semi": 7,
+            "osc2_level": 0.5,
+            "unison": 4,
+            "detune": 30.0,
+            "spread": 0.85,
+            "cutoff": 1200.0,
+            "resonance": 0.25,
+            "filter_env_amount": 0.35,
+            "filter_drive": 0.25,
+            "fe_attack": 30.0,
+            "fe_decay": 600.0,
+            "fe_sustain": 0.5,
+            "fe_release": 300.0,
+            "ae_attack": 60.0,
+            "ae_decay": 400.0,
+            "ae_sustain": 0.85,
+            "ae_release": 400.0,
+            "poly_mode": "Legato",
+            "glide": 80.0,
+            "chorus_mix": 0.4,
+            "chorus_depth": 0.7,
+            "tone": 0.15,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "MOOG BASS",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Square",
+            "osc2_octave": -1,
+            "osc2_level": 0.45,
+            "poly_mode": "Mono",
+            "glide": 40.0,
+            "cutoff": 500.0,
+            "resonance": 0.45,
+            "filter_env_amount": 0.5,
+            "filter_drive": 0.4,
+            "fe_attack": 3.0,
+            "fe_decay": 250.0,
+            "fe_sustain": 0.2,
+            "fe_release": 200.0,
+            "ae_attack": 3.0,
+            "ae_decay": 400.0,
+            "ae_sustain": 0.7,
+            "ae_release": 200.0,
+            "character": "Grit",
+            "tone": 0.25,
+            "detune": 8.0,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "ACID LINE",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Saw",
+            "osc2_level": 0.0,
+            "poly_mode": "Legato",
+            "glide": 120.0,
+            "cutoff": 300.0,
+            "resonance": 0.75,
+            "filter_env_amount": 0.75,
+            "filter_drive": 0.3,
+            "fe_attack": 2.0,
+            "fe_decay": 180.0,
+            "fe_sustain": 0.1,
+            "fe_release": 150.0,
+            "ae_attack": 2.0,
+            "ae_decay": 500.0,
+            "ae_sustain": 0.7,
+            "ae_release": 200.0,
+            "character": "Grit",
+            "tone": 0.2,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "GRIT BASS",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Square",
+            "osc2_octave": -1,
+            "cutoff": 420.0,
+            "resonance": 0.55,
+            "filter_drive": 0.4,
+            "filter_env_amount": 0.6,
+            "fe_attack": 2.0,
+            "fe_decay": 180.0,
+            "fe_sustain": 0.15,
+            "fe_release": 200.0,
+            "ae_attack": 2.0,
+            "ae_decay": 300.0,
+            "ae_sustain": 0.6,
+            "ae_release": 200.0,
+            "poly_mode": "Mono",
+            "unison": 3,
+            "detune": 25.0,
+            "character": "Grit",
+            "tone": 0.3,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "PLUCK",
+        json: r#"{
+            "osc1_wave": "Square",
+            "osc2_wave": "Saw",
+            "osc2_octave": 1,
+            "osc2_level": 0.35,
+            "cutoff": 1800.0,
+            "resonance": 0.35,
+            "filter_env_amount": 0.7,
+            "fe_attack": 1.0,
+            "fe_decay": 220.0,
+            "fe_sustain": 0.0,
+            "fe_release": 250.0,
+            "ae_attack": 1.0,
+            "ae_decay": 260.0,
+            "ae_sustain": 0.0,
+            "ae_release": 300.0,
+            "delay_mix": 0.3,
+            "delay_feedback": 0.35,
+            "reverb_mix": 0.15,
+            "macro_bright": 0.55,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "MOTION PAD",
+        json: r#"{
+            "osc1_wave": "Saw",
+            "osc2_wave": "Square",
+            "osc2_level": 0.35,
+            "cutoff": 1500.0,
+            "resonance": 0.3,
+            "filter_env_amount": 0.35,
+            "filter_mode": "Bandpass",
+            "fe_decay": 250.0,
+            "fe_sustain": 0.2,
+            "ae_attack": 300.0,
+            "ae_release": 900.0,
+            "lfo1_wave": "S&H",
+            "lfo1_rate": 0.8,
+            "lfo1_amount": 0.15,
+            "lfo1_target": "Pitch",
+            "lfo2_wave": "Triangle",
+            "lfo2_rate": 0.25,
+            "lfo2_amount": 0.2,
+            "lfo2_target": "Filter",
+            "chorus_mix": 0.45,
+            "reverb_mix": 0.4,
+            "drift": 0.3,
+            "macro_motion": 0.7,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "ARP TOY",
+        json: r#"{
+            "osc1_wave": "Pulse",
+            "osc1_pw": 0.35,
+            "osc2_wave": "Square",
+            "osc2_octave": 1,
+            "osc2_level": 0.35,
+            "cutoff": 2200.0,
+            "resonance": 0.4,
+            "filter_env_amount": 0.5,
+            "fe_decay": 300.0,
+            "fe_sustain": 0.25,
+            "ae_attack": 2.0,
+            "ae_decay": 400.0,
+            "ae_sustain": 0.5,
+            "arp_on": true,
+            "arp_pattern": "UpDown",
+            "arp_rate": "1/16",
+            "arp_octaves": 2,
+            "arp_gate": 45.0,
+            "arp_length": 6,
+            "arp_ratchet": 2,
+            "arp_swing": 15.0,
+            "lfo1_wave": "Triangle",
+            "lfo1_rate": 3.0,
+            "lfo1_amount": 0.1,
+            "lfo1_target": "Pitch",
+            "delay_mix": 0.35,
+            "reverb_mix": 0.3,
+            "drift": 0.25,
+            "macro_motion": 0.6,
+            "volume": 0.63
+        }"#,
     },
 ];
 
 /// Writes the preset with the given index into the host.
 ///
 /// The defaults of the synthesizer are written first, so that a preset always
-/// sounds the same, no matter what was played before it.
+/// sounds the same, no matter what was played before it. An index that does
+/// not exist is ignored.
 pub fn apply(params: &SushiParams, setter: &ParamSetter, index: usize) {
-    apply_defaults(params, setter);
-
     let Some(preset) = PRESETS.get(index) else {
         return;
     };
 
-    for (id, value) in preset.values {
-        set_value(params, setter, id, *value);
+    let document: Value = match serde_json::from_str(preset.json) {
+        Ok(document) => document,
+        Err(error) => {
+            warn!("the preset {} is broken: {error}", preset.name);
+            return;
+        }
+    };
+
+    if let Err(error) = patch::apply_json(params, setter, &document) {
+        warn!("the preset {} could not be applied: {error}", preset.name);
     }
 }
 
@@ -445,7 +495,7 @@ pub fn mutate(params: &SushiParams, setter: &ParamSetter, rng: &mut Rng) {
     let lfo2_rate = jitter_relative(rng, params.lfo2_rate.value(), 0.01, 40.0, 0.25);
     let lfo1_amount = jitter(rng, params.lfo1_amount.value(), 0.0, 1.0, 0.08);
     let lfo2_amount = jitter(rng, params.lfo2_amount.value(), 0.0, 1.0, 0.08);
-    let step_amount = jitter(rng, params.step_amount.value(), 0.0, 1.0, 0.1);
+    let arp_swing = jitter(rng, params.arp_swing.value(), 0.0, 75.0, 8.0);
     let bright = jitter(rng, params.macro_bright.value(), 0.0, 1.0, 0.08);
     let motion = jitter(rng, params.macro_motion.value(), 0.0, 1.0, 0.08);
     let space = jitter(rng, params.macro_space.value(), 0.0, 1.0, 0.08);
@@ -462,7 +512,7 @@ pub fn mutate(params: &SushiParams, setter: &ParamSetter, rng: &mut Rng) {
     setter.set_parameter(&params.lfo2_rate, lfo2_rate);
     setter.set_parameter(&params.lfo1_amount, lfo1_amount);
     setter.set_parameter(&params.lfo2_amount, lfo2_amount);
-    setter.set_parameter(&params.step_amount, step_amount);
+    setter.set_parameter(&params.arp_swing, arp_swing);
     setter.set_parameter(&params.macro_bright, bright);
     setter.set_parameter(&params.macro_motion, motion);
     setter.set_parameter(&params.macro_space, space);
@@ -475,46 +525,12 @@ pub fn mutate(params: &SushiParams, setter: &ParamSetter, rng: &mut Rng) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nice_plug::params::internals::ParamPtr;
-
-    use std::cell::Cell;
-
-    thread_local! {
-        /// The number of parameter values that were set.
-        static SETS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct Stub;
-
-    impl GuiContextInner for Stub {
-        fn plugin_api(&self) -> nice_plug::context::PluginApi {
-            unimplemented!()
-        }
-        unsafe fn raw_begin_set_parameter(&self, _param: ParamPtr) {}
-        unsafe fn raw_set_parameter_normalized(&self, param: ParamPtr, normalized: f32) {
-            SETS.with(|sets| sets.set(sets.get() + 1));
-            unsafe {
-                param._internal_set_normalized_value(normalized);
-            }
-        }
-        unsafe fn raw_end_set_parameter(&self, _param: ParamPtr) {}
-        fn get_state(&self) -> PluginState {
-            unimplemented!()
-        }
-        fn set_state(&self, _state: PluginState) {}
-        fn request_restart(&self) {}
-    }
-
-    /// A setter that writes into the parameters of a synthesizer.
-    fn setter() -> ParamSetter<'static> {
-        // The stub is leaked on purpose: the setter lives as long as the test.
-        let inner: &'static dyn GuiContextInner = Box::leak(Box::new(Stub));
-        ParamSetter::new(inner)
-    }
+    use crate::params::{ArpPattern, NoteDiv, Waveform};
+    use crate::patch::test_support::setter;
 
     #[test]
-    fn there_are_eight_presets_with_short_names() {
-        assert_eq!(PRESETS.len(), 8);
+    fn there_are_fourteen_presets_with_short_names() {
+        assert_eq!(PRESETS.len(), 14);
         for preset in PRESETS {
             assert!(!preset.name.is_empty());
             assert!(preset.name.len() <= 18, "{}", preset.name);
@@ -523,26 +539,45 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_written_into_the_host() {
-        let params = SushiParams::default();
-        let setter = setter();
-
-        SETS.with(|sets| sets.set(0));
-        apply_defaults(&params, &setter);
-
-        // Every one of the 75 parameters is written.
-        assert_eq!(SETS.with(|sets| sets.get()), 75);
+    fn every_preset_is_a_valid_patch() {
+        for preset in PRESETS {
+            let document: Value = serde_json::from_str(preset.json)
+                .unwrap_or_else(|error| panic!("the preset {} is broken: {error}", preset.name));
+            assert!(
+                document.is_object(),
+                "the preset {} is not an object",
+                preset.name
+            );
+        }
     }
 
     #[test]
-    fn a_preset_only_touches_known_parameters() {
-        for preset in PRESETS {
-            assert!(!preset.values.is_empty());
-            for (id, _) in preset.values {
-                assert!(!id.is_empty());
-                assert!(id.is_ascii());
-            }
+    fn every_preset_can_be_applied() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        for (index, preset) in PRESETS.iter().enumerate() {
+            apply(&params, &setter, index);
+            assert!(
+                params.cutoff.value() >= 20.0 && params.cutoff.value() <= 20_000.0,
+                "the cutoff of {} is out of range",
+                preset.name
+            );
+            assert!(
+                params.unison.value() >= 1 && params.unison.value() <= 4,
+                "the unison of {} is out of range",
+                preset.name
+            );
         }
+    }
+
+    #[test]
+    fn an_index_that_does_not_exist_is_ignored() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        apply(&params, &setter, PRESETS.len());
+        assert_eq!(params.cutoff.value(), 3_000.0);
     }
 
     #[test]
@@ -550,13 +585,24 @@ mod tests {
         let params = SushiParams::default();
         let setter = setter();
 
-        apply(&params, &setter, 1);
-        assert!((params.cutoff.value() - 4_200.0).abs() < 1.0);
-        assert_eq!(params.osc1_wave.value(), Waveform::Sine);
+        let arp_toy = PRESETS
+            .iter()
+            .position(|preset| preset.name == "ARP TOY")
+            .expect("the preset is missing");
+        apply(&params, &setter, arp_toy);
+        assert!(params.arp_on.value());
+        assert_eq!(params.arp_pattern.value(), ArpPattern::UpDown);
+        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
+        assert_eq!(params.arp_octaves.value(), 2);
 
-        apply(&params, &setter, 0);
-        assert!((params.cutoff.value() - 900.0).abs() < 1.0);
+        let init = PRESETS
+            .iter()
+            .position(|preset| preset.name == "INIT PAD")
+            .expect("the preset is missing");
+        apply(&params, &setter, init);
+        assert!(!params.arp_on.value());
         assert_eq!(params.osc1_wave.value(), Waveform::Saw);
+        assert!((params.cutoff.value() - 900.0).abs() < 1.0);
     }
 
     #[test]
