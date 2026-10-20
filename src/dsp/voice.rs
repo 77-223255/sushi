@@ -77,6 +77,12 @@ impl Default for OscSettings {
 pub struct VoiceSettings {
     pub osc1: OscSettings,
     pub osc2: OscSettings,
+    /// The level of the square sub oscillator, one octave below VCO 1.
+    pub sub_level: f32,
+    /// Whether VCO 1 is hard synced to VCO 2.
+    pub osc_sync: bool,
+    /// The phase modulation depth from VCO 2 into VCO 1.
+    pub fm_amount: f32,
     pub noise_level: f32,
     pub filter_mode: FilterMode,
     /// Whether the filter runs one or two cascaded stages.
@@ -130,6 +136,9 @@ impl Default for VoiceSettings {
                 semitones: -12.0,
                 ..OscSettings::default()
             },
+            sub_level: 0.0,
+            osc_sync: false,
+            fm_amount: 0.0,
             noise_level: 0.0,
             filter_mode: FilterMode::Lowpass,
             filter_slope: FilterSlope::TwoPole,
@@ -214,6 +223,8 @@ pub struct Voice {
 
     osc1_bank: [Oscillator; MAX_UNISON],
     osc2_bank: [Oscillator; MAX_UNISON],
+    sub_osc: Oscillator,
+    sub_delta: f32,
     noise: Noise,
 
     amp_env: Adsr,
@@ -300,6 +311,8 @@ impl Voice {
             unison: settings.unison.clamp(1, MAX_UNISON),
             osc1_bank: [Oscillator::new(); MAX_UNISON],
             osc2_bank: [Oscillator::new(); MAX_UNISON],
+            sub_osc: Oscillator::new(),
+            sub_delta: 0.0,
             noise: Noise::new(0x9E37_79B9 ^ internal_voice_id as u32),
             amp_env,
             filter_env,
@@ -436,30 +449,26 @@ impl Voice {
         let mut left = 0.0;
         let mut right = 0.0;
 
-        render_oscillator(
+        render_oscillators(
             &mut self.osc1_bank,
-            &mut left,
-            &mut right,
-            &settings.osc1,
-            &self.phase_delta1,
-            unison,
-            unison_gain,
-            settings.spread,
-            pulse_width_offset + self.modulation.pulse_width1,
-            self.modulation.pan,
-        );
-        render_oscillator(
             &mut self.osc2_bank,
             &mut left,
             &mut right,
-            &settings.osc2,
+            settings,
+            &self.phase_delta1,
             &self.phase_delta2,
             unison,
             unison_gain,
-            settings.spread,
+            pulse_width_offset + self.modulation.pulse_width1,
             pulse_width_offset + self.modulation.pulse_width2,
             self.modulation.pan,
         );
+
+        // The sub oscillator is one octave below VCO 1 and stays in the
+        // centre of the image.
+        let sub = self.sub_osc.next(self.sub_delta, Waveform::Square, 0.5) * settings.sub_level;
+        left += sub;
+        right += sub;
 
         // The noise generator is shared by both channels. It is kept at half
         // scale, so that it doesn't dominate the mix.
@@ -579,6 +588,7 @@ impl Voice {
             self.phase_delta1[index] = (frequency1 * ratio / sample_rate).clamp(0.0, 0.5);
             self.phase_delta2[index] = (frequency2 * ratio / sample_rate).clamp(0.0, 0.5);
         }
+        self.sub_delta = (frequency1 * 0.5 / sample_rate).clamp(0.0, 0.5);
     }
 
     /// Gives every unison oscillator a random starting phase, so that the
@@ -620,37 +630,60 @@ fn next_random(rng: &mut u32) -> f32 {
     ((x >> 8) as f32 / 16_777_215.0) * 2.0 - 1.0
 }
 
-/// Renders a single oscillator with its unison bank into the stereo output.
+/// The maximum phase offset of the FM path at full amount, in cycles.
+const FM_PHASE_RANGE: f32 = 0.5;
+
+/// Renders both oscillator banks into the stereo output. VCO 2 is rendered
+/// first so that it can act as the master for hard sync and phase modulation
+/// of VCO 1. The unison bank keeps its own equal-power pan.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn render_oscillator(
-    bank: &mut [Oscillator; MAX_UNISON],
+fn render_oscillators(
+    osc1_bank: &mut [Oscillator; MAX_UNISON],
+    osc2_bank: &mut [Oscillator; MAX_UNISON],
     left: &mut f32,
     right: &mut f32,
-    osc: &OscSettings,
-    phase_deltas: &[f32; MAX_UNISON],
+    settings: &VoiceSettings,
+    phase_deltas1: &[f32; MAX_UNISON],
+    phase_deltas2: &[f32; MAX_UNISON],
     unison: usize,
     unison_gain: f32,
-    spread: f32,
-    pulse_width_offset: f32,
+    pulse_width_offset1: f32,
+    pulse_width_offset2: f32,
     pan_offset: f32,
 ) {
-    let pulse_width = (osc.pulse_width + pulse_width_offset).clamp(0.05, 0.95);
+    let pulse_width1 = (settings.osc1.pulse_width + pulse_width_offset1).clamp(0.05, 0.95);
+    let pulse_width2 = (settings.osc2.pulse_width + pulse_width_offset2).clamp(0.05, 0.95);
 
-    for (index, oscillator) in bank.iter_mut().take(unison).enumerate() {
+    for index in 0..unison {
+        let (master, wrapped) = osc2_bank[index].next_modulated(
+            phase_deltas2[index],
+            settings.osc2.waveform,
+            pulse_width2,
+            0.0,
+        );
+        if settings.osc_sync && wrapped {
+            osc1_bank[index].set_phase(0.0);
+        }
+
+        let phase_offset = master * settings.fm_amount * FM_PHASE_RANGE;
+        let (slave, _) = osc1_bank[index].next_modulated(
+            phase_deltas1[index],
+            settings.osc1.waveform,
+            pulse_width1,
+            phase_offset,
+        );
+
         let offset = unison_offset(index, unison);
-        let sample = oscillator.next(phase_deltas[index], osc.waveform, pulse_width);
-
-        // Equal power panning. The pan of the modulation matrix moves the
-        // whole voice inside the image of the unison bank.
-        let pan = (offset * spread + pan_offset).clamp(-1.0, 1.0);
+        let pan = (offset * settings.spread + pan_offset).clamp(-1.0, 1.0);
         let angle = (pan + 1.0) * PI * 0.25;
         let gain_left = angle.cos();
         let gain_right = angle.sin();
 
-        let level = osc.level * unison_gain;
-        *left += sample * gain_left * level;
-        *right += sample * gain_right * level;
+        let sample =
+            slave * settings.osc1.level * unison_gain + master * settings.osc2.level * unison_gain;
+        *left += sample * gain_left;
+        *right += sample * gain_right;
     }
 }
 
@@ -1071,6 +1104,78 @@ mod tests {
             difference > 0.01,
             "the velocity did not change the sound (difference {difference})"
         );
+    }
+
+    #[test]
+    fn the_sub_oscillator_adds_a_lower_octave() {
+        fn level(sub_level: f32) -> f32 {
+            let settings = VoiceSettings {
+                sub_level,
+                ..plain_settings()
+            };
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, &settings);
+            let mut samples = Vec::new();
+            for _ in 0..2_048 {
+                let (left, _) = voice.next_sample(&settings, 20_000.0, 0.0, 0.0, SAMPLE_RATE);
+                samples.push(left);
+            }
+            rms(&samples)
+        }
+
+        let without = level(0.0);
+        let with = level(0.5);
+        assert!(
+            with > without * 1.05,
+            "the sub oscillator did not add energy: {with} vs {without}"
+        );
+    }
+
+    #[test]
+    fn the_fm_amount_changes_the_wave() {
+        fn samples(fm_amount: f32) -> Vec<f32> {
+            let settings = VoiceSettings {
+                fm_amount,
+                ..plain_settings()
+            };
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, &settings);
+            (0..2_048)
+                .map(|_| {
+                    let (left, _) = voice.next_sample(&settings, 20_000.0, 0.0, 0.0, SAMPLE_RATE);
+                    left
+                })
+                .collect()
+        }
+
+        let plain = samples(0.0);
+        let modulated = samples(0.8);
+        let difference: f32 = plain
+            .iter()
+            .zip(&modulated)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(difference > 1.0, "the FM path did not change the wave");
+    }
+
+    #[test]
+    fn hard_sync_changes_the_wave() {
+        fn samples(sync: bool) -> Vec<f32> {
+            let mut settings = plain_settings();
+            settings.osc_sync = sync;
+            settings.osc1.waveform = Waveform::Saw;
+            settings.osc2.semitones = 7.0;
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, &settings);
+            (0..2_048)
+                .map(|_| {
+                    let (left, _) = voice.next_sample(&settings, 20_000.0, 0.0, 0.0, SAMPLE_RATE);
+                    left
+                })
+                .collect()
+        }
+
+        let free = samples(false);
+        let synced = samples(true);
+        let difference: f32 = free.iter().zip(&synced).map(|(a, b)| (a - b).abs()).sum();
+        assert!(difference > 1.0, "hard sync did not change the wave");
     }
 
     #[test]

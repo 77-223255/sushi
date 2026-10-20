@@ -165,7 +165,7 @@ const ROW_HEIGHTS: [f32; 4] = [117.0, 117.0, 117.0, 117.0];
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
 /// VCF`. They are the proportions of the sections and are scaled with the
 /// zoom of the panel.
-const ROW_A_WIDTHS: [f32; 4] = [240.0, 184.0, 128.0, 356.0];
+const ROW_A_WIDTHS: [f32; 4] = [240.0, 192.0, 124.0, 352.0];
 /// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
 /// ENV | LFO / CLK`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
@@ -1096,7 +1096,7 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             0 => group(ui, rect, "VCO 1", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
                 Part::Body => {
-                    column_row_fixed(ui, "osc1", 4, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "osc1", 5, COLUMN_GAP, 43.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => {
@@ -1123,15 +1123,19 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                                 &p.osc1_fine,
                                 &Knob::plain(-100.0, 100.0, 0),
                             ),
+                            4 => ctx.float(ui, "sub_level", "Sub", &p.sub_level, &Knob::percent()),
                             _ => {}
                         }
                     })
                 }
             }),
             1 => group(ui, rect, "VCO 2", zoom, |ui, part| match part {
-                Part::Header => ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0),
+                Part::Header => {
+                    ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0);
+                    ctx.check(ui, "osc_sync", &p.osc_sync, "SYNC");
+                }
                 Part::Body => {
-                    column_row_fixed(ui, "osc2", 3, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "osc2", 4, COLUMN_GAP, 43.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.int(
@@ -1155,6 +1159,7 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                                 &p.osc2_fine,
                                 &Knob::plain(-100.0, 100.0, 0),
                             ),
+                            3 => ctx.float(ui, "fm_amount", "FM", &p.fm_amount, &Knob::percent()),
                             _ => {}
                         }
                     })
@@ -3646,13 +3651,13 @@ mod tests {
     /// The index of the slider of the cutoff in the list of the sliders of a
     /// frame. It is the first slider of the filter, the fourth group of the
     /// first row.
-    const CUTOFF_SLIDER: usize = 15;
+    const CUTOFF_SLIDER: usize = 17;
     /// The index of the slider of the master tune. It is the first slider of
     /// the panel.
     const TUNE_SLIDER: usize = 0;
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
-    const VOICES_SLIDER: usize = 40;
+    const VOICES_SLIDER: usize = 42;
 
     #[test]
     fn the_panel_has_the_expected_number_of_widgets() {
@@ -3660,9 +3665,9 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 54, "unexpected number of sliders");
+        assert_eq!(counts.sliders, 56, "unexpected number of sliders");
         assert_eq!(counts.popups, 11, "unexpected number of popups");
-        assert_eq!(counts.checks, 2, "unexpected number of check boxes");
+        assert_eq!(counts.checks, 3, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
 
@@ -3672,14 +3677,14 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The panel page has 68 parameters: 54 sliders, 11 choices, 2 switches
+        // The panel page has 71 parameters: 56 sliders, 11 choices, 3 switches
         // and one pair of buttons. The modulation matrix adds 24 more on its
         // own page, which has its own test.
         let continuous = counts.sliders;
-        assert_eq!(continuous, 54);
+        assert_eq!(continuous, 56);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            68
+            71
         );
     }
 
@@ -3688,7 +3693,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
+        assert_eq!(sliders.len(), 56, "unexpected number of sliders");
         // The cutoff slider is the first one of the fourth group of the
         // first row.
         let rect = sliders[CUTOFF_SLIDER];
@@ -4112,8 +4117,9 @@ mod tests {
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The first check box is the switch of the arpeggiator.
-        let rect = editor.state.check_rects[0];
+        // The check boxes are VCO 2 SYNC, then the ARP ON and LATCH switches.
+        // This test uses the first ARP switch.
+        let rect = editor.state.check_rects[1];
         let pos = rect.center();
 
         // A single click switches the check box on.
@@ -4264,7 +4270,7 @@ mod tests {
         assert!(!editor.state.mod_page);
         editor.state.counts = Counts::default();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(editor.state.counts.sliders, 54);
+        assert_eq!(editor.state.counts.sliders, 56);
         assert_eq!(editor.state.counts.popups, 11);
     }
 
@@ -5051,8 +5057,8 @@ mod tests {
         let expected = [
             ("VCO 1", 24.0, 72.0),
             ("VCO 2", 276.0, 72.0),
-            ("PULSE WIDTH", 472.0, 72.0),
-            ("SOURCE MIXER", 612.0, 72.0),
+            ("PULSE WIDTH", 480.0, 72.0),
+            ("SOURCE MIXER", 616.0, 72.0),
             ("VCF", 24.0, 205.0),
             ("MOD ENV", 384.0, 205.0),
             ("AMP ENV", 680.0, 205.0),
@@ -5439,7 +5445,7 @@ mod tests {
         // The default size.
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let small = slider_rects(&ctx, &output);
-        assert_eq!(small.len(), 54, "unexpected number of sliders");
+        assert_eq!(small.len(), 56, "unexpected number of sliders");
 
         // A bigger window: the sliders are taller and the sections are
         // wider.
@@ -5449,7 +5455,7 @@ mod tests {
             vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
         );
         let big = slider_rects(&ctx, &output);
-        assert_eq!(big.len(), 54, "unexpected number of sliders");
+        assert_eq!(big.len(), 56, "unexpected number of sliders");
 
         for (small, big) in small.iter().zip(big.iter()) {
             assert!(

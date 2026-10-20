@@ -255,6 +255,9 @@ pub struct SushiParams {
     #[id = "osc1_level"]
     pub osc1_level: FloatParam,
 
+    #[id = "sub_level"]
+    pub sub_level: FloatParam,
+
     // --- Oscillator 2 -----------------------------------------------------
     #[id = "osc2_wave"]
     pub osc2_wave: EnumParam<Waveform>,
@@ -273,6 +276,12 @@ pub struct SushiParams {
 
     #[id = "osc2_level"]
     pub osc2_level: FloatParam,
+
+    #[id = "osc_sync"]
+    pub osc_sync: BoolParam,
+
+    #[id = "fm_amount"]
+    pub fm_amount: FloatParam,
 
     // --- Mixer ------------------------------------------------------------
     #[id = "noise_level"]
@@ -559,6 +568,7 @@ impl Default for SushiParams {
             .with_string_to_value(formatters::s2v_f32_percentage())
             .with_unit("%"),
             osc1_level: percentage_param("OSC 1 Level", 0.6),
+            sub_level: percentage_param("Sub Level", 0.0),
 
             // --- Oscillator 2 -------------------------------------------------
             osc2_wave: EnumParam::new("OSC 2 Wave", Waveform::Saw),
@@ -586,6 +596,8 @@ impl Default for SushiParams {
             .with_string_to_value(formatters::s2v_f32_percentage())
             .with_unit("%"),
             osc2_level: percentage_param("OSC 2 Level", 0.4),
+            osc_sync: BoolParam::new("Osc Sync", false),
+            fm_amount: percentage_param("FM Amount", 0.0),
 
             // --- Mixer --------------------------------------------------------
             noise_level: percentage_param("Noise", 0.0),

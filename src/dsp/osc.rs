@@ -69,7 +69,23 @@ impl Oscillator {
     /// duty cycle of the pulse waveform.
     #[inline]
     pub fn next(&mut self, phase_delta: f32, waveform: Waveform, pulse_width: f32) -> f32 {
-        let phase = self.phase;
+        self.next_modulated(phase_delta, waveform, pulse_width, 0.0)
+            .0
+    }
+
+    /// Renders the next sample with a phase modulation offset, without moving
+    /// the oscillator's own phase. The returned flag is true when the
+    /// oscillator has just wrapped, which is what hard sync uses to reset a
+    /// slave oscillator.
+    #[inline]
+    pub fn next_modulated(
+        &mut self,
+        phase_delta: f32,
+        waveform: Waveform,
+        pulse_width: f32,
+        phase_offset: f32,
+    ) -> (f32, bool) {
+        let phase = (self.phase + phase_offset).rem_euclid(1.0);
         let dt = phase_delta.clamp(0.0, 0.5);
 
         let sample = match waveform {
@@ -93,11 +109,12 @@ impl Oscillator {
         };
 
         self.phase += dt;
-        if self.phase >= 1.0 {
+        let wrapped = self.phase >= 1.0;
+        if wrapped {
             self.phase -= 1.0;
         }
 
-        sample.clamp(-MAX_AMPLITUDE, MAX_AMPLITUDE)
+        (sample.clamp(-MAX_AMPLITUDE, MAX_AMPLITUDE), wrapped)
     }
 }
 

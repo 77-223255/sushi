@@ -216,6 +216,9 @@ impl Sushi {
         VoiceSettings {
             osc1,
             osc2,
+            sub_level: params.sub_level.value(),
+            osc_sync: params.osc_sync.value(),
+            fm_amount: params.fm_amount.value(),
             noise_level: params.noise_level.value(),
             filter_mode: params.filter_mode.value(),
             filter_slope: params.filter_slope.value(),
