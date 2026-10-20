@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Layout as EguiLayout, Margin, Pos2, Rect, Sense,
@@ -183,6 +183,9 @@ const LABEL_HEIGHT: f32 = 12.0;
 const VALUE_POPUP_WIDTH: f32 = 180.0;
 /// The diameter of the small lights.
 const LED_SIZE: f32 = 6.0;
+/// The arpeggiator has a single, slightly bigger light, because its color is
+/// the whole readout.
+const ARP_LED_SIZE: f32 = 10.0;
 /// The number of the lights of the voice meter.
 const VOICE_LEDS: usize = 16;
 /// The width of a light of the voice meter.
@@ -218,9 +221,6 @@ const NO_MATCHES: &str = "No matches";
 
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
-
-/// How long the light of the arpeggiator stays on.
-const ARP_LIGHT_TIME: Duration = Duration::from_millis(300);
 
 // --- The layout of the panel ------------------------------------------------
 
@@ -385,10 +385,6 @@ struct EditorState {
     rng: Rng,
     /// The number of arpeggiator triggers that was seen last.
     arp_counter: usize,
-    /// Whether the light of the arpeggiator is lit.
-    arp_light: bool,
-    /// When the light of the arpeggiator was switched on.
-    arp_light_at: Instant,
     /// The position of the arpeggiator in its pattern.
     arp_step: usize,
     /// The peak level of the samples of the last frame.
@@ -479,8 +475,6 @@ impl SushiEditor {
                 dirty: false,
                 rng: Rng::new(0x2545_F491),
                 arp_counter: 0,
-                arp_light: false,
-                arp_light_at: Instant::now(),
                 arp_step: 0,
                 activity: 0.0,
                 clipping: 0.0,
@@ -561,20 +555,15 @@ impl SushiEditor {
         }
     }
 
-    /// Switches the light of the arpeggiator on when the arpeggiator plays a
-    /// note.
-    fn update_arp_light(&mut self) {
+    /// Reads the step of the arpeggiator when it plays a note. The light uses
+    /// the position as its color, so it does not need a timer: every step
+    /// replaces the color, which stays visible at any tempo.
+    fn update_arp_position(&mut self) {
         let counter = self.arp_led.load(Ordering::Relaxed);
         if counter != self.state.arp_counter {
             self.state.arp_counter = counter;
-            self.state.arp_light = true;
-            self.state.arp_light_at = Instant::now();
-        } else if self.state.arp_light_at.elapsed() > ARP_LIGHT_TIME {
-            self.state.arp_light = false;
+            self.state.arp_step = self.arp_position.load(Ordering::Relaxed);
         }
-
-        // The position of the arpeggiator, for the small step readout.
-        self.state.arp_step = self.arp_position.load(Ordering::Relaxed);
     }
 }
 
@@ -609,7 +598,7 @@ impl SushiEditor {
         let setter = gui_ctx.param_setter();
 
         self.collect_scope();
-        self.update_arp_light();
+        self.update_arp_position();
         ui.ctx().request_repaint_after(Duration::from_millis(16));
 
         let full = ui.max_rect();
@@ -1214,18 +1203,17 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
                     ctx.popup(ui, "arp_pattern", &p.arp_pattern, 118.0);
                     ctx.popup(ui, "arp_rate", &p.arp_rate, 66.0);
-                    let (rect, _) = ui
-                        .allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE) * zoom, Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ARP_LED_SIZE, ARP_LED_SIZE) * zoom,
+                        Sense::hover(),
+                    );
                     led(
                         &ui.painter_at(rect),
                         rect.center(),
-                        LED_ON,
-                        p.arp_on.value() && ctx.state.arp_light,
+                        arp_light_color(ctx.state.arp_step),
+                        p.arp_on.value(),
                         zoom,
                     );
-                    let length = p.arp_length.value().clamp(1, 16) as usize;
-                    let step = (ctx.state.arp_step % length) + 1;
-                    text_label(ui, &format!("{:02}/{:02}", step, length), 9.0, zoom, MUTED);
                 }
                 Part::Body => {
                     column_row(ui, "arp", 5, COLUMN_GAP, zoom, |index, ui| {
@@ -2764,6 +2752,23 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
             color,
         );
     }
+}
+
+/// The color of the arpeggiator light for a step. The color is replaced on
+/// every step instead of switching the light off and on, so that a pattern at
+/// 1/32 still looks alive: it becomes a small, moving color cycle.
+fn arp_light_color(step: usize) -> Color32 {
+    const COLORS: [Color32; 8] = [
+        Color32::from_rgb(0x1F, 0xA8, 0x4A), // green
+        Color32::from_rgb(0x9B, 0xBF, 0x30), // lime
+        Color32::from_rgb(0xD4, 0xA0, 0x17), // amber
+        Color32::from_rgb(0xE0, 0x70, 0x2A), // orange
+        Color32::from_rgb(0xD2, 0x3B, 0x3B), // red
+        Color32::from_rgb(0xB8, 0x4F, 0xA8), // magenta
+        Color32::from_rgb(0x4A, 0x6F, 0xD4), // blue
+        Color32::from_rgb(0x1E, 0x9E, 0x9E), // cyan
+    ];
+    COLORS[step % COLORS.len()]
 }
 
 /// A small light: a flat square that is either lit or switched off.
