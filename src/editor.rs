@@ -2651,8 +2651,11 @@ fn group(
         rect.left_top() + egui::vec2(GROUP_PADDING + 8.0, 0.0) * zoom,
         egui::vec2(galley.size().x + 8.0 * zoom, TITLE_HEIGHT * zoom),
     );
+    // The vertical offset is already in device pixels: only the horizontal
+    // inset is a design measure. Multiplying both by the zoom again would
+    // push the title into the parameter labels at large scales.
     let title_pos =
-        strip.left_top() + egui::vec2(4.0, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5) * zoom;
+        strip.left_top() + egui::vec2(4.0 * zoom, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5);
     painter.galley(title_pos, galley, color);
 
     // The rule below the title spans the whole section; the first 26 design
@@ -4263,6 +4266,51 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert_eq!(editor.state.counts.sliders, 54);
         assert_eq!(editor.state.counts.popups, 11);
+    }
+
+    #[test]
+    fn no_two_texts_overlap_at_any_zoom() {
+        for percent in [100, 125, 150, 175, 200, 250, 300, 400] {
+            let zoom = percent as f32 / 100.0;
+            for mod_page in [false, true] {
+                let (ctx, mut editor, _params) = make_editor();
+                editor.state.mod_page = mod_page;
+                let output = run_frames(
+                    &ctx,
+                    &mut editor,
+                    vec![input_at(
+                        egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom,
+                        vec![],
+                    )],
+                );
+
+                let texts = text_shapes(&output);
+                let sliders = slider_rects(&ctx, &output);
+                for (text, pos, size) in &texts {
+                    let rect = Rect::from_min_size(*pos, *size);
+                    for slider in &sliders {
+                        let overlap = rect.intersect(*slider);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the text {text:?} is covered by a slider at {percent}% (mod={mod_page}): \
+{rect:?} / {slider:?}"
+                        );
+                    }
+                }
+                for (index, (first, first_pos, first_size)) in texts.iter().enumerate() {
+                    let first_rect = Rect::from_min_size(*first_pos, *first_size);
+                    for (second, second_pos, second_size) in texts.iter().skip(index + 1) {
+                        let second_rect = Rect::from_min_size(*second_pos, *second_size);
+                        let overlap = first_rect.intersect(second_rect);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the texts {first:?} and {second:?} overlap at {percent}% (mod={mod_page}): \
+{first_rect:?} / {second_rect:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
