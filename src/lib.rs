@@ -679,7 +679,11 @@ impl Plugin for Sushi {
         create_egui_editor(
             self.editor_state.clone(),
             self.repaint_notifier.clone(),
-            EguiNiceSettings::new(),
+            // The editor may be resized by the host. The panel reflows
+            // itself and shows a sad face when the window gets too small.
+            EguiNiceSettings::new().with_resize_hint(
+                ResizeHint::resizable().with_min_logical_size(LogicalSize::new(560.0, 360.0)),
+            ),
             SushiEditor::new(
                 self.params.clone(),
                 scope_rx,

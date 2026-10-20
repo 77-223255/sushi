@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Layout, Margin, Pos2, Rect, Sense, Stroke,
+    Align, Align2, Color32, CornerRadius, FontId, Layout as EguiLayout, Margin, Pos2, Rect, Sense,
+    Stroke,
 };
 use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
@@ -98,17 +99,13 @@ const TITLE_HEIGHT: f32 = 18.0;
 /// The horizontal gap between two parameter columns.
 const COLUMN_GAP: f32 = 4.0;
 
-/// The height of the first row of sections.
-const ROW_A_HEIGHT: f32 = 144.0;
-/// The height of the second row of sections.
-const ROW_B_HEIGHT: f32 = 136.0;
-/// The height of the third row of sections.
-const ROW_C_HEIGHT: f32 = 138.0;
-/// The height of the fourth row of sections.
-const ROW_D_HEIGHT: f32 = 126.0;
+/// The heights of the four rows of sections. They are the proportions of the
+/// rows and are scaled with the height of the window.
+const ROW_HEIGHTS: [f32; 4] = [144.0, 136.0, 138.0, 126.0];
 
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
-/// VCF`.
+/// VCF`. They are the proportions of the sections and are scaled with the
+/// width of the window.
 const ROW_A_WIDTHS: [f32; 4] = [200.0, 160.0, 280.0, 280.0];
 /// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
 /// ENV | LFO / CLK`.
@@ -117,6 +114,9 @@ const ROW_B_WIDTHS: [f32; 4] = [160.0, 180.0, 180.0, 400.0];
 const ROW_C_WIDTHS: [f32; 2] = [TRIPLE_GROUP_WIDTH, GROUP_WIDTH];
 /// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
 const ROW_D_WIDTHS: [f32; 3] = [DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH];
+
+/// The widths of the sections of every row.
+const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTHS, &ROW_D_WIDTHS];
 
 // --- Widget metrics ---------------------------------------------------------
 
@@ -173,30 +173,106 @@ const FOLDER_HINT: &str = "Press SET to apply the folder";
 /// The caption that is shown when the folder of the patches is still empty.
 const NO_PATCHES: &str = "No patches yet - use SAVE";
 
-/// The wanted height of the sliders of the first row. The sliders only ever
-/// use the height that is actually left in their column, so a row can never
-/// overflow, but these sizes fill their rows completely.
-const SLIDER_A: f32 = 90.0;
-/// The wanted height of the sliders of the envelopes of the second row.
-const SLIDER_B: f32 = 82.0;
-/// The wanted height of the sliders of the third row.
-const SLIDER_C: f32 = 84.0;
-/// The height of the sliders of the effects.
-const SLIDER_FX: f32 = 59.0;
-/// The height of the sliders of the macros.
-const SLIDER_MACRO: f32 = 72.0;
-/// The height of the sliders of the VCA.
-const SLIDER_OUT: f32 = 72.0;
-/// The height of the sliders of the low frequency oscillators.
-const SLIDER_LFO: f32 = 62.0;
-/// The height of the sliders of the arpeggiator.
-const SLIDER_ARP: f32 = 84.0;
-
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
 
 /// How long the light of the arpeggiator stays on.
 const ARP_LIGHT_TIME: Duration = Duration::from_millis(120);
+
+// --- The layout of the panel ------------------------------------------------
+
+/// The layout of the panel for the size of the window.
+///
+/// The panel is laid out from scratch for every size: the sections grow with
+/// the window, while the fonts, the lines and the margins stay the same, so
+/// that the panel always looks the same.
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    /// The rect of the header.
+    header: Rect,
+    /// The rects of the four rows of sections.
+    rows: [Rect; 4],
+    /// How much bigger the window is than the default size.
+    scale: f32,
+}
+
+impl Layout {
+    /// Computes the layout of the panel for the given rect.
+    ///
+    /// It returns `None` when the rect is too small for the panel: a smaller
+    /// window only shows a sad face.
+    fn for_rect(rect: Rect) -> Option<Self> {
+        if rect.width() < WINDOW_WIDTH || rect.height() < WINDOW_HEIGHT {
+            return None;
+        }
+
+        let origin = rect.min;
+        let content = rect.width() - 2.0 * MARGIN;
+
+        // The header sits above the rows and never grows.
+        let header = Rect::from_min_size(
+            origin + egui::vec2(MARGIN, MARGIN),
+            egui::vec2(content, HEADER_HEIGHT),
+        );
+
+        // The rows share the rest of the height. There is a gap between the
+        // header and the first row and between every two rows.
+        let available = rect.height() - 2.0 * MARGIN - HEADER_HEIGHT - 4.0 * GROUP_GAP;
+        let base: f32 = ROW_HEIGHTS.iter().sum();
+        let mut rows = [Rect::ZERO; 4];
+        let mut y = MARGIN + HEADER_HEIGHT + GROUP_GAP;
+        for (index, height) in ROW_HEIGHTS.iter().enumerate() {
+            let height = available * height / base;
+            rows[index] =
+                Rect::from_min_size(origin + egui::vec2(MARGIN, y), egui::vec2(content, height));
+            y += height + GROUP_GAP;
+        }
+
+        Some(Self {
+            header,
+            rows,
+            scale: content / (WINDOW_WIDTH - 2.0 * MARGIN),
+        })
+    }
+
+    /// The number of sections of a row.
+    fn group_count(row: usize) -> usize {
+        BASE_ROW_WIDTHS[row].len()
+    }
+
+    /// The rect of a section of a row. The sections of a row share its width
+    /// and keep their proportions.
+    fn group(&self, row: usize, index: usize) -> Rect {
+        let widths = BASE_ROW_WIDTHS[row];
+        let base: f32 = widths.iter().sum();
+        let available = self.rows[row].width() - GROUP_GAP * (widths.len() as f32 - 1.0);
+
+        let mut x = self.rows[row].left();
+        for (current, width) in widths.iter().enumerate() {
+            let width = available * width / base;
+            if current == index {
+                return Rect::from_min_size(
+                    egui::pos2(x, self.rows[row].top()),
+                    egui::vec2(width, self.rows[row].height()),
+                );
+            }
+            x += width + GROUP_GAP;
+        }
+
+        Rect::ZERO
+    }
+
+    /// The width of a slider. It grows a little with the window, but never
+    /// gets wider than 20 px.
+    fn slider_width(&self) -> f32 {
+        (SLIDER_WIDTH * self.scale).clamp(SLIDER_WIDTH, 20.0)
+    }
+
+    /// The width of the sliders of the macros.
+    fn macro_width(&self) -> f32 {
+        (MACRO_SLIDER_WIDTH * self.scale).clamp(MACRO_SLIDER_WIDTH, 28.0)
+    }
+}
 
 // --- The editor -------------------------------------------------------------
 
@@ -460,37 +536,12 @@ impl SushiEditor {
         let full = ui.max_rect();
         ui.painter().rect_filled(full, CornerRadius::ZERO, BG);
 
-        // The origin of the panel. The layout is fixed, so the panel stays in
-        // the upper left corner when the window is bigger than the panel.
-        let origin = full.min;
-        let width = WINDOW_WIDTH - 2.0 * MARGIN;
-
-        // The rows of sections.
-        let mut y = MARGIN + HEADER_HEIGHT + GROUP_GAP;
-        let row_a_rect = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, y),
-            egui::vec2(width, ROW_A_HEIGHT),
-        );
-        y += ROW_A_HEIGHT + GROUP_GAP;
-        let row_b_rect = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, y),
-            egui::vec2(width, ROW_B_HEIGHT),
-        );
-        y += ROW_B_HEIGHT + GROUP_GAP;
-        let row_c_rect = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, y),
-            egui::vec2(width, ROW_C_HEIGHT),
-        );
-        y += ROW_C_HEIGHT + GROUP_GAP;
-        let row_d_rect = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, y),
-            egui::vec2(width, ROW_D_HEIGHT),
-        );
-
-        let header_rect = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, MARGIN),
-            egui::vec2(width, HEADER_HEIGHT),
-        );
+        // The panel needs at least the size it was made for. A smaller window
+        // only shows a sad face, so that nothing is cut in half.
+        let Some(layout) = Layout::for_rect(full) else {
+            draw_too_small(ui, full);
+            return;
+        };
 
         // Split the borrow of the editor, so that the parameters, the state of
         // the panel and the text buffers can be used at the same time.
@@ -503,24 +554,66 @@ impl SushiEditor {
             state: &mut self.state,
             history,
             voice_count,
+            slider_width: layout.slider_width(),
         };
 
+        let header_rect = layout.header;
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id_salt("sushi-header")
                 .max_rect(header_rect)
-                .layout(Layout::top_down(Align::Min)),
+                .layout(EguiLayout::top_down(Align::Min)),
             |ui| header(ui, header_rect, &mut ctx),
         );
 
-        row_a(ui, row_a_rect, &mut ctx);
-        row_b(ui, row_b_rect, &mut ctx);
-        row_c(ui, row_c_rect, &mut ctx);
-        row_d(ui, row_d_rect, &mut ctx);
+        row_a(ui, &layout, &mut ctx);
+        row_b(ui, &layout, &mut ctx);
+        row_c(ui, &layout, &mut ctx);
+        row_d(ui, &layout, &mut ctx);
 
         // The window of the patch browser floats above the panel.
         ctx.patch_window(ui);
     }
+}
+
+/// Draws the sad face that tells the user that the window is too small for
+/// the panel. It works at every size, even at a tiny one.
+fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
+    let painter = ui.painter_at(rect);
+
+    // The face grows with the window, but never gets bigger than 64 px.
+    let size = (rect.height().min(rect.width()) * 0.4).clamp(12.0, 64.0);
+    let face = painter.layout_no_wrap(":(".to_string(), FontId::proportional(size), TEXT);
+
+    // The line below the face tells the user how big the window has to be.
+    // It gets a bit smaller when the window is too narrow for it.
+    let hint = "MINIMUM 960 x 640";
+    let width = (rect.width() - 8.0).max(8.0);
+    let galley = painter.layout_no_wrap(hint.to_string(), FontId::proportional(10.0), MUTED);
+    let hint = if galley.size().x > width {
+        let size = (10.0 * width / galley.size().x).max(4.0);
+        painter.layout_no_wrap(hint.to_string(), FontId::proportional(size), MUTED)
+    } else {
+        galley
+    };
+
+    // The face and the line are centered as a block.
+    let gap = 12.0;
+    let face_size = face.size();
+    let hint_size = hint.size();
+    let block = face_size.y + gap + hint_size.y;
+    let top = rect.center().y - block * 0.5;
+
+    painter.galley(
+        egui::pos2(rect.center().x - face_size.x * 0.5, top),
+        face,
+        TEXT,
+    );
+    painter.galley(
+        egui::pos2(rect.center().x - hint_size.x * 0.5, top + face_size.y + gap),
+        hint,
+        MUTED,
+    );
 }
 
 // --- The header -------------------------------------------------------------
@@ -716,8 +809,8 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 /// The master tune is shown in the first oscillator, the pulse widths live in
 /// their own section of the second row and the levels of the oscillators live
 /// in the mixer.
-fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(ui, "row-a", rect, &ROW_A_WIDTHS, |index, rect, ui| {
+fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    group_row(ui, "row-a", layout, 0, |index, rect, ui| {
         let p = ctx.params;
         match index {
             0 => group(ui, rect, "VCO 1", |ui, part| match part {
@@ -725,33 +818,27 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                 Part::Body => column_row(ui, "osc1", 4, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
                     match index {
-                        0 => ctx.float(
-                            ui,
-                            "tune",
-                            "Tune",
-                            &p.tune,
-                            &Knob::plain(-12.0, 12.0, 2, SLIDER_A),
-                        ),
+                        0 => ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2)),
                         1 => ctx.int(
                             ui,
                             "osc1_octave",
                             "Oct",
                             &p.osc1_octave,
-                            &Knob::plain(-2.0, 2.0, 0, SLIDER_A),
+                            &Knob::plain(-2.0, 2.0, 0),
                         ),
                         2 => ctx.int(
                             ui,
                             "osc1_semi",
                             "Semi",
                             &p.osc1_semi,
-                            &Knob::plain(-12.0, 12.0, 0, SLIDER_A),
+                            &Knob::plain(-12.0, 12.0, 0),
                         ),
                         3 => ctx.float(
                             ui,
                             "osc1_fine",
                             "Fine",
                             &p.osc1_fine,
-                            &Knob::plain(-100.0, 100.0, 0, SLIDER_A),
+                            &Knob::plain(-100.0, 100.0, 0),
                         ),
                         _ => {}
                     }
@@ -767,21 +854,21 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "osc2_octave",
                             "Oct",
                             &p.osc2_octave,
-                            &Knob::plain(-2.0, 2.0, 0, SLIDER_A),
+                            &Knob::plain(-2.0, 2.0, 0),
                         ),
                         1 => ctx.int(
                             ui,
                             "osc2_semi",
                             "Semi",
                             &p.osc2_semi,
-                            &Knob::plain(-12.0, 12.0, 0, SLIDER_A),
+                            &Knob::plain(-12.0, 12.0, 0),
                         ),
                         2 => ctx.float(
                             ui,
                             "osc2_fine",
                             "Fine",
                             &p.osc2_fine,
-                            &Knob::plain(-100.0, 100.0, 0, SLIDER_A),
+                            &Knob::plain(-100.0, 100.0, 0),
                         ),
                         _ => {}
                     }
@@ -792,42 +879,20 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                 Part::Body => column_row(ui, "mix", 6, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
                     match index {
-                        0 => ctx.float(
-                            ui,
-                            "osc1_level",
-                            "Lvl 1",
-                            &p.osc1_level,
-                            &Knob::percent(SLIDER_A),
-                        ),
-                        1 => ctx.float(
-                            ui,
-                            "osc2_level",
-                            "Lvl 2",
-                            &p.osc2_level,
-                            &Knob::percent(SLIDER_A),
-                        ),
-                        2 => ctx.float(
-                            ui,
-                            "noise_level",
-                            "Noise",
-                            &p.noise_level,
-                            &Knob::percent(SLIDER_A),
-                        ),
-                        3 => ctx.int(
-                            ui,
-                            "unison",
-                            "Uni",
-                            &p.unison,
-                            &Knob::plain(1.0, 4.0, 0, SLIDER_A),
-                        ),
+                        0 => ctx.float(ui, "osc1_level", "Lvl 1", &p.osc1_level, &Knob::percent()),
+                        1 => ctx.float(ui, "osc2_level", "Lvl 2", &p.osc2_level, &Knob::percent()),
+                        2 => {
+                            ctx.float(ui, "noise_level", "Noise", &p.noise_level, &Knob::percent())
+                        }
+                        3 => ctx.int(ui, "unison", "Uni", &p.unison, &Knob::plain(1.0, 4.0, 0)),
                         4 => ctx.float(
                             ui,
                             "detune",
                             "Detune",
                             &p.detune,
-                            &Knob::plain(0.0, 50.0, 0, SLIDER_A),
+                            &Knob::plain(0.0, 50.0, 0),
                         ),
-                        5 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent(SLIDER_A)),
+                        5 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent()),
                         _ => {}
                     }
                 }),
@@ -842,36 +907,26 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "cutoff",
                             "Cut",
                             &p.cutoff,
-                            &Knob::logarithmic(20.0, 20_000.0, 0, SLIDER_A),
+                            &Knob::logarithmic(20.0, 20_000.0, 0),
                         ),
-                        1 => ctx.float(
-                            ui,
-                            "resonance",
-                            "Res",
-                            &p.resonance,
-                            &Knob::percent(SLIDER_A),
-                        ),
+                        1 => ctx.float(ui, "resonance", "Res", &p.resonance, &Knob::percent()),
                         2 => ctx.float(
                             ui,
                             "filter_env_amount",
                             "Env",
                             &p.filter_env_amount,
-                            &Knob::bipolar(SLIDER_A),
+                            &Knob::bipolar(),
                         ),
                         3 => ctx.float(
                             ui,
                             "filter_keytrack",
                             "Key",
                             &p.filter_keytrack,
-                            &Knob::percent(SLIDER_A),
+                            &Knob::percent(),
                         ),
-                        4 => ctx.float(
-                            ui,
-                            "filter_drive",
-                            "Drv",
-                            &p.filter_drive,
-                            &Knob::percent(SLIDER_A),
-                        ),
+                        4 => {
+                            ctx.float(ui, "filter_drive", "Drv", &p.filter_drive, &Knob::percent())
+                        }
                         _ => {}
                     }
                 }),
@@ -882,8 +937,8 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
 /// The second row: the pulse widths, the two envelopes and the low frequency
 /// oscillators.
-fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(ui, "row-b", rect, &ROW_B_WIDTHS, |index, rect, ui| {
+fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    group_row(ui, "row-b", layout, 1, |index, rect, ui| {
         match index {
             0 => group(ui, rect, "PULSE WIDTH", |ui, part| match part {
                 Part::Header => {}
@@ -895,14 +950,14 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "osc1_pw",
                             "PW 1",
                             &p.osc1_pw,
-                            &Knob::scaled(0.05, 0.95, 0, SLIDER_B),
+                            &Knob::scaled(0.05, 0.95, 0),
                         ),
                         1 => ctx.float(
                             ui,
                             "osc2_pw",
                             "PW 2",
                             &p.osc2_pw,
-                            &Knob::scaled(0.05, 0.95, 0, SLIDER_B),
+                            &Knob::scaled(0.05, 0.95, 0),
                         ),
                         _ => {}
                     }
@@ -918,28 +973,22 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "fe_attack",
                             "A",
                             &p.fe_attack,
-                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 4_000.0, 1),
                         ),
                         1 => ctx.float(
                             ui,
                             "fe_decay",
                             "D",
                             &p.fe_decay,
-                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 4_000.0, 1),
                         ),
-                        2 => ctx.float(
-                            ui,
-                            "fe_sustain",
-                            "S",
-                            &p.fe_sustain,
-                            &Knob::percent(SLIDER_B),
-                        ),
+                        2 => ctx.float(ui, "fe_sustain", "S", &p.fe_sustain, &Knob::percent()),
                         3 => ctx.float(
                             ui,
                             "fe_release",
                             "R",
                             &p.fe_release,
-                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 4_000.0, 1),
                         ),
                         _ => {}
                     }
@@ -955,28 +1004,22 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "ae_attack",
                             "A",
                             &p.ae_attack,
-                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 4_000.0, 1),
                         ),
                         1 => ctx.float(
                             ui,
                             "ae_decay",
                             "D",
                             &p.ae_decay,
-                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 4_000.0, 1),
                         ),
-                        2 => ctx.float(
-                            ui,
-                            "ae_sustain",
-                            "S",
-                            &p.ae_sustain,
-                            &Knob::percent(SLIDER_B),
-                        ),
+                        2 => ctx.float(ui, "ae_sustain", "S", &p.ae_sustain, &Knob::percent()),
                         3 => ctx.float(
                             ui,
                             "ae_release",
                             "R",
                             &p.ae_release,
-                            &Knob::logarithmic(0.0, 8_000.0, 1, SLIDER_B),
+                            &Knob::logarithmic(0.0, 8_000.0, 1),
                         ),
                         _ => {}
                     }
@@ -1015,7 +1058,7 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         egui::UiBuilder::new()
                             .id_salt(("sushi-lfo-header", index))
                             .max_rect(header)
-                            .layout(Layout::left_to_right(Align::Center)),
+                            .layout(EguiLayout::left_to_right(Align::Center)),
                         |ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
                             text_label(ui, title, 9.0, TEXT);
@@ -1025,14 +1068,8 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     );
 
                     column_row(ui, ids.2, 2, COLUMN_GAP, |index, ui| match index {
-                        0 => ctx.float(
-                            ui,
-                            ids.2,
-                            "Rate",
-                            rate,
-                            &Knob::logarithmic(0.01, 40.0, 2, SLIDER_LFO),
-                        ),
-                        1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent(SLIDER_LFO)),
+                        0 => ctx.float(ui, ids.2, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
+                        1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent()),
                         _ => {}
                     });
                 }),
@@ -1045,8 +1082,8 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 ///
 /// The arpeggiator gets a wide section, so that all of its parameters and the
 /// strip of lights fit on one line.
-fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(ui, "row-c", rect, &ROW_C_WIDTHS, |index, rect, ui| {
+fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    group_row(ui, "row-c", layout, 2, |index, rect, ui| {
         let p = ctx.params;
         match index {
             0 => group(ui, rect, "ARP", |ui, part| match part {
@@ -1082,7 +1119,7 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         egui::UiBuilder::new()
                             .id_salt("sushi-arp-sliders")
                             .max_rect(slider_rect)
-                            .layout(Layout::top_down(Align::Min)),
+                            .layout(EguiLayout::top_down(Align::Min)),
                         |ui| {
                             let ctx = &mut *ctx;
                             column_row(ui, "arp", 5, COLUMN_GAP, |index, ui| {
@@ -1093,35 +1130,35 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                                         "arp_swing",
                                         "Swing",
                                         &p.arp_swing,
-                                        &Knob::plain(0.0, 75.0, 0, SLIDER_ARP),
+                                        &Knob::plain(0.0, 75.0, 0),
                                     ),
                                     1 => ctx.int(
                                         ui,
                                         "arp_octaves",
                                         "Oct",
                                         &p.arp_octaves,
-                                        &Knob::plain(1.0, 3.0, 0, SLIDER_ARP),
+                                        &Knob::plain(1.0, 3.0, 0),
                                     ),
                                     2 => ctx.float(
                                         ui,
                                         "arp_gate",
                                         "Gate",
                                         &p.arp_gate,
-                                        &Knob::plain(5.0, 100.0, 0, SLIDER_ARP),
+                                        &Knob::plain(5.0, 100.0, 0),
                                     ),
                                     3 => ctx.int(
                                         ui,
                                         "arp_ratchet",
                                         "Ratchet",
                                         &p.arp_ratchet,
-                                        &Knob::plain(1.0, 4.0, 0, SLIDER_ARP),
+                                        &Knob::plain(1.0, 4.0, 0),
                                     ),
                                     4 => ctx.int(
                                         ui,
                                         "arp_length",
                                         "Length",
                                         &p.arp_length,
-                                        &Knob::plain(1.0, 16.0, 0, SLIDER_ARP),
+                                        &Knob::plain(1.0, 16.0, 0),
                                     ),
                                     _ => {}
                                 }
@@ -1147,18 +1184,16 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             "glide",
                             "Glide",
                             &p.glide,
-                            &Knob::logarithmic(0.0, 2_000.0, 1, SLIDER_C),
+                            &Knob::logarithmic(0.0, 2_000.0, 1),
                         ),
-                        1 => ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent(SLIDER_C)),
-                        2 => {
-                            ctx.float(ui, "velocity", "Vel", &p.velocity, &Knob::percent(SLIDER_C))
-                        }
+                        1 => ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent()),
+                        2 => ctx.float(ui, "velocity", "Vel", &p.velocity, &Knob::percent()),
                         3 => ctx.int(
                             ui,
                             "voices",
                             "Voices",
                             &p.voices,
-                            &Knob::plain(1.0, 16.0, 0, SLIDER_C),
+                            &Knob::plain(1.0, 16.0, 0),
                         ),
                         _ => {}
                     }
@@ -1169,137 +1204,117 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 }
 
 /// The fourth row: the effects, the macros and the output.
-fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(
-        ui,
-        "row-d",
-        rect,
-        &ROW_D_WIDTHS,
-        |index, rect, ui| match index {
-            0 => group(ui, rect, "FX", |ui, part| match part {
-                Part::Header => {}
-                Part::Body => sections(ui, "fx", 3, GROUP_GAP, |index, _rect, ui| match index {
-                    0 => {
-                        caption(ui, "CHORUS", 9.0, TEXT);
-                        column_row(ui, "chorus", 3, COLUMN_GAP, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "chorus_mix",
-                                    "Mix",
-                                    &p.chorus_mix,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "chorus_rate",
-                                    "Rate",
-                                    &p.chorus_rate,
-                                    &Knob::logarithmic(0.05, 8.0, 2, SLIDER_FX),
-                                ),
-                                2 => ctx.float(
-                                    ui,
-                                    "chorus_depth",
-                                    "Depth",
-                                    &p.chorus_depth,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                _ => {}
+fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
+        0 => group(ui, rect, "FX", |ui, part| match part {
+            Part::Header => {}
+            Part::Body => sections(ui, "fx", 3, GROUP_GAP, |index, _rect, ui| match index {
+                0 => {
+                    caption(ui, "CHORUS", 9.0, TEXT);
+                    column_row(ui, "chorus", 3, COLUMN_GAP, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => {
+                                ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent())
                             }
-                        });
-                    }
-                    1 => {
-                        caption(ui, "DELAY", 9.0, TEXT);
-                        column_row(ui, "delay", 3, COLUMN_GAP, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "delay_time",
-                                    "Time",
-                                    &p.delay_time,
-                                    &Knob::logarithmic(10.0, 1_500.0, 1, SLIDER_FX),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "delay_feedback",
-                                    "FB",
-                                    &p.delay_feedback,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                2 => ctx.float(
-                                    ui,
-                                    "delay_mix",
-                                    "Mix",
-                                    &p.delay_mix,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                _ => {}
-                            }
-                        });
-                    }
-                    _ => {
-                        caption(ui, "REVERB", 9.0, TEXT);
-                        column_row(ui, "reverb", 2, COLUMN_GAP, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "reverb_decay",
-                                    "Decay",
-                                    &p.reverb_decay,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "reverb_mix",
-                                    "Mix",
-                                    &p.reverb_mix,
-                                    &Knob::percent(SLIDER_FX),
-                                ),
-                                _ => {}
-                            }
-                        });
-                    }
-                }),
-            }),
-            1 => group(ui, rect, "MACROS", |ui, part| match part {
-                Part::Header => {}
-                Part::Body => column_row(ui, "macros", 3, COLUMN_GAP, |index, ui| {
-                    let p = ctx.params;
-                    let knob = Knob::percent(SLIDER_MACRO).with_width(MACRO_SLIDER_WIDTH);
-                    match index {
-                        0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
-                        1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
-                        2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
-                        _ => {}
-                    }
-                }),
-            }),
-            _ => group(ui, rect, "VCA", |ui, part| match part {
-                Part::Header => {
-                    let p = ctx.params;
-                    text_label(ui, "CHARACTER", 9.0, TEXT);
-                    ctx.radio_pair(ui, "character", &p.character, 70.0);
+                            1 => ctx.float(
+                                ui,
+                                "chorus_rate",
+                                "Rate",
+                                &p.chorus_rate,
+                                &Knob::logarithmic(0.05, 8.0, 2),
+                            ),
+                            2 => ctx.float(
+                                ui,
+                                "chorus_depth",
+                                "Depth",
+                                &p.chorus_depth,
+                                &Knob::percent(),
+                            ),
+                            _ => {}
+                        }
+                    });
                 }
-                Part::Body => column_row(ui, "output", 2, COLUMN_GAP, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "volume",
-                            "Volume",
-                            &p.volume,
-                            &Knob::decibels(-60.0, 6.0, SLIDER_OUT),
-                        ),
-                        1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar(SLIDER_OUT)),
-                        _ => {}
-                    }
-                }),
+                1 => {
+                    caption(ui, "DELAY", 9.0, TEXT);
+                    column_row(ui, "delay", 3, COLUMN_GAP, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "delay_time",
+                                "Time",
+                                &p.delay_time,
+                                &Knob::logarithmic(10.0, 1_500.0, 1),
+                            ),
+                            1 => ctx.float(
+                                ui,
+                                "delay_feedback",
+                                "FB",
+                                &p.delay_feedback,
+                                &Knob::percent(),
+                            ),
+                            2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
+                            _ => {}
+                        }
+                    });
+                }
+                _ => {
+                    caption(ui, "REVERB", 9.0, TEXT);
+                    column_row(ui, "reverb", 2, COLUMN_GAP, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "reverb_decay",
+                                "Decay",
+                                &p.reverb_decay,
+                                &Knob::percent(),
+                            ),
+                            1 => {
+                                ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent())
+                            }
+                            _ => {}
+                        }
+                    });
+                }
             }),
-        },
-    );
+        }),
+        1 => group(ui, rect, "MACROS", |ui, part| match part {
+            Part::Header => {}
+            Part::Body => column_row(ui, "macros", 3, COLUMN_GAP, |index, ui| {
+                let p = ctx.params;
+                let knob = Knob::percent().with_width(layout.macro_width());
+                match index {
+                    0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
+                    1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
+                    2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
+                    _ => {}
+                }
+            }),
+        }),
+        _ => group(ui, rect, "VCA", |ui, part| match part {
+            Part::Header => {
+                let p = ctx.params;
+                text_label(ui, "CHARACTER", 9.0, TEXT);
+                ctx.radio_pair(ui, "character", &p.character, 70.0);
+            }
+            Part::Body => column_row(ui, "output", 2, COLUMN_GAP, |index, ui| {
+                let p = ctx.params;
+                match index {
+                    0 => ctx.float(
+                        ui,
+                        "volume",
+                        "Volume",
+                        &p.volume,
+                        &Knob::decibels(-60.0, 6.0),
+                    ),
+                    1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
+                    _ => {}
+                }
+            }),
+        }),
+    });
 }
 
 // --- The widgets of the parameters ------------------------------------------
@@ -1319,15 +1334,13 @@ struct Knob {
     to_display: fn(f32) -> f32,
     /// The conversion of the shown value into the value of the parameter.
     from_display: fn(f32) -> f32,
-    /// The height of the slider.
-    height: f32,
     /// The width of the slider.
     width: f32,
 }
 
 impl Knob {
     /// A parameter that is shown as it is.
-    fn plain(min: f32, max: f32, decimals: usize, height: f32) -> Self {
+    fn plain(min: f32, max: f32, decimals: usize) -> Self {
         Self {
             min,
             max,
@@ -1335,13 +1348,12 @@ impl Knob {
             decimals,
             to_display: identity,
             from_display: identity,
-            height,
             width: SLIDER_WIDTH,
         }
     }
 
     /// A parameter that is shown as a percentage.
-    fn percent(height: f32) -> Self {
+    fn percent() -> Self {
         Self {
             min: 0.0,
             max: 1.0,
@@ -1349,13 +1361,12 @@ impl Knob {
             decimals: 0,
             to_display: to_percent,
             from_display: from_percent,
-            height,
             width: SLIDER_WIDTH,
         }
     }
 
     /// A parameter that is shown as a signed percentage.
-    fn bipolar(height: f32) -> Self {
+    fn bipolar() -> Self {
         Self {
             min: -1.0,
             max: 1.0,
@@ -1363,13 +1374,12 @@ impl Knob {
             decimals: 0,
             to_display: to_percent,
             from_display: from_percent,
-            height,
             width: SLIDER_WIDTH,
         }
     }
 
     /// A parameter that is stored in another range than it is shown in.
-    fn scaled(min: f32, max: f32, decimals: usize, height: f32) -> Self {
+    fn scaled(min: f32, max: f32, decimals: usize) -> Self {
         Self {
             min,
             max,
@@ -1377,13 +1387,12 @@ impl Knob {
             decimals,
             to_display: to_percent,
             from_display: from_percent,
-            height,
             width: SLIDER_WIDTH,
         }
     }
 
     /// A parameter with a logarithmic range.
-    fn logarithmic(min: f32, max: f32, decimals: usize, height: f32) -> Self {
+    fn logarithmic(min: f32, max: f32, decimals: usize) -> Self {
         Self {
             min,
             max,
@@ -1391,13 +1400,12 @@ impl Knob {
             decimals,
             to_display: identity,
             from_display: identity,
-            height,
             width: SLIDER_WIDTH,
         }
     }
 
     /// A parameter that is shown in decibels but stored as a gain.
-    fn decibels(min: f32, max: f32, height: f32) -> Self {
+    fn decibels(min: f32, max: f32) -> Self {
         Self {
             min: util::db_to_gain(min),
             max: util::db_to_gain(max),
@@ -1405,7 +1413,6 @@ impl Knob {
             decimals: 1,
             to_display: util::gain_to_db,
             from_display: util::db_to_gain,
-            height,
             width: SLIDER_WIDTH,
         }
     }
@@ -1436,6 +1443,8 @@ struct Ctx<'a, 'b> {
     history: &'a VecDeque<f32>,
     /// The number of voices that are currently playing.
     voice_count: &'a Arc<AtomicUsize>,
+    /// The width of the sliders of the panel.
+    slider_width: f32,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -1452,17 +1461,22 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
+        // The width of the column decides how wide the value field is.
+        let field = field_width(ui.available_width());
+
         caption(ui, label, 9.0, TEXT);
 
-        // The slider only takes the height that is left in its column above
-        // the numeric field, so that a section never overflows its rectangle.
+        // The slider takes the height that is left in its column above the
+        // numeric field, so that a section never overflows its rectangle and
+        // the field always sits at the bottom of the column.
+        let height = slider_height(ui);
         let knob = &Knob {
-            height: slider_height(knob.height, ui),
+            width: knob.width.max(self.slider_width),
             ..*knob
         };
 
         let mut value = param.value();
-        let response = v_slider(ui, &mut value, knob);
+        let response = v_slider(ui, &mut value, knob, height);
         // A double click resets the parameter to its factory default. The
         // reset is done after the value of the click, so that it wins.
         let reset = response.double_clicked();
@@ -1480,7 +1494,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.end_set_parameter(param);
         }
 
-        self.float_field(ui, id, param, knob, FIELD_WIDTH, FIELD_HEIGHT);
+        self.float_field(ui, id, param, knob, field, FIELD_HEIGHT);
     }
 
     /// Draws a stepped parameter. It works just like [`Ctx::float`], but the
@@ -1496,17 +1510,22 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
+        // The width of the column decides how wide the value field is.
+        let field = field_width(ui.available_width());
+
         caption(ui, label, 9.0, TEXT);
 
-        // The slider only takes the height that is left in its column above
-        // the numeric field, so that a section never overflows its rectangle.
+        // The slider takes the height that is left in its column above the
+        // numeric field, so that a section never overflows its rectangle and
+        // the field always sits at the bottom of the column.
+        let height = slider_height(ui);
         let knob = &Knob {
-            height: slider_height(knob.height, ui),
+            width: knob.width.max(self.slider_width),
             ..*knob
         };
 
         let mut value = param.value() as f32;
-        let response = v_slider(ui, &mut value, knob);
+        let response = v_slider(ui, &mut value, knob, height);
         // A double click resets the parameter to its factory default. The
         // reset is done after the value of the click, so that it wins.
         let reset = response.double_clicked();
@@ -1524,7 +1543,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.end_set_parameter(param);
         }
 
-        self.int_field(ui, id, param, knob, FIELD_WIDTH, FIELD_HEIGHT);
+        self.int_field(ui, id, param, knob, field, FIELD_HEIGHT);
     }
 
     /// Draws the numeric field of a continuous parameter.
@@ -2051,25 +2070,23 @@ enum Part {
     Body,
 }
 
-/// Lays out a row of sections of the given widths.
+/// Lays out a row of sections. The places of the sections come from the
+/// layout, so that they grow with the window.
 fn group_row(
     ui: &mut egui::Ui,
     name: &str,
-    rect: Rect,
-    widths: &[f32],
+    layout: &Layout,
+    row: usize,
     mut add: impl FnMut(usize, Rect, &mut egui::Ui),
 ) {
-    let mut x = rect.left();
-    for (index, width) in widths.iter().enumerate() {
-        let box_rect =
-            Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(*width, rect.height()));
-        x += width + GROUP_GAP;
+    for index in 0..Layout::group_count(row) {
+        let box_rect = layout.group(row, index);
 
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id_salt(("sushi-group", name, index))
                 .max_rect(box_rect)
-                .layout(Layout::top_down(Align::Min)),
+                .layout(EguiLayout::top_down(Align::Min)),
             |ui| add(index, box_rect, ui),
         );
     }
@@ -2125,7 +2142,7 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
         egui::UiBuilder::new()
             .id_salt(("sushi-header", title))
             .max_rect(header)
-            .layout(Layout::left_to_right(Align::Center)),
+            .layout(EguiLayout::left_to_right(Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
             add(ui, Part::Header);
@@ -2145,7 +2162,7 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
         egui::UiBuilder::new()
             .id_salt(("sushi-body", title))
             .max_rect(body)
-            .layout(Layout::top_down(Align::Min)),
+            .layout(EguiLayout::top_down(Align::Min)),
         |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
             add(ui, Part::Body);
@@ -2175,7 +2192,7 @@ fn sections(
             egui::UiBuilder::new()
                 .id_salt(("sushi-section", name, index))
                 .max_rect(rect)
-                .layout(Layout::top_down(Align::Min)),
+                .layout(EguiLayout::top_down(Align::Min)),
             |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
                 add(index, rect, ui);
@@ -2222,7 +2239,7 @@ fn column_row(
             egui::UiBuilder::new()
                 .id_salt(("sushi-column", name, index))
                 .max_rect(rect)
-                .layout(Layout::top_down(Align::Center)),
+                .layout(EguiLayout::top_down(Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
                 add(index, ui);
@@ -2263,22 +2280,32 @@ fn text_label(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) {
 /// this is never reached; it only keeps a slider usable in a squeezed layout.
 const MIN_SLIDER_HEIGHT: f32 = 24.0;
 
-/// The height of a slider: the size that its section asks for, but never more
-/// than the height that is actually left in the column above the numeric
-/// field. This fills the rows completely and makes an overflow impossible.
-fn slider_height(wanted: f32, ui: &egui::Ui) -> f32 {
+/// The width of the numeric field of a parameter. It grows a little with the
+/// width of its column, but never gets wider than 56 px.
+const MAX_FIELD_WIDTH: f32 = 56.0;
+
+/// The height of a slider: all the room that is left in its column above the
+/// numeric field. The slider therefore grows with the row it is in, and the
+/// field always sits at the bottom of the column.
+fn slider_height(ui: &egui::Ui) -> f32 {
     // What is left after the caption: the slider, the gap below it and the
     // numeric field.
     let room = ui.available_height() - FIELD_HEIGHT - 2.0;
-    wanted.min(room).max(MIN_SLIDER_HEIGHT)
+    room.max(MIN_SLIDER_HEIGHT)
+}
+
+/// The width of the numeric field of a parameter. It scales with the width of
+/// the column, so that a wide column gets a wide field.
+fn field_width(column: f32) -> f32 {
+    (column * 0.72).clamp(FIELD_WIDTH, MAX_FIELD_WIDTH)
 }
 
 /// A vertical slider: a flat white track with a thin outline, a light tick in
 /// the middle and a black handle band that is fully embedded inside the
 /// track: it never sticks out of it, no matter where the value is.
-fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob) -> egui::Response {
+fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob, height: f32) -> egui::Response {
     let (rect, mut response) =
-        ui.allocate_exact_size(egui::vec2(knob.width, knob.height), Sense::click_and_drag());
+        ui.allocate_exact_size(egui::vec2(knob.width, height), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
     // The track. It has no fill below the handle and no bevel at all.
@@ -2337,7 +2364,7 @@ fn number_field(
         egui::UiBuilder::new()
             .id_salt(("sushi-field", id))
             .max_rect(rect)
-            .layout(Layout::top_down(Align::Center)),
+            .layout(EguiLayout::top_down(Align::Center)),
         |ui| {
             ui.add(
                 egui::TextEdit::singleline(text)
@@ -2829,15 +2856,18 @@ mod tests {
             state: &mut editor.state,
             history: &editor.history,
             voice_count: &editor.voice_count,
+            slider_width: SLIDER_WIDTH,
         }
     }
 
     fn input(events: Vec<egui::Event>) -> egui::RawInput {
+        input_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT), events)
+    }
+
+    /// The input of a frame in a window of the given size.
+    fn input_at(size: egui::Vec2, events: Vec<egui::Event>) -> egui::RawInput {
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::pos2(0.0, 0.0),
-                egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), size)),
             events,
             ..Default::default()
         }
@@ -2860,14 +2890,16 @@ mod tests {
     }
 
     /// The rects of all the vertical sliders, in the order they are drawn.
+    /// The sliders grow a little with the window, so they are recognized by
+    /// their width and their height.
     fn slider_rects(ctx: &egui::Context, output: &egui::FullOutput) -> Vec<egui::Rect> {
         let mut rects = Vec::new();
         for clipped in ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point()) {
             if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
                 let rect = clipped.clip_rect;
                 let width = rect.width();
-                let is_slider =
-                    (width - SLIDER_WIDTH).abs() < 0.5 || (width - MACRO_SLIDER_WIDTH).abs() < 0.5;
+                let is_slider = (SLIDER_WIDTH..=20.0).contains(&width)
+                    || (MACRO_SLIDER_WIDTH..=28.0).contains(&width);
                 if is_slider && rect.height() > 40.0 {
                     rects.push(rect);
                 }
@@ -2889,14 +2921,16 @@ mod tests {
     }
 
     /// The rects of all the numeric value fields, in the order they are
-    /// drawn.
+    /// drawn. The fields grow with their column, so they are recognized by
+    /// their height and their width.
     fn field_rects(ctx: &egui::Context, output: &egui::FullOutput) -> Vec<egui::Rect> {
         let mut rects: Vec<egui::Rect> = Vec::new();
         for clipped in ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point()) {
             if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
                 let rect = clipped.clip_rect;
-                let is_field = (rect.width() - FIELD_WIDTH).abs() < 0.5
-                    && (rect.height() - FIELD_HEIGHT).abs() < 0.5;
+                let is_field = (rect.height() - FIELD_HEIGHT).abs() < 0.5
+                    && rect.width() >= FIELD_WIDTH
+                    && rect.width() <= MAX_FIELD_WIDTH;
                 // Every field is drawn twice: once filled and once stroked.
                 if is_field && !rects.contains(&rect) {
                     rects.push(rect);
@@ -4045,9 +4079,14 @@ mod tests {
             egui::pos2(0.0, 0.0),
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
         );
+        assert_the_widgets_fit(&ctx, &output, panel);
+    }
 
+    /// Checks that the widgets of the panel stay inside of the panel and that
+    /// they never touch each other.
+    fn assert_the_widgets_fit(ctx: &egui::Context, output: &egui::FullOutput, panel: Rect) {
         // Every slider is inside of the panel and touches no other slider.
-        let sliders = slider_rects(&ctx, &output);
+        let sliders = slider_rects(ctx, output);
         assert_eq!(sliders.len(), 54, "unexpected number of sliders");
         for (index, rect) in sliders.iter().enumerate() {
             assert!(
@@ -4063,7 +4102,7 @@ mod tests {
         }
 
         // The same goes for the fields of the values.
-        let fields = field_rects(&ctx, &output);
+        let fields = field_rects(ctx, output);
         assert_eq!(fields.len(), 54, "unexpected number of value fields");
         for (index, rect) in fields.iter().enumerate() {
             assert!(
@@ -4129,5 +4168,208 @@ mod tests {
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(voices.center()));
         assert_eq!(params.voices.value(), 16);
+    }
+
+    /// The sizes that the panel has to survive.
+    const SIZES: [(f32, f32); 4] = [
+        (960.0, 640.0),
+        (1280.0, 800.0),
+        (1600.0, 900.0),
+        (2000.0, 1000.0),
+    ];
+
+    #[test]
+    fn the_panel_needs_the_minimum_size() {
+        // The panel is drawn in the size it was made for.
+        let default = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        );
+        assert!(Layout::for_rect(default).is_some());
+
+        // A window that is too small has no layout.
+        for (width, height) in [
+            (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT),
+            (WINDOW_WIDTH, WINDOW_HEIGHT - 1.0),
+            (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT - 1.0),
+            (300.0, 200.0),
+            (0.0, 0.0),
+        ] {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            assert!(
+                Layout::for_rect(rect).is_none(),
+                "the window of {width} x {height} has a layout"
+            );
+        }
+    }
+
+    #[test]
+    fn the_layout_fills_the_window() {
+        for (width, height) in SIZES {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            let layout = Layout::for_rect(rect).expect("the window is big enough");
+
+            // The header sits at the top of the panel and never grows.
+            assert!(
+                (layout.header.top() - MARGIN).abs() < 0.01,
+                "the header is at the wrong place: {:?}",
+                layout.header
+            );
+            assert!((layout.header.height() - HEADER_HEIGHT).abs() < 0.01);
+
+            // The rows fill the rest of the height of the window.
+            assert!(
+                (layout.rows[0].top() - (MARGIN + HEADER_HEIGHT + GROUP_GAP)).abs() < 0.01,
+                "the first row is at the wrong place: {:?}",
+                layout.rows[0]
+            );
+            assert!(
+                (layout.rows[3].bottom() - (height - MARGIN)).abs() < 0.01,
+                "the last row does not fill the window: {:?}",
+                layout.rows[3]
+            );
+            for row in layout.rows {
+                assert!(row.height() > 0.0, "a row has no height: {row:?}");
+                // The rows fill the width of the window.
+                assert!((row.left() - MARGIN).abs() < 0.01);
+                assert!((row.right() - (width - MARGIN)).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn the_sections_of_the_layout_do_not_overlap() {
+        for (width, height) in SIZES {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            let layout = Layout::for_rect(rect).expect("the window is big enough");
+
+            for row in 0..4 {
+                let count = Layout::group_count(row);
+                for index in 0..count {
+                    let group = layout.group(row, index);
+                    assert!(
+                        rect.contains_rect(group),
+                        "a section is outside of the panel: {group:?}"
+                    );
+                    assert!(
+                        group.width() > 0.0 && group.height() > 0.0,
+                        "a section has no size: {group:?}"
+                    );
+                    // The sections of a row touch no other section.
+                    for other in index + 1..count {
+                        let other = layout.group(row, other);
+                        assert!(
+                            !group.intersects(other),
+                            "two sections touch each other: {group:?} {other:?}"
+                        );
+                    }
+                }
+
+                // The sections of a row fill the whole row.
+                let last = layout.group(row, count - 1);
+                assert!(
+                    (last.right() - (width - MARGIN)).abs() < 0.01,
+                    "the sections of the row {row} do not fill the window: {last:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_window_shows_a_sad_face() {
+        let (ctx, mut editor, _params) = make_editor();
+        let size = egui::vec2(300.0, 200.0);
+        let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            names.contains(&":(".to_string()),
+            "the panel has no sad face: {names:?}"
+        );
+        assert!(
+            names.contains(&"MINIMUM 960 x 640".to_string()),
+            "the panel has no hint: {names:?}"
+        );
+
+        // The panel itself is not drawn at all.
+        let counts = editor.state.counts;
+        assert_eq!(counts.sliders, 0, "the panel has sliders");
+        assert_eq!(counts.popups, 0, "the panel has popups");
+        assert_eq!(counts.checks, 0, "the panel has check boxes");
+        assert_eq!(counts.radios, 0, "the panel has radio buttons");
+
+        // The face and the hint stay inside of the window.
+        let panel = Rect::from_min_size(egui::pos2(0.0, 0.0), size);
+        for shape in &output.shapes {
+            if let egui::epaint::Shape::Text(text) = &shape.shape {
+                let rect = Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    panel.contains_rect(rect),
+                    "the text {:?} is outside of the window: {rect:?}",
+                    text.galley.job.text
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tiny_window_shows_a_sad_face() {
+        let (ctx, mut editor, _params) = make_editor();
+        let size = egui::vec2(120.0, 80.0);
+        let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            names.contains(&":(".to_string()),
+            "the panel has no sad face: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_panel_grows_with_the_window() {
+        let (ctx, mut editor, _params) = make_editor();
+
+        // The default size.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let small = slider_rects(&ctx, &output);
+        assert_eq!(small.len(), 54, "unexpected number of sliders");
+
+        // A bigger window: the sliders are taller and the sections are
+        // wider.
+        let output = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
+        );
+        let big = slider_rects(&ctx, &output);
+        assert_eq!(big.len(), 54, "unexpected number of sliders");
+
+        for (small, big) in small.iter().zip(big.iter()) {
+            assert!(
+                big.height() > small.height(),
+                "a slider did not grow: {small:?} {big:?}"
+            );
+        }
+
+        // The last slider of the panel moved to the right, so that the panel
+        // uses the whole width of the window.
+        assert!(
+            big[big.len() - 1].right() > small[small.len() - 1].right(),
+            "the panel did not grow to the right"
+        );
+    }
+
+    #[test]
+    fn the_widgets_fit_into_every_window() {
+        for (width, height) in SIZES {
+            let (ctx, mut editor, _params) = make_editor();
+            let output = run_frames(
+                &ctx,
+                &mut editor,
+                vec![input_at(egui::vec2(width, height), vec![])],
+            );
+            let panel = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            assert_the_widgets_fit(&ctx, &output, panel);
+        }
     }
 }
