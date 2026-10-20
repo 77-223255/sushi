@@ -55,6 +55,9 @@ fn main() -> std::io::Result<()> {
         glide_step: 1.0,
         lfo1_amount: 0.15,
         lfo1_target: LfoTarget::Filter,
+        // A little drift, so that the voices are not perfectly in tune.
+        drift_amount: 0.4,
+        velocity_amount: 0.5,
         ..VoiceSettings::default()
     };
 
@@ -88,12 +91,14 @@ fn main() -> std::io::Result<()> {
 
         // Slow filter sweep to show off the state variable filter.
         let cutoff = 400.0 * (8_000.0 / 400.0f32).powf(time / DURATION);
+        // A slow bipolar modulation, like the step sequencer would produce.
+        let step_value = (time * 0.7).sin() * 0.5;
 
         let mut left = 0.0;
         let mut right = 0.0;
         for voice in voices.iter_mut() {
             let (voice_left, voice_right) =
-                voice.next_sample(&settings, cutoff, 0.0, 0.0, SAMPLE_RATE);
+                voice.next_sample(&settings, cutoff, 0.0, 0.0, step_value, SAMPLE_RATE);
             left += voice_left;
             right += voice_right;
         }

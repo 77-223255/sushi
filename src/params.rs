@@ -4,6 +4,7 @@
 //! by hosts for automation and for saving presets), so they must never change.
 
 use nice_plug::prelude::*;
+use std::sync::Arc;
 
 /// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -59,6 +60,60 @@ pub enum PolyMode {
     Legato,
 }
 
+/// The global character of the sound. `Silk` is clean and gentle, `Grit` is
+/// harsh and saturated.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum Character {
+    #[default]
+    Silk,
+    Grit,
+}
+
+/// The pattern the arpeggiator plays.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ArpPattern {
+    #[default]
+    Up,
+    Down,
+    UpDown,
+    Random,
+}
+
+/// The note division of the arpeggiator and of the step sequencer.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum NoteDiv {
+    #[name = "1/4"]
+    Quarter,
+    #[default]
+    #[name = "1/8"]
+    Eighth,
+    #[name = "1/16"]
+    Sixteenth,
+    #[name = "1/32"]
+    ThirtySecond,
+}
+
+impl NoteDiv {
+    /// The length of one division, in beats.
+    pub fn beats(self) -> f64 {
+        match self {
+            NoteDiv::Quarter => 1.0,
+            NoteDiv::Eighth => 0.5,
+            NoteDiv::Sixteenth => 0.25,
+            NoteDiv::ThirtySecond => 0.125,
+        }
+    }
+}
+
+/// The destination the step sequencer modulates.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum StepDest {
+    Pitch,
+    #[default]
+    Filter,
+    Shape,
+}
+
 /// A `0..1` parameter that is displayed as a percentage.
 fn percentage_param(name: &str, default: f32) -> FloatParam {
     FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
@@ -81,6 +136,34 @@ fn time_param(name: &str, default: f32, max: f32) -> FloatParam {
     )
     .with_step_size(0.1)
     .with_unit(" ms")
+}
+
+/// A bipolar parameter in the `-1..1` range, displayed as a signed percentage.
+fn bipolar_param(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Linear {
+            min: -1.0,
+            max: 1.0,
+        },
+    )
+    .with_value_to_string(Arc::new(|value: f32| format!("{:+.0}", value * 100.0)))
+    .with_string_to_value(Arc::new(|text: &str| {
+        text.trim()
+            .trim_end_matches('%')
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|value| value / 100.0)
+    }))
+    .with_unit("%")
+}
+
+/// A step of the modulation sequencer. The steps are smoothed a bit more
+/// gently than the macros, so that they still feel like discrete steps.
+fn step_param(name: &str, default: f32) -> FloatParam {
+    percentage_param(name, default).with_smoother(SmoothingStyle::Linear(5.0))
 }
 
 /// A frequency parameter in Hertz, skewed towards the low end.
@@ -258,6 +341,88 @@ pub struct SushiParams {
 
     #[id = "reverb_decay"]
     pub reverb_decay: FloatParam,
+
+    // --- Macros ------------------------------------------------------------
+    #[id = "macro_bright"]
+    pub macro_bright: FloatParam,
+
+    #[id = "macro_motion"]
+    pub macro_motion: FloatParam,
+
+    #[id = "macro_space"]
+    pub macro_space: FloatParam,
+
+    // --- Character ---------------------------------------------------------
+    #[id = "character"]
+    pub character: EnumParam<Character>,
+
+    #[id = "drift"]
+    pub drift: FloatParam,
+
+    #[id = "velocity"]
+    pub velocity: FloatParam,
+
+    #[id = "tone"]
+    pub tone: FloatParam,
+
+    // --- Arpeggiator -------------------------------------------------------
+    #[id = "arp_on"]
+    pub arp_on: BoolParam,
+
+    #[id = "arp_pattern"]
+    pub arp_pattern: EnumParam<ArpPattern>,
+
+    #[id = "arp_rate"]
+    pub arp_rate: EnumParam<NoteDiv>,
+
+    #[id = "arp_octaves"]
+    pub arp_octaves: IntParam,
+
+    #[id = "arp_gate"]
+    pub arp_gate: FloatParam,
+
+    #[id = "arp_latch"]
+    pub arp_latch: BoolParam,
+
+    // --- Step sequencer ----------------------------------------------------
+    #[id = "step_on"]
+    pub step_on: BoolParam,
+
+    #[id = "step_rate"]
+    pub step_rate: EnumParam<NoteDiv>,
+
+    #[id = "step_dest"]
+    pub step_dest: EnumParam<StepDest>,
+
+    #[id = "step_amount"]
+    pub step_amount: FloatParam,
+
+    #[id = "step_smooth"]
+    pub step_smooth: BoolParam,
+
+    #[id = "step_1"]
+    pub step_1: FloatParam,
+
+    #[id = "step_2"]
+    pub step_2: FloatParam,
+
+    #[id = "step_3"]
+    pub step_3: FloatParam,
+
+    #[id = "step_4"]
+    pub step_4: FloatParam,
+
+    #[id = "step_5"]
+    pub step_5: FloatParam,
+
+    #[id = "step_6"]
+    pub step_6: FloatParam,
+
+    #[id = "step_7"]
+    pub step_7: FloatParam,
+
+    #[id = "step_8"]
+    pub step_8: FloatParam,
 }
 
 impl Default for SushiParams {
@@ -448,6 +613,56 @@ impl Default for SushiParams {
                 .with_smoother(SmoothingStyle::Linear(10.0)),
             reverb_decay: percentage_param("Reverb Decay", 0.6)
                 .with_smoother(SmoothingStyle::Linear(10.0)),
+
+            // --- Macros -------------------------------------------------------
+            macro_bright: percentage_param("Macro Bright", 0.5)
+                .with_smoother(SmoothingStyle::Linear(20.0)),
+            macro_motion: percentage_param("Macro Motion", 0.5)
+                .with_smoother(SmoothingStyle::Linear(20.0)),
+            macro_space: percentage_param("Macro Space", 0.5)
+                .with_smoother(SmoothingStyle::Linear(20.0)),
+
+            // --- Character ---------------------------------------------------
+            character: EnumParam::new("Character", Character::Silk),
+            drift: percentage_param("Drift", 0.15).with_smoother(SmoothingStyle::Linear(20.0)),
+            velocity: percentage_param("Velocity", 0.5).with_smoother(SmoothingStyle::Linear(20.0)),
+            tone: bipolar_param("Tone", 0.0).with_smoother(SmoothingStyle::Linear(20.0)),
+
+            // --- Arpeggiator -------------------------------------------------
+            arp_on: BoolParam::new("Arpeggiator", false),
+            arp_pattern: EnumParam::new("Arp Pattern", ArpPattern::Up),
+            arp_rate: EnumParam::new("Arp Rate", NoteDiv::Sixteenth),
+            arp_octaves: IntParam::new("Arp Octaves", 1, IntRange::Linear { min: 1, max: 3 }),
+            arp_gate: FloatParam::new(
+                "Arp Gate",
+                60.0,
+                FloatRange::Linear {
+                    min: 5.0,
+                    max: 100.0,
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_rounded(0))
+            .with_string_to_value(Arc::new(|text: &str| {
+                text.trim().trim_end_matches('%').trim().parse::<f32>().ok()
+            }))
+            .with_unit("%"),
+            arp_latch: BoolParam::new("Arp Latch", false),
+
+            // --- Step sequencer ----------------------------------------------
+            step_on: BoolParam::new("Step Sequencer", false),
+            step_rate: EnumParam::new("Step Rate", NoteDiv::Eighth),
+            step_dest: EnumParam::new("Step Dest", StepDest::Filter),
+            step_amount: percentage_param("Step Amount", 0.0)
+                .with_smoother(SmoothingStyle::Linear(20.0)),
+            step_smooth: BoolParam::new("Step Smooth", true),
+            step_1: step_param("Step 1", 0.5),
+            step_2: step_param("Step 2", 0.65),
+            step_3: step_param("Step 3", 0.35),
+            step_4: step_param("Step 4", 0.8),
+            step_5: step_param("Step 5", 0.5),
+            step_6: step_param("Step 6", 0.7),
+            step_7: step_param("Step 7", 0.3),
+            step_8: step_param("Step 8", 0.6),
         }
     }
 }
@@ -499,5 +714,59 @@ mod tests {
         assert_eq!(params.delay_time.value(), 350.0);
         assert_eq!(params.delay_feedback.value(), 0.3);
         assert_eq!(params.reverb_decay.value(), 0.6);
+    }
+
+    #[test]
+    fn the_new_defaults_match_the_spec() {
+        let params = SushiParams::default();
+
+        assert_eq!(params.macro_bright.value(), 0.5);
+        assert_eq!(params.macro_motion.value(), 0.5);
+        assert_eq!(params.macro_space.value(), 0.5);
+        assert_eq!(params.character.value(), Character::Silk);
+        assert_eq!(params.drift.value(), 0.15);
+        assert_eq!(params.velocity.value(), 0.5);
+        assert_eq!(params.tone.value(), 0.0);
+
+        assert!(!params.arp_on.value());
+        assert_eq!(params.arp_pattern.value(), ArpPattern::Up);
+        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
+        assert_eq!(params.arp_octaves.value(), 1);
+        assert_eq!(params.arp_gate.value(), 60.0);
+        assert!(!params.arp_latch.value());
+
+        assert!(!params.step_on.value());
+        assert_eq!(params.step_rate.value(), NoteDiv::Eighth);
+        assert_eq!(params.step_dest.value(), StepDest::Filter);
+        assert_eq!(params.step_amount.value(), 0.0);
+        assert!(params.step_smooth.value());
+
+        let steps = [
+            params.step_1.value(),
+            params.step_2.value(),
+            params.step_3.value(),
+            params.step_4.value(),
+            params.step_5.value(),
+            params.step_6.value(),
+            params.step_7.value(),
+            params.step_8.value(),
+        ];
+        assert_eq!(steps, [0.5, 0.65, 0.35, 0.8, 0.5, 0.7, 0.3, 0.6]);
+    }
+
+    #[test]
+    fn the_note_divisions_have_the_right_length() {
+        assert_eq!(NoteDiv::Quarter.beats(), 1.0);
+        assert_eq!(NoteDiv::Eighth.beats(), 0.5);
+        assert_eq!(NoteDiv::Sixteenth.beats(), 0.25);
+        assert_eq!(NoteDiv::ThirtySecond.beats(), 0.125);
+    }
+
+    #[test]
+    fn the_variants_have_readable_names() {
+        assert_eq!(NoteDiv::variants(), ["1/4", "1/8", "1/16", "1/32"]);
+        assert_eq!(ArpPattern::variants(), ["Up", "Down", "UpDown", "Random"]);
+        assert_eq!(StepDest::variants(), ["Pitch", "Filter", "Shape"]);
+        assert_eq!(Character::variants(), ["Silk", "Grit"]);
     }
 }

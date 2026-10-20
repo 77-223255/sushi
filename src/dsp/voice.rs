@@ -7,10 +7,23 @@ use std::f32::consts::PI;
 use super::adsr::{Adsr, EnvCoeffs};
 use super::filter::Svf;
 use super::osc::{Noise, Oscillator};
-use crate::params::{FilterMode, LfoTarget, Waveform};
+use crate::params::{FilterMode, LfoTarget, StepDest, Waveform};
 
 /// The maximum number of unison voices per oscillator.
 pub const MAX_UNISON: usize = 4;
+
+/// The rate of the drift, in Hz. The drift is a slow random modulation of the
+/// pitch and the cutoff.
+const DRIFT_RATE: f32 = 0.5;
+
+/// The smoothing factor of the drift value.
+const DRIFT_SMOOTHING: f32 = 0.002;
+
+/// The maximum pitch drift, in semitones.
+const DRIFT_PITCH: f32 = 0.06;
+
+/// The maximum cutoff drift, in octaves.
+const DRIFT_CUTOFF: f32 = 0.2;
 
 /// The frequency ratio of a single unison voice, relative to the base
 /// frequency. `offset` is the position of the voice in the unison bank, in the
@@ -79,6 +92,18 @@ pub struct VoiceSettings {
     pub lfo1_target: LfoTarget,
     pub lfo2_amount: f32,
     pub lfo2_target: LfoTarget,
+    /// How much the velocity of the note opens the filter, `0..1`.
+    pub velocity_amount: f32,
+    /// How much the voice drifts, `0..1`. The value is already scaled by the
+    /// character of the sound.
+    pub drift_amount: f32,
+    /// The destination of the step sequencer.
+    pub step_dest: StepDest,
+    /// The amount of the step sequencer, `0..1`. The value that is handed to
+    /// the voice is already scaled by it.
+    pub step_amount: f32,
+    /// Whether the harsh character is active. It adds a bit of filter drive.
+    pub character_grit: bool,
 }
 
 impl Default for VoiceSettings {
@@ -105,6 +130,11 @@ impl Default for VoiceSettings {
             lfo1_target: LfoTarget::Off,
             lfo2_amount: 0.0,
             lfo2_target: LfoTarget::Off,
+            velocity_amount: 0.0,
+            drift_amount: 0.0,
+            step_dest: StepDest::Filter,
+            step_amount: 0.0,
+            character_grit: false,
         }
     }
 }
@@ -122,6 +152,8 @@ pub struct Voice {
 
     /// Square root of the note velocity, used as an amplitude multiplier.
     velocity: f32,
+    /// The velocity of the note, `0..1`.
+    velocity_raw: f32,
     /// The pitch the voice is gliding towards, as a MIDI key number.
     target_pitch: f32,
     /// The current pitch, as a MIDI key number.
@@ -137,6 +169,15 @@ pub struct Voice {
     filter_env: Adsr,
     filter_left: Svf,
     filter_right: Svf,
+
+    /// The phase of the drift, `0..1`.
+    drift_phase: f32,
+    /// The value the drift is moving towards, `-1..1`.
+    drift_target: f32,
+    /// The current drift value, `-1..1`.
+    drift_value: f32,
+    /// The random number generator of the drift.
+    drift_rng: u32,
 }
 
 impl Voice {
@@ -154,6 +195,16 @@ impl Voice {
         filter_env.gate_on();
 
         let pitch = key.number_or_middle_c() as f32;
+        let velocity = velocity.clamp(0.0, 1.0);
+
+        // Every voice drifts on its own, so that a chord does not move as one
+        // block.
+        let mut drift_rng = 0x9E37_79B9 ^ (internal_voice_id as u32).wrapping_mul(0x2545_F491);
+        if drift_rng == 0 {
+            drift_rng = 0x2545_F491;
+        }
+        let drift_phase = (next_random(&mut drift_rng) * 0.5 + 0.5).clamp(0.0, 1.0);
+        let drift_target = next_random(&mut drift_rng);
 
         let mut voice = Self {
             voice_id,
@@ -161,7 +212,8 @@ impl Voice {
             key,
             internal_voice_id,
             releasing: false,
-            velocity: velocity.clamp(0.0, 1.0).sqrt(),
+            velocity: velocity.sqrt(),
+            velocity_raw: velocity,
             target_pitch: pitch,
             current_pitch: pitch,
             unison: settings.unison.clamp(1, MAX_UNISON),
@@ -172,6 +224,10 @@ impl Voice {
             filter_env,
             filter_left: Svf::new(),
             filter_right: Svf::new(),
+            drift_phase,
+            drift_target,
+            drift_value: 0.0,
+            drift_rng,
         };
 
         voice.reset_osc_phases();
@@ -237,14 +293,17 @@ impl Voice {
     }
 
     /// Renders a single stereo sample. `lfo1` and `lfo2` are the current global
-    /// LFO values in the `-1..1` range.
+    /// LFO values in the `-1..1` range. `step_value` is the value of the step
+    /// sequencer, already scaled by its amount.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn next_sample(
         &mut self,
         settings: &VoiceSettings,
         cutoff_hz: f32,
         lfo1: f32,
         lfo2: f32,
+        step_value: f32,
         sample_rate: f32,
     ) -> (f32, f32) {
         let sample_rate = sample_rate.max(1.0);
@@ -257,9 +316,20 @@ impl Voice {
         let (pitch_semitones, filter_octaves, amp_scale, pulse_width_offset) =
             lfo_modulation(settings, lfo1, lfo2);
 
+        // The step sequencer.
+        let (step_pitch, step_filter, step_shape) = step_modulation(settings, step_value);
+        let pulse_width_offset = pulse_width_offset + step_shape;
+
+        // The drift.
+        self.update_drift(sample_rate);
+        let drift_pitch = self.drift_value * settings.drift_amount * DRIFT_PITCH;
+        let drift_filter = self.drift_value * settings.drift_amount * DRIFT_CUTOFF;
+
         // The pitch, with optional glide.
         self.current_pitch += (self.target_pitch - self.current_pitch) * settings.glide_step;
-        let base_frequency = util::f32_midi_key_to_freq(self.current_pitch + pitch_semitones);
+        let base_frequency = util::f32_midi_key_to_freq(
+            self.current_pitch + pitch_semitones + step_pitch + drift_pitch,
+        );
 
         let unison = self.unison.clamp(1, MAX_UNISON);
         let unison_gain = 1.0 / (unison as f32).sqrt();
@@ -304,17 +374,27 @@ impl Voice {
         let key = self.key.number_or_middle_c() as f32;
         let octaves = settings.filter_env_octaves * filter_env
             + settings.filter_keytrack * (key - 60.0) / 12.0
-            + filter_octaves;
+            + settings.velocity_amount * self.velocity_raw * 1.5
+            + filter_octaves
+            + step_filter
+            + drift_filter;
         let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
         let g = (PI * cutoff / sample_rate).tan();
         let k = 2.0 - 1.98 * settings.resonance;
 
-        let left =
-            self.filter_left
-                .process(left, g, k, settings.filter_mode, settings.filter_drive);
-        let right =
-            self.filter_right
-                .process(right, g, k, settings.filter_mode, settings.filter_drive);
+        // The harsh character adds a bit of drive to the filter.
+        let drive = if settings.character_grit {
+            (settings.filter_drive + 0.12).clamp(0.0, 1.0)
+        } else {
+            settings.filter_drive.clamp(0.0, 1.0)
+        };
+
+        let left = self
+            .filter_left
+            .process(left, g, k, settings.filter_mode, drive);
+        let right = self
+            .filter_right
+            .process(right, g, k, settings.filter_mode, drive);
 
         // The amplifier.
         let gain = amp * self.velocity * amp_scale;
@@ -330,6 +410,31 @@ impl Voice {
             self.osc2_bank[index].set_phase(phase);
         }
     }
+
+    /// Moves the drift towards its new target. Every time the phase of the
+    /// drift wraps around, a new target is picked.
+    #[inline]
+    fn update_drift(&mut self, sample_rate: f32) {
+        self.drift_phase += DRIFT_RATE / sample_rate;
+        if self.drift_phase >= 1.0 {
+            self.drift_phase -= 1.0;
+            self.drift_target = next_random(&mut self.drift_rng);
+        }
+        self.drift_value += (self.drift_target - self.drift_value) * DRIFT_SMOOTHING;
+    }
+}
+
+/// A random number in the `-1..1` range.
+#[inline]
+fn next_random(rng: &mut u32) -> f32 {
+    let mut x = *rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *rng = x;
+
+    // Use the upper 24 bits so that the full float precision is used.
+    ((x >> 8) as f32 / 16_777_215.0) * 2.0 - 1.0
 }
 
 /// Renders a single oscillator with its unison bank into the stereo output.
@@ -402,6 +507,19 @@ fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, 
     )
 }
 
+/// Calculates the modulation of the step sequencer.
+///
+/// Returns the pitch offset in semitones, the filter offset in octaves and the
+/// pulse width offset.
+#[inline]
+fn step_modulation(settings: &VoiceSettings, step_value: f32) -> (f32, f32, f32) {
+    match settings.step_dest {
+        StepDest::Pitch => (step_value * 2.0, 0.0, 0.0),
+        StepDest::Filter => (0.0, step_value * 4.0, 0.0),
+        StepDest::Shape => (0.0, 0.0, step_value * 0.4),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,7 +537,7 @@ mod tests {
 
         let mut peak: f32 = 0.0;
         for _ in 0..4_800 {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
             assert!(left.is_finite() && right.is_finite());
             peak = peak.max(left.abs()).max(right.abs());
         }
@@ -452,8 +570,8 @@ mod tests {
 
         let mut difference = 0.0;
         for _ in 0..512 {
-            let (a, _) = voice_single.next_sample(&single, 2_000.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = voice_unison.next_sample(&unison, 2_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (a, _) = voice_single.next_sample(&single, 2_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = voice_unison.next_sample(&unison, 2_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
@@ -469,7 +587,7 @@ mod tests {
         let mut voice = voice(&settings);
 
         for _ in 0..480 {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
         }
         assert!(!voice.is_finished());
 
@@ -477,7 +595,7 @@ mod tests {
         assert!(voice.is_releasing());
 
         for _ in 0..48_000 {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
             if voice.is_finished() {
                 break;
             }
@@ -501,8 +619,8 @@ mod tests {
         // different from a voice that starts on that key.
         let mut difference = 0.0;
         for _ in 0..480 {
-            let (a, _) = gliding.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = direct.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (a, _) = gliding.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = direct.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
             difference += (a - b).abs();
         }
 
@@ -510,5 +628,125 @@ mod tests {
             difference > 0.01,
             "the voice did not glide (difference {difference})"
         );
+    }
+
+    #[test]
+    fn the_drift_stays_bounded() {
+        let settings = VoiceSettings {
+            drift_amount: 1.0,
+            ..VoiceSettings::default()
+        };
+        let mut voice = voice(&settings);
+
+        // The drift is slow, so a few seconds are enough to see it move.
+        for _ in 0..(SAMPLE_RATE as usize * 4) {
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+            assert!(
+                (-1.0..=1.0).contains(&voice.drift_value),
+                "the drift left its range: {}",
+                voice.drift_value
+            );
+            assert!(
+                (-1.0..=1.0).contains(&voice.drift_target),
+                "the drift target left its range: {}",
+                voice.drift_target
+            );
+        }
+
+        // The drift has to be audible, so it must have moved a little.
+        assert!(voice.drift_value.abs() > 0.001);
+    }
+
+    #[test]
+    fn the_step_modulates_the_pitch() {
+        let settings = VoiceSettings {
+            step_dest: StepDest::Pitch,
+            ..VoiceSettings::default()
+        };
+        let mut plain = voice(&settings);
+        let mut stepped = voice(&settings);
+
+        let mut difference = 0.0;
+        for _ in 0..512 {
+            let (a, _) = plain.next_sample(&settings, 3_000.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = stepped.next_sample(&settings, 3_000.0, 0.0, 0.0, 1.0, SAMPLE_RATE);
+            difference += (a - b).abs();
+        }
+
+        assert!(
+            difference > 0.1,
+            "the step did not change the pitch (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn the_step_modulates_the_filter() {
+        let settings = VoiceSettings {
+            step_dest: StepDest::Filter,
+            ..VoiceSettings::default()
+        };
+        let mut plain = voice(&settings);
+        let mut stepped = voice(&settings);
+
+        let mut difference = 0.0;
+        for _ in 0..512 {
+            let (a, _) = plain.next_sample(&settings, 500.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = stepped.next_sample(&settings, 500.0, 0.0, 0.0, 1.0, SAMPLE_RATE);
+            difference += (a - b).abs();
+        }
+
+        assert!(
+            difference > 0.01,
+            "the step did not change the filter (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn the_velocity_opens_the_filter() {
+        let settings = VoiceSettings {
+            velocity_amount: 1.0,
+            filter_env_octaves: 0.0,
+            ..VoiceSettings::default()
+        };
+
+        let mut quiet = Voice::new(1, Channel::Number(0), Key::Number(60), 0, 0.1, &settings);
+        let mut loud = Voice::new(2, Channel::Number(0), Key::Number(60), 1, 1.0, &settings);
+
+        let mut difference = 0.0;
+        for _ in 0..512 {
+            let (a, _) = quiet.next_sample(&settings, 300.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = loud.next_sample(&settings, 300.0, 0.0, 0.0, 0.0, SAMPLE_RATE);
+            difference += (a - b).abs();
+        }
+
+        assert!(
+            difference > 0.01,
+            "the velocity did not change the sound (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn the_step_modulation_math_is_sane() {
+        let settings = VoiceSettings {
+            step_dest: StepDest::Pitch,
+            ..VoiceSettings::default()
+        };
+        assert_eq!(step_modulation(&settings, 1.0), (2.0, 0.0, 0.0));
+        assert_eq!(step_modulation(&settings, -1.0), (-2.0, 0.0, 0.0));
+
+        let settings = VoiceSettings {
+            step_dest: StepDest::Filter,
+            ..VoiceSettings::default()
+        };
+        assert_eq!(step_modulation(&settings, 1.0), (0.0, 4.0, 0.0));
+        assert_eq!(step_modulation(&settings, -1.0), (0.0, -4.0, 0.0));
+
+        let settings = VoiceSettings {
+            step_dest: StepDest::Shape,
+            ..VoiceSettings::default()
+        };
+        assert_eq!(step_modulation(&settings, 1.0), (0.0, 0.0, 0.4));
+        assert_eq!(step_modulation(&settings, -1.0), (0.0, 0.0, -0.4));
     }
 }
