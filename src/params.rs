@@ -27,6 +27,17 @@ pub enum FilterMode {
     Notch,
 }
 
+/// The slope of the filter. The four-pole mode runs the signal through two
+/// cascaded state variable filters.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum FilterSlope {
+    #[default]
+    #[name = "12 dB"]
+    TwoPole,
+    #[name = "24 dB"]
+    FourPole,
+}
+
 /// The shapes an LFO can produce.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum LfoWaveform {
@@ -296,6 +307,9 @@ pub struct SushiParams {
     // --- Filter -----------------------------------------------------------
     #[id = "filter_mode"]
     pub filter_mode: EnumParam<FilterMode>,
+
+    #[id = "filter_slope"]
+    pub filter_slope: EnumParam<FilterSlope>,
 
     #[id = "cutoff"]
     pub cutoff: FloatParam,
@@ -627,6 +641,7 @@ impl Default for SushiParams {
 
             // --- Filter -------------------------------------------------------
             filter_mode: EnumParam::new("Filter Mode", FilterMode::Lowpass),
+            filter_slope: EnumParam::new("Filter Slope", FilterSlope::TwoPole),
             cutoff: FloatParam::new(
                 "Cutoff",
                 3_000.0,

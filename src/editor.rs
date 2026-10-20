@@ -1238,7 +1238,10 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         let p = ctx.params;
         match index {
             0 => group(ui, rect, "VCF", zoom, |ui, part| match part {
-                Part::Header => ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0),
+                Part::Header => {
+                    ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0);
+                    ctx.popup(ui, "filter_slope", &p.filter_slope, 52.0);
+                }
                 Part::Body => {
                     column_row_fixed(ui, "filter", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
                         let p = ctx.params;
@@ -3655,7 +3658,7 @@ mod tests {
 
         let counts = editor.state.counts;
         assert_eq!(counts.sliders, 54, "unexpected number of sliders");
-        assert_eq!(counts.popups, 10, "unexpected number of popups");
+        assert_eq!(counts.popups, 11, "unexpected number of popups");
         assert_eq!(counts.checks, 2, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
@@ -3666,14 +3669,14 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The synthesizer has 67 parameters: 54 of them are on the panel as
-        // sliders, 10 are choices, 2 are switches and one is a pair of
-        // buttons. Every one of them can be reached.
+        // The panel page has 68 parameters: 54 sliders, 11 choices, 2 switches
+        // and one pair of buttons. The modulation matrix adds 24 more on its
+        // own page, which has its own test.
         let continuous = counts.sliders;
         assert_eq!(continuous, 54);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            67
+            68
         );
     }
 
@@ -4259,7 +4262,7 @@ mod tests {
         editor.state.counts = Counts::default();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert_eq!(editor.state.counts.sliders, 54);
-        assert_eq!(editor.state.counts.popups, 10);
+        assert_eq!(editor.state.counts.popups, 11);
     }
 
     #[test]

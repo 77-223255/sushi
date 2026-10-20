@@ -9,7 +9,7 @@
 - 双振荡器：Sine / Triangle / Saw / Square / Pulse，支持八度、半音、微调、脉宽、电平
 - 锯齿 / 方波 / 脉冲 / 三角均为 PolyBLEP 限带波形，不产生混叠
 - 每个振荡器 1–4 重 Unison，带失谐与立体声展宽；每个声部随机起始相位，避免和弦相位抵消
-- 噪声、TPT 状态变量滤波器（LP/HP/BP/Notch）带 Drive，共振越高输入越柔和
+- 噪声、TPT 状态变量滤波器（LP/HP/BP/Notch，12/24 dB 斜率可选）带 Drive，共振越高输入越柔和
 - 每声部带直流阻断（DC Blocker），波形不会累积直流偏置
 - 独立的 Amp / Filter ADSR 包络
 - 双 LFO（Sine / Triangle / Saw / Square / S&H），可路由到音高、滤波、音量、脉宽
@@ -34,7 +34,7 @@
 - 深色复古仪器面板：暖纸色丝印 + 单一琥珀结构色；绿色只表示“活着”的状态（LCD、示波器、声部灯、ARP 灯、悬停的推子）
 - 四个信号带：`01 GENERATORS`（VCO 1 / VCO 2 / PULSE WIDTH / SOURCE MIXER）→ `02 SHAPING`（VCF / MOD ENV / AMP ENV）→ `03 MODULATION`（LFO 1 / LFO 2 / ARP / VOICE）→ `04 OUTPUT`（FX / MACROS / VCA）
 - 标题栏 **MOD** 按钮把上方两个信号带切换成 **8 槽调制矩阵**（两行 × 四槽，源 / 目标 / 双极 AMT 推子）；下方 `03 MODULATION` 与 `04 OUTPUT` 永远不动，演奏位置不丢
-- 每个分区：近白 13 px 标题 + 4 px 琥珀标签 + 短线；参数名 9 px 暗纸色，形成标题 / 参数 / 数值三层
+- 每个分区：近白 13 px 标题 + 4 px 琥珀标签 + 短线；参数名 9 px 暗纸色，形成标题 / 参数 / 数值三层；VCF 标题行内可切 12/24 dB
 - 推子为深色铣槽 + 开口侧轨 + 五档刻度；双极参数有中心刻线；纸色推子帽带帽沿和永久中线，悬停/拖动时变绿
 - 固定列距（发生器 52、塑形/调制 60、Voice 48、输出 60），推子中心在分行内可预测；FX 的 CHORUS / DELAY / REVERB 子标题放在标题行，所有推子共享同一行程
 - **右键任意推子**弹出数值输入框，回车或 OK 精确写入；不再为每个推子保留横向数字框，面板更紧凑
@@ -57,7 +57,7 @@ flowchart LR
     O1["OSC 1<br/>5 波形 + Unison"] --> MIX["混音 + 立体声展开"]
     O2["OSC 2<br/>5 波形 + Unison"] --> MIX
     N["Noise"] --> MIX
-    MIX --> F["VCF<br/>SVF LP/HP/BP/Notch + Drive"]
+    MIX --> F["VCF<br/>SVF LP/HP/BP/Notch · 12/24 dB + Drive"]
     FE["MOD ENV"] --> F
     KT["Keytrack"] --> F
     VEL["Velocity"] --> F
@@ -99,7 +99,7 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 | VCO 1 / VCO 2 | `osc1_*` / `osc2_*`（wave、octave、semi、fine） | `src/dsp/osc.rs`、`src/dsp/voice.rs` |
 | SOURCE MIXER | `osc*_level`、`noise_level`、`unison`、`detune`、`spread` | `src/dsp/voice.rs` |
 | PULSE WIDTH | `osc1_pw`、`osc2_pw` | `src/dsp/osc.rs` |
-| VCF | `filter_mode`、`cutoff`、`resonance`、`filter_env_amount`、`filter_keytrack`、`filter_drive` | `src/dsp/filter.rs` |
+| VCF | `filter_mode`、`filter_slope`、`cutoff`、`resonance`、`filter_env_amount`、`filter_keytrack`、`filter_drive` | `src/dsp/filter.rs` |
 | MOD ENV | `fe_attack/decay/sustain/release` | `src/dsp/adsr.rs` |
 | AMP ENV | `ae_attack/decay/sustain/release` | `src/dsp/adsr.rs` |
 | LFO / CLK | `lfo1_*`、`lfo2_*`（wave、rate、amount、target） | `src/dsp/lfo.rs` |
@@ -108,7 +108,7 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 | FX | `chorus_*`、`delay_*`、`reverb_*` | `src/dsp/fx.rs` |
 | MACROS / VCA | `macro_bright/motion/space`、`character`、`volume`、`tone` | `src/lib.rs` |
 | MOD MATRIX | `mod1_source` … `mod8_amount`（8 × 源/目标/深度） | `src/dsp/mod_matrix.rs`、`src/dsp/voice.rs`、`src/lib.rs` |
-| PATCHES | 全部 91 个参数（JSON） | `src/patch.rs`、`src/editor/presets.rs` |
+| PATCHES | 全部 92 个参数（JSON） | `src/patch.rs`、`src/editor/presets.rs` |
 
 ## 修改指南
 
@@ -124,7 +124,7 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 
 ## 补丁（Patch）
 
-补丁是纯 JSON 文本，任何语言都能读写。保存时写出全部 91 个参数，读取时先回到出厂默认值，
+补丁是纯 JSON 文本，任何语言都能读写。保存时写出全部 92 个参数，读取时先回到出厂默认值，
 再写入文件中出现的参数——缺失的参数保持默认，未知参数只警告不报错，因此新旧版本互相兼容。
 
 ```json

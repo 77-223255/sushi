@@ -8,7 +8,7 @@ use super::adsr::{Adsr, EnvCoeffs};
 use super::filter::Svf;
 use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
-use crate::params::{FilterMode, LfoTarget, MOD_SLOTS, ModSlot, Waveform};
+use crate::params::{FilterMode, FilterSlope, LfoTarget, MOD_SLOTS, ModSlot, Waveform};
 
 /// The maximum number of unison voices per oscillator.
 pub const MAX_UNISON: usize = 4;
@@ -79,6 +79,8 @@ pub struct VoiceSettings {
     pub osc2: OscSettings,
     pub noise_level: f32,
     pub filter_mode: FilterMode,
+    /// Whether the filter runs one or two cascaded stages.
+    pub filter_slope: FilterSlope,
     /// `0..1`.
     pub resonance: f32,
     /// The filter envelope amount in octaves, `-5..5`.
@@ -130,6 +132,7 @@ impl Default for VoiceSettings {
             },
             noise_level: 0.0,
             filter_mode: FilterMode::Lowpass,
+            filter_slope: FilterSlope::TwoPole,
             resonance: 0.2,
             filter_env_octaves: 2.0,
             filter_keytrack: 0.3,
@@ -217,6 +220,8 @@ pub struct Voice {
     filter_env: Adsr,
     filter_left: Svf,
     filter_right: Svf,
+    filter_left2: Svf,
+    filter_right2: Svf,
     dc_left: DcBlocker,
     dc_right: DcBlocker,
 
@@ -300,6 +305,8 @@ impl Voice {
             filter_env,
             filter_left: Svf::new(),
             filter_right: Svf::new(),
+            filter_left2: Svf::new(),
+            filter_right2: Svf::new(),
             dc_left: DcBlocker::default(),
             dc_right: DcBlocker::default(),
             control_counter: CONTROL_RATE - 1,
@@ -488,6 +495,16 @@ impl Voice {
             settings.filter_mode,
             drive,
         );
+        let (left, right) = if settings.filter_slope == FilterSlope::FourPole {
+            (
+                self.filter_left2
+                    .process(left, self.g, self.k, settings.filter_mode, drive),
+                self.filter_right2
+                    .process(right, self.g, self.k, settings.filter_mode, drive),
+            )
+        } else {
+            (left, right)
+        };
 
         // The DC blocker, which takes the offset of the wave out of the
         // signal.
@@ -1053,6 +1070,36 @@ mod tests {
         assert!(
             difference > 0.01,
             "the velocity did not change the sound (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn the_four_pole_filter_is_steeper() {
+        fn energy(slope: FilterSlope) -> f32 {
+            let settings = VoiceSettings {
+                filter_mode: FilterMode::Lowpass,
+                filter_slope: slope,
+                filter_env_octaves: 0.0,
+                filter_keytrack: 0.0,
+                velocity_amount: 0.0,
+                ..plain_settings()
+            };
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(84), 0, 1.0, &settings);
+            let mut sum = 0.0;
+            for index in 0..2_048 {
+                let (left, _) = voice.next_sample(&settings, 120.0, 0.0, 0.0, SAMPLE_RATE);
+                if index >= 512 {
+                    sum += left * left;
+                }
+            }
+            sum.sqrt()
+        }
+
+        let two_pole = energy(FilterSlope::TwoPole);
+        let four_pole = energy(FilterSlope::FourPole);
+        assert!(
+            four_pole < two_pole * 0.8,
+            "the four-pole filter is not steeper: {four_pole} vs {two_pole}"
         );
     }
 

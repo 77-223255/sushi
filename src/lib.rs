@@ -218,6 +218,7 @@ impl Sushi {
             osc2,
             noise_level: params.noise_level.value(),
             filter_mode: params.filter_mode.value(),
+            filter_slope: params.filter_slope.value(),
             resonance: params.resonance.value(),
             filter_env_octaves: params.filter_env_amount.value() * 5.0,
             filter_keytrack: params.filter_keytrack.value(),

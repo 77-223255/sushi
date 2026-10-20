@@ -484,6 +484,7 @@ sushi_params! {
     "voices" => voices,
     "volume" => volume,
     "filter_mode" => filter_mode,
+    "filter_slope" => filter_slope,
     "cutoff" => cutoff,
     "resonance" => resonance,
     "filter_env_amount" => filter_env_amount,
@@ -805,12 +806,12 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 91);
+        assert_eq!(PARAM_IDS.len(), 92);
 
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 91, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 92, "the ids of the parameters are not unique");
     }
 
     #[test]
@@ -821,8 +822,8 @@ mod tests {
         reset_count();
         apply_defaults(&params, &setter);
 
-        // Every one of the 91 parameters is written.
-        assert_eq!(set_count(), 91);
+        // Every one of the 92 parameters is written.
+        assert_eq!(set_count(), 92);
     }
 
     #[test]
@@ -885,7 +886,7 @@ mod tests {
         assert_eq!(document["name"], "TEST");
 
         let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 91);
+        assert_eq!(map.len(), 92);
         for id in PARAM_IDS {
             assert!(map.contains_key(*id), "the parameter {id} is missing");
         }
