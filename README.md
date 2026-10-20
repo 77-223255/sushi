@@ -26,6 +26,7 @@
 **界面**
 
 - Win95 / Pascal 风格单页面板：竖向推子（滑块完全嵌入凹槽）、所有参数可精确输入数值、波形/模式点击弹出
+- 双击推子、开关、性格按钮或弹窗，即可将参数恢复到出厂默认值
 - 4 行模块化分区：OSC / FILTER / MIX · ENV / LFO · STEP / ARP / VOICE · FX / MACROS / OUTPUT
 
 ## 构建

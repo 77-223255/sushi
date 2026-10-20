@@ -202,6 +202,15 @@ struct EditorState {
     /// The widgets that were drawn in the last frame.
     #[cfg(test)]
     counts: Counts,
+    /// The places of the check boxes of the last frame.
+    #[cfg(test)]
+    check_rects: Vec<egui::Rect>,
+    /// The places of the radio buttons of the last frame.
+    #[cfg(test)]
+    radio_rects: Vec<egui::Rect>,
+    /// The places of the small sliders of the steps of the last frame.
+    #[cfg(test)]
+    mini_rects: Vec<egui::Rect>,
 }
 
 impl EditorState {
@@ -260,6 +269,12 @@ impl SushiEditor {
                 clipping: 0.0,
                 #[cfg(test)]
                 counts: Counts::default(),
+                #[cfg(test)]
+                check_rects: Vec::new(),
+                #[cfg(test)]
+                radio_rects: Vec::new(),
+                #[cfg(test)]
+                mini_rects: Vec::new(),
             },
             step_index,
             arp_led,
@@ -419,6 +434,10 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
     // The wordmark. The second copy makes it look a little bolder.
     let wordmark = FontId::proportional(14.0);
+    let wordmark_width = painter
+        .layout_no_wrap("SUSHI".to_string(), wordmark.clone(), TEXT)
+        .size()
+        .x;
     painter.text(
         rect.left_top() + egui::vec2(6.0, 9.0),
         Align2::LEFT_TOP,
@@ -430,13 +449,23 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         rect.left_top() + egui::vec2(6.6, 9.0),
         Align2::LEFT_TOP,
         "SUSHI",
-        wordmark,
+        wordmark.clone(),
         TEXT,
     );
     painter.text(
         rect.left_top() + egui::vec2(7.0, 27.0),
         Align2::LEFT_TOP,
         "POLYPHONIC SYNTHESIZER",
+        FontId::proportional(8.0),
+        MUTED,
+    );
+
+    // The hint that tells the user that a double click resets a parameter. It
+    // sits next to the wordmark, where there is still enough room.
+    painter.text(
+        egui::pos2(rect.left() + 6.6 + wordmark_width + 14.0, rect.top() + 17.0),
+        Align2::LEFT_CENTER,
+        "DBL-CLICK = RESET",
         FontId::proportional(8.0),
         MUTED,
     );
@@ -1276,11 +1305,17 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let mut value = param.value();
         let response = v_slider(ui, &mut value, knob);
+        // A double click resets the parameter to its factory default. The
+        // reset is done after the value of the click, so that it wins.
+        let reset = response.double_clicked();
         if self.begin_gesture(id, &response, ui) {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
             self.setter.set_parameter(param, value);
+        }
+        if reset {
+            self.reset_to_default(id, param);
         }
         if self.end_gesture(id, &response, ui) {
             self.setter.end_set_parameter(param);
@@ -1306,11 +1341,17 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let mut value = param.value() as f32;
         let response = v_slider(ui, &mut value, knob);
+        // A double click resets the parameter to its factory default. The
+        // reset is done after the value of the click, so that it wins.
+        let reset = response.double_clicked();
         if self.begin_gesture(id, &response, ui) {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
             self.setter.set_parameter(param, value.round() as i32);
+        }
+        if reset {
+            self.reset_to_default(id, param);
         }
         if self.end_gesture(id, &response, ui) {
             self.setter.end_set_parameter(param);
@@ -1340,11 +1381,19 @@ impl<'a, 'b> Ctx<'a, 'b> {
         let knob = Knob::percent(MINI_SLIDER_HEIGHT).with_width(MINI_SLIDER_WIDTH);
         let mut value = param.value();
         let response = v_slider(ui, &mut value, &knob);
+        #[cfg(test)]
+        self.state.mini_rects.push(response.rect);
+        // A double click resets the parameter to its factory default. The
+        // reset is done after the value of the click, so that it wins.
+        let reset = response.double_clicked();
         if self.begin_gesture(id, &response, ui) {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
             self.setter.set_parameter(param, value);
+        }
+        if reset {
+            self.reset_to_default(id, param);
         }
         if self.end_gesture(id, &response, ui) {
             self.setter.end_set_parameter(param);
@@ -1461,7 +1510,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         let current = param.value();
         let variants = T::variants();
 
-        egui::ComboBox::from_id_salt(id)
+        let response = egui::ComboBox::from_id_salt(id)
             .width(width)
             .selected_text(variants[T::to_index(current)])
             .truncate()
@@ -1472,7 +1521,15 @@ impl<'a, 'b> Ctx<'a, 'b> {
                         self.setter.set_parameter(param, variant);
                     }
                 }
-            });
+            })
+            .response;
+
+        // A double click on the button of the popup resets the parameter to
+        // its factory default.
+        if response.double_clicked() {
+            self.setter
+                .set_parameter(param, param.default_plain_value());
+        }
     }
 
     /// Draws a check box with a label. Clicking it switches the parameter.
@@ -1481,6 +1538,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.count(Widget::Check);
 
         let (rect, _) = ui.allocate_exact_size(egui::vec2(CHECK_SIZE, CHECK_SIZE), Sense::hover());
+        #[cfg(test)]
+        self.state.check_rects.push(rect);
         let response = ui.interact(
             rect,
             ui.scope_id().with(("sushi-check", id)),
@@ -1498,7 +1557,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
             );
         }
 
-        if response.clicked() {
+        if response.double_clicked() {
+            // A double click resets the parameter to its factory default,
+            // even though the two clicks would switch it twice.
+            self.setter
+                .set_parameter(param, param.default_plain_value());
+        } else if response.clicked() {
             self.setter.set_parameter(param, !param.value());
         }
 
@@ -1523,6 +1587,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
         for (index, variant) in variants.iter().enumerate() {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(button_width, RADIO_HEIGHT), Sense::hover());
+            #[cfg(test)]
+            self.state.radio_rects.push(rect);
             let response = ui.interact(
                 rect,
                 ui.scope_id().with(("sushi-radio", id, index)),
@@ -1546,7 +1612,11 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 TEXT,
             );
 
-            if response.clicked() {
+            if response.double_clicked() {
+                // A double click resets the parameter to its factory default.
+                self.setter
+                    .set_parameter(param, param.default_plain_value());
+            } else if response.clicked() {
                 self.setter.set_parameter(param, T::from_index(index));
             }
         }
@@ -1564,6 +1634,24 @@ impl<'a, 'b> Ctx<'a, 'b> {
     fn mutate(&mut self) {
         presets::mutate(self.params, self.setter, &mut self.state.rng);
         self.state.dirty = true;
+    }
+
+    /// Puts a parameter back to its factory default. The reset is done
+    /// inside of the automation gesture of the widget, so that the host
+    /// records it like any other change of the parameter.
+    fn reset_to_default<P: Param>(&mut self, id: &'static str, param: &P) {
+        if !self.state.gestures.contains(id) {
+            // The gesture was already closed (a very fast click), so the
+            // reset gets a gesture of its own.
+            self.setter.begin_set_parameter(param);
+            self.setter
+                .set_parameter(param, param.default_plain_value());
+            self.setter.end_set_parameter(param);
+            return;
+        }
+
+        self.setter
+            .set_parameter(param, param.default_plain_value());
     }
 
     /// Opens the automation gesture of a parameter. The gesture starts when
@@ -2342,6 +2430,20 @@ mod tests {
             .collect()
     }
 
+    /// All the texts of a frame, with their positions and their sizes.
+    fn text_shapes(output: &egui::FullOutput) -> Vec<(String, egui::Pos2, egui::Vec2)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => {
+                    Some((text.galley.job.text.clone(), text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Clicks at the given position.
     fn click(pos: egui::Pos2) -> Vec<egui::RawInput> {
         vec![
@@ -2359,6 +2461,18 @@ mod tests {
                 modifiers: egui::Modifiers::default(),
             }]),
         ]
+    }
+
+    /// Two clicks at the given position, close enough to be a double click.
+    fn double_click(pos: egui::Pos2) -> Vec<egui::RawInput> {
+        let mut frames = click(pos);
+        frames.extend(click(pos));
+        frames
+    }
+
+    /// Waits long enough for the window of the double click to pass.
+    fn wait() -> Vec<egui::RawInput> {
+        vec![input(vec![]); 25]
     }
 
     #[test]
@@ -2671,5 +2785,171 @@ mod tests {
 
         assert!(editor.state.dirty);
         assert!(params.cutoff.value() != cutoff);
+    }
+
+    #[test]
+    fn double_clicking_a_slider_resets_it_to_the_default() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        // The cutoff slider is the first one of the third group of the first
+        // row.
+        let rect = sliders[10];
+
+        // A click at the top of the slider moves it away from its default.
+        let top = egui::pos2(rect.center().x, rect.top() + 6.0);
+        run_frames(&ctx, &mut editor, click(top));
+        assert_ne!(params.cutoff.value(), 3_000.0);
+
+        // The double click puts it back to its default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+        let cutoff = params.cutoff.value();
+        assert!(
+            (cutoff - 3_000.0).abs() < 1.0,
+            "the cutoff was not reset: {cutoff}"
+        );
+    }
+
+    #[test]
+    fn double_clicking_a_slider_opens_and_closes_a_gesture() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let rect = sliders[10];
+
+        GESTURES.with(|gestures| gestures.set(0));
+        SETS.with(|sets| sets.set(0));
+
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+
+        // The two clicks open and close a gesture each, and the reset is
+        // done inside of the gesture of the second click.
+        let gestures = GESTURES.with(|gestures| gestures.get());
+        let sets = SETS.with(|sets| sets.get());
+        assert_eq!(gestures, 4, "the gestures were not opened and closed");
+        assert_eq!(sets, 3, "the value was not set three times");
+    }
+
+    #[test]
+    fn double_clicking_a_step_slider_resets_it_to_the_default() {
+        let (ctx, mut editor, params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        // The first step of the sequencer.
+        let rect = editor.state.mini_rects[0];
+
+        // A click at the top of the slider moves it away from its default.
+        let top = egui::pos2(rect.center().x, rect.top() + 4.0);
+        run_frames(&ctx, &mut editor, click(top));
+        assert_ne!(params.step_1.value(), 0.5);
+
+        // The double click puts it back to its default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+        let step = params.step_1.value();
+        assert!((step - 0.5).abs() < 0.001, "the step was not reset: {step}");
+    }
+
+    #[test]
+    fn double_clicking_a_check_box_resets_it_to_the_default() {
+        let (ctx, mut editor, params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        // The first check box is the switch of the step sequencer.
+        let rect = editor.state.check_rects[0];
+        let pos = rect.center();
+
+        // A single click switches the check box on.
+        run_frames(&ctx, &mut editor, click(pos));
+        assert!(params.step_on.value());
+
+        // The double click puts it back to its default, even though the two
+        // clicks would switch it twice.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(pos));
+        assert!(!params.step_on.value());
+    }
+
+    #[test]
+    fn double_clicking_the_character_resets_it_to_the_default() {
+        let (ctx, mut editor, params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        // The second button of the radio pair is the harsh character.
+        let rect = editor.state.radio_rects[1];
+        let pos = rect.center();
+
+        // A single click picks the harsh character.
+        run_frames(&ctx, &mut editor, click(pos));
+        assert_eq!(params.character.value(), crate::params::Character::Grit);
+
+        // The double click puts it back to the default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(pos));
+        assert_eq!(params.character.value(), crate::params::Character::Silk);
+    }
+
+    #[test]
+    fn double_clicking_a_popup_resets_it_to_the_default() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        // The waveform popup of the first oscillator.
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "Saw")
+            .unwrap();
+        let button = pos + egui::vec2(2.0, 2.0);
+
+        // Open the popup and pick the triangle.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(button)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![]),
+            ],
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, triangle) = texts(&output)
+            .into_iter()
+            .find(|(text, pos)| text == "Triangle" && pos.x < 200.0)
+            .unwrap();
+        run_frames(&ctx, &mut editor, click(triangle + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.osc1_wave.value(), crate::params::Waveform::Triangle);
+
+        // The double click on the button of the popup puts the parameter back
+        // to its default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(button));
+        assert_eq!(params.osc1_wave.value(), crate::params::Waveform::Saw);
+    }
+
+    #[test]
+    fn the_header_hints_at_the_double_click_reset() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let (_, pos, size) = text_shapes(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == "DBL-CLICK = RESET")
+            .expect("the header has no hint");
+
+        // The hint sits in the header, next to the wordmark, and it does not
+        // touch the presets.
+        assert!(pos.y > MARGIN && pos.y < MARGIN + HEADER_HEIGHT);
+        assert!(
+            pos.x + size.x < MARGIN + 150.0,
+            "the hint overlaps the presets: {pos:?} {size:?}"
+        );
     }
 }
