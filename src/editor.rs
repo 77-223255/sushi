@@ -2,12 +2,16 @@
 //!
 //! Every continuous parameter is a vertical slider whose handle is a band that
 //! is fully embedded inside the track (it never sticks out), every parameter
-//! can also be typed into a small numeric field, and every choice parameter
-//! opens a popup menu. The parameters are grouped into sections that are named
-//! by a coloured title and a thin rule below a header that holds the wordmark,
-//! the factory presets and a small oscilloscope. Nothing on the panel has a
-//! bevel, a shadow or a rounded corner: every widget is a flat fill with a
-//! single 1 px border.
+//! can also be typed into a small numeric popup that opens with a right click,
+//! and every choice parameter opens a popup menu. The parameters are grouped
+//! into sections that are named by a coloured title and a thin rule below a
+//! header that holds the wordmark, the factory presets and a small
+//! oscilloscope. Nothing on the panel has a bevel, a shadow or a rounded
+//! corner: every widget is a flat fill with a single 1 px border.
+//!
+//! The panel is drawn with the Silkscreen pixel font, which is embedded in the
+//! program. Every size of the design is multiplied by the zoom of the panel,
+//! and so is every font.
 
 mod presets;
 
@@ -74,6 +78,56 @@ const STATUS_OK: Color32 = Color32::from_rgb(0x00, 0x60, 0x00);
 /// The color of the text of a status line that reports a problem.
 const STATUS_ERROR: Color32 = Color32::from_rgb(0x90, 0x10, 0x10);
 
+// --- The fonts ---------------------------------------------------------------
+
+/// The pixel font of the panel, in its regular weight.
+const SILKSCREEN_REGULAR: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Regular.ttf");
+/// The pixel font of the panel, in its bold weight.
+const SILKSCREEN_BOLD: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Bold.ttf");
+/// The name of the font family that holds the bold pixel font.
+const BOLD_FAMILY: &str = "sushi-bold";
+
+/// Installs the pixel fonts of the panel. The regular weight becomes the
+/// default of the proportional and of the monospaced families; the bold
+/// weight gets its own family for the titles. The default egui fonts stay in
+/// the list as a fallback for glyphs that Silkscreen does not have.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "silkscreen".to_owned(),
+        Arc::new(egui::FontData::from_static(SILKSCREEN_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "silkscreen-bold".to_owned(),
+        Arc::new(egui::FontData::from_static(SILKSCREEN_BOLD)),
+    );
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, "silkscreen".to_owned());
+    }
+
+    let mut bold_list = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    bold_list.insert(0, "silkscreen-bold".to_owned());
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(Arc::from(BOLD_FAMILY)), bold_list);
+
+    ctx.set_fonts(fonts);
+}
+
+/// The font family of the bold titles.
+fn bold() -> egui::FontFamily {
+    egui::FontFamily::Name(Arc::from(BOLD_FAMILY))
+}
+
 // --- Layout -----------------------------------------------------------------
 
 pub const WINDOW_WIDTH: f32 = 960.0;
@@ -95,17 +149,17 @@ const GROUP_GAP: f32 = 8.0;
 const GROUP_PADDING: f32 = 4.0;
 /// The height of the line that holds the title of a section and the controls
 /// of its header. The rule below the line sits on its bottom edge.
-const TITLE_HEIGHT: f32 = 18.0;
+const TITLE_HEIGHT: f32 = 20.0;
 /// The horizontal gap between two parameter columns.
 const COLUMN_GAP: f32 = 4.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
-/// rows and are scaled with the height of the window.
+/// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [144.0, 136.0, 138.0, 126.0];
 
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
 /// VCF`. They are the proportions of the sections and are scaled with the
-/// width of the window.
+/// zoom of the panel.
 const ROW_A_WIDTHS: [f32; 4] = [200.0, 160.0, 280.0, 280.0];
 /// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
 /// ENV | LFO / CLK`.
@@ -128,11 +182,12 @@ const MACRO_SLIDER_WIDTH: f32 = 24.0;
 const HANDLE_HEIGHT: f32 = 6.0;
 /// How far the track and the handle are kept away from the edge of the slider.
 const GROOVE_INSET: f32 = 2.0;
-/// The size of the numeric value fields.
-const FIELD_WIDTH: f32 = 38.0;
-const FIELD_HEIGHT: f32 = 14.0;
+/// The smallest height of the buttons and of the text fields of the panel.
+const INTERACT_HEIGHT: f32 = 16.0;
 /// The height of the captions above the controls.
-const LABEL_HEIGHT: f32 = 11.0;
+const LABEL_HEIGHT: f32 = 12.0;
+/// The width of the popup that edits the value of a parameter.
+const VALUE_POPUP_WIDTH: f32 = 180.0;
 /// The diameter of the small lights.
 const LED_SIZE: f32 = 6.0;
 /// The number of the lights of the voice meter.
@@ -145,23 +200,19 @@ const VOICE_LED_HEIGHT: f32 = 8.0;
 const VOICE_LED_GAP: f32 = 2.0;
 /// The gap between the caption of the voice meter and its lights.
 const VOICE_METER_GAP: f32 = 8.0;
-/// The number of the lights of the position strip of the arpeggiator.
-const POS_LEDS: usize = 16;
-/// The width of a light of the position strip of the arpeggiator.
-const POS_LED_WIDTH: f32 = 6.0;
-/// The height of a light of the position strip of the arpeggiator.
-const POS_LED_HEIGHT: f32 = 8.0;
-/// The gap between two lights of the position strip of the arpeggiator.
-const POS_LED_GAP: f32 = 2.0;
-/// The width of the position strip of the arpeggiator.
-const POS_STRIP_WIDTH: f32 =
-    POS_LEDS as f32 * POS_LED_WIDTH + (POS_LEDS as f32 - 1.0) * POS_LED_GAP;
-/// The gap between the sliders and the position strip of the arpeggiator.
-const POS_STRIP_GAP: f32 = 12.0;
+/// The number of the sectors of the ring of the arpeggiator.
+const POS_SECTORS: usize = 16;
+/// The width of the area that holds the ring of the arpeggiator.
+const POS_RING_AREA: f32 = 110.0;
+/// The gap between the sliders and the ring of the arpeggiator.
+const POS_RING_GAP: f32 = 12.0;
 /// The width of the button of the patch browser in the header.
 const PATCHES_BUTTON_WIDTH: f32 = 62.0;
 /// The width of the window of the patch browser.
 const PATCH_WINDOW_WIDTH: f32 = 430.0;
+/// The height of the window of the patch browser. It is only used to place
+/// the window in the middle of the panel.
+const PATCH_WINDOW_HEIGHT: f32 = 470.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
@@ -172,6 +223,8 @@ const RADIO_HEIGHT: f32 = 14.0;
 const FOLDER_HINT: &str = "Press SET to apply the folder";
 /// The caption that is shown when the folder of the patches is still empty.
 const NO_PATCHES: &str = "No patches yet - use SAVE";
+/// The caption that is shown when the search does not find anything.
+const NO_MATCHES: &str = "No matches";
 
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
@@ -183,17 +236,20 @@ const ARP_LIGHT_TIME: Duration = Duration::from_millis(120);
 
 /// The layout of the panel for the size of the window.
 ///
-/// The panel is laid out from scratch for every size: the sections grow with
-/// the window, while the fonts, the lines and the margins stay the same, so
-/// that the panel always looks the same.
+/// The panel has a fixed design size of 960 x 640, like the skin of Surge
+/// XT. It is scaled by a single zoom factor, so that it always keeps its
+/// proportions, and it is centered in the window. Every measure of the
+/// design is multiplied by the zoom, and so is every font.
 #[derive(Clone, Copy, Debug)]
 struct Layout {
-    /// The rect of the header.
-    header: Rect,
-    /// The rects of the four rows of sections.
-    rows: [Rect; 4],
-    /// How much bigger the window is than the default size.
-    scale: f32,
+    /// The rect of the header, in the design size of the panel.
+    base_header: Rect,
+    /// The rects of the four rows of sections, in the design size.
+    base_rows: [Rect; 4],
+    /// The rect of the whole panel in the window.
+    panel: Rect,
+    /// How much bigger the panel is than its design size.
+    zoom: f32,
 }
 
 impl Layout {
@@ -206,32 +262,43 @@ impl Layout {
             return None;
         }
 
-        let origin = rect.min;
-        let content = rect.width() - 2.0 * MARGIN;
+        // The panel follows the window border continuously: it is as big as
+        // the smaller of the two ratios allows, so dragging the border scales
+        // the whole panel (and its fonts) without any zoom levels.
+        let zoom = (rect.width() / WINDOW_WIDTH)
+            .min(rect.height() / WINDOW_HEIGHT)
+            .max(1.0);
 
-        // The header sits above the rows and never grows.
-        let header = Rect::from_min_size(
-            origin + egui::vec2(MARGIN, MARGIN),
-            egui::vec2(content, HEADER_HEIGHT),
+        // The panel keeps its proportions and sits in the middle of the
+        // window.
+        let panel = Rect::from_center_size(
+            rect.center(),
+            egui::vec2(WINDOW_WIDTH * zoom, WINDOW_HEIGHT * zoom),
+        );
+
+        // The header sits above the rows and only grows with the zoom.
+        let base_header = Rect::from_min_size(
+            egui::pos2(MARGIN, MARGIN),
+            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, HEADER_HEIGHT),
         );
 
         // The rows share the rest of the height. There is a gap between the
         // header and the first row and between every two rows.
-        let available = rect.height() - 2.0 * MARGIN - HEADER_HEIGHT - 4.0 * GROUP_GAP;
-        let base: f32 = ROW_HEIGHTS.iter().sum();
-        let mut rows = [Rect::ZERO; 4];
+        let mut base_rows = [Rect::ZERO; 4];
         let mut y = MARGIN + HEADER_HEIGHT + GROUP_GAP;
         for (index, height) in ROW_HEIGHTS.iter().enumerate() {
-            let height = available * height / base;
-            rows[index] =
-                Rect::from_min_size(origin + egui::vec2(MARGIN, y), egui::vec2(content, height));
+            base_rows[index] = Rect::from_min_size(
+                egui::pos2(MARGIN, y),
+                egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, *height),
+            );
             y += height + GROUP_GAP;
         }
 
         Some(Self {
-            header,
-            rows,
-            scale: content / (WINDOW_WIDTH - 2.0 * MARGIN),
+            base_header,
+            base_rows,
+            panel,
+            zoom,
         })
     }
 
@@ -240,21 +307,27 @@ impl Layout {
         BASE_ROW_WIDTHS[row].len()
     }
 
+    /// The rect of the header.
+    fn header(&self) -> Rect {
+        self.scale(self.base_header)
+    }
+
     /// The rect of a section of a row. The sections of a row share its width
     /// and keep their proportions.
     fn group(&self, row: usize, index: usize) -> Rect {
         let widths = BASE_ROW_WIDTHS[row];
         let base: f32 = widths.iter().sum();
-        let available = self.rows[row].width() - GROUP_GAP * (widths.len() as f32 - 1.0);
+        let row = self.base_rows[row];
+        let available = row.width() - GROUP_GAP * (widths.len() as f32 - 1.0);
 
-        let mut x = self.rows[row].left();
+        let mut x = row.left();
         for (current, width) in widths.iter().enumerate() {
             let width = available * width / base;
             if current == index {
-                return Rect::from_min_size(
-                    egui::pos2(x, self.rows[row].top()),
-                    egui::vec2(width, self.rows[row].height()),
-                );
+                return self.scale(Rect::from_min_size(
+                    egui::pos2(x, row.top()),
+                    egui::vec2(width, row.height()),
+                ));
             }
             x += width + GROUP_GAP;
         }
@@ -262,16 +335,28 @@ impl Layout {
         Rect::ZERO
     }
 
-    /// The width of a slider. It grows a little with the window, but never
-    /// gets wider than 20 px.
+    /// Scales a rect of the design size to the size of the panel.
+    fn scale(&self, rect: Rect) -> Rect {
+        Rect::from_min_size(
+            self.panel.min + rect.min.to_vec2() * self.zoom,
+            rect.size() * self.zoom,
+        )
+    }
+
+    /// The width of a slider. It grows with the zoom of the panel.
     fn slider_width(&self) -> f32 {
-        (SLIDER_WIDTH * self.scale).clamp(SLIDER_WIDTH, 20.0)
+        SLIDER_WIDTH * self.zoom
     }
 
     /// The width of the sliders of the macros.
     fn macro_width(&self) -> f32 {
-        (MACRO_SLIDER_WIDTH * self.scale).clamp(MACRO_SLIDER_WIDTH, 28.0)
+        MACRO_SLIDER_WIDTH * self.zoom
     }
+}
+
+/// The size of a font of the panel at the given zoom.
+fn font_size(size: f32, zoom: f32) -> f32 {
+    size * zoom
 }
 
 // --- The editor -------------------------------------------------------------
@@ -338,6 +423,8 @@ struct EditorState {
     patch_dir_text: String,
     /// The name of the patch that is saved by the patch browser.
     patch_name: String,
+    /// The text that the patch browser searches for.
+    patch_search: String,
     /// The patches of the folder.
     patch_files: Vec<PathBuf>,
     /// The last message of the patch browser.
@@ -370,6 +457,8 @@ pub struct SushiEditor {
     history: VecDeque<f32>,
     gui_ctx: Option<GuiContext>,
     state: EditorState,
+    /// The zoom of the panel, as it was last applied to the styles.
+    zoom: f32,
     /// The number of arpeggiator triggers.
     arp_led: Arc<AtomicUsize>,
     /// The position of the arpeggiator in its pattern.
@@ -392,6 +481,7 @@ impl SushiEditor {
             scope_rx,
             history: VecDeque::with_capacity(HISTORY_LEN),
             gui_ctx: None,
+            zoom: 1.0,
             state: EditorState {
                 texts: HashMap::new(),
                 gestures: HashSet::new(),
@@ -414,6 +504,7 @@ impl SushiEditor {
                 patch_open: false,
                 patch_dir_text: String::new(),
                 patch_name: String::new(),
+                patch_search: String::new(),
                 patch_files: Vec::new(),
                 patch_status: String::new(),
                 patch_status_error: false,
@@ -492,11 +583,11 @@ impl SushiEditor {
             self.state.arp_light = false;
         }
 
-        // The position of the arpeggiator, for the strip of lights.
+        // The position of the arpeggiator, for the ring of the sectors.
         self.state.arp_step = self
             .arp_position
             .load(Ordering::Relaxed)
-            .min(POS_LEDS.saturating_sub(1));
+            .min(POS_SECTORS - 1);
     }
 }
 
@@ -512,7 +603,8 @@ impl NiceEguiApp for SushiEditor {
         self.history.clear();
         self.init_patch_state();
 
-        apply_theme(&egui_ctx);
+        install_fonts(&egui_ctx);
+        apply_theme(&egui_ctx, 1.0);
         Ok(())
     }
 
@@ -543,6 +635,16 @@ impl SushiEditor {
             return;
         };
 
+        // The styles of the widgets follow the zoom of the panel, so that the
+        // texts of the fields and of the windows grow with it.
+        if layout.zoom != self.zoom {
+            apply_theme(ui.ctx(), layout.zoom);
+            // The root ui was made before the theme was changed, so it still
+            // has the old one.
+            ui.reset_style();
+            self.zoom = layout.zoom;
+        }
+
         // Split the borrow of the editor, so that the parameters, the state of
         // the panel and the text buffers can be used at the same time.
         let params = self.params.as_ref();
@@ -555,9 +657,10 @@ impl SushiEditor {
             history,
             voice_count,
             slider_width: layout.slider_width(),
+            zoom: layout.zoom,
         };
 
-        let header_rect = layout.header;
+        let header_rect = layout.header();
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id_salt("sushi-header")
@@ -578,6 +681,9 @@ impl SushiEditor {
 
 /// Draws the sad face that tells the user that the window is too small for
 /// the panel. It works at every size, even at a tiny one.
+///
+/// There is no layout and therefore no zoom here: the face grows with the
+/// window and the hint keeps the size of the design.
 fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
     let painter = ui.painter_at(rect);
 
@@ -635,33 +741,36 @@ struct HeaderRects {
 }
 
 /// The places of the widgets of the header.
-fn header_rects(rect: Rect) -> HeaderRects {
+fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     // The presets.
-    let preset_x = rect.left() + 150.0;
-    let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5;
-    let previous = Rect::from_min_size(egui::pos2(preset_x, button_y), egui::vec2(22.0, 28.0));
+    let preset_x = rect.left() + 172.0 * zoom;
+    let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5 * zoom;
+    let previous = Rect::from_min_size(
+        egui::pos2(preset_x, button_y),
+        egui::vec2(22.0, 28.0) * zoom,
+    );
     let display = Rect::from_min_size(
-        egui::pos2(preset_x + 26.0, button_y),
-        egui::vec2(160.0, 28.0),
+        egui::pos2(preset_x + 26.0 * zoom, button_y),
+        egui::vec2(160.0, 28.0) * zoom,
     );
     let next = Rect::from_min_size(
-        egui::pos2(preset_x + 190.0, button_y),
-        egui::vec2(22.0, 28.0),
+        egui::pos2(preset_x + 190.0 * zoom, button_y),
+        egui::vec2(22.0, 28.0) * zoom,
     );
     let mutate = Rect::from_min_size(
-        egui::pos2(preset_x + 216.0, button_y),
-        egui::vec2(62.0, 28.0),
+        egui::pos2(preset_x + 216.0 * zoom, button_y),
+        egui::vec2(62.0, 28.0) * zoom,
     );
     let patches = Rect::from_min_size(
-        egui::pos2(mutate.right() + 4.0, button_y),
-        egui::vec2(PATCHES_BUTTON_WIDTH, 28.0),
+        egui::pos2(mutate.right() + 4.0 * zoom, button_y),
+        egui::vec2(PATCHES_BUTTON_WIDTH, 28.0) * zoom,
     );
 
     // The meter that shows how many voices are playing. It sits in the free
     // space between the patches and the lights of the activity meter.
     let meter = Rect::from_min_max(
-        egui::pos2(patches.right() + 8.0, rect.top()),
-        egui::pos2(rect.right() - 194.0, rect.bottom()),
+        egui::pos2(patches.right() + 8.0 * zoom, rect.top()),
+        egui::pos2(rect.right() - 194.0 * zoom, rect.bottom()),
     );
 
     HeaderRects {
@@ -698,6 +807,7 @@ fn truncate_name(name: &str, length: usize) -> String {
 
 /// Draws the header: the wordmark, the presets and the oscilloscope.
 fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
     let painter = ui.painter_at(rect);
 
     // The header is flat and only separated from the sections by a rule.
@@ -710,61 +820,68 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         Stroke::new(1.0, RULE),
     );
 
-    // The wordmark. The second copy makes it look a little bolder.
-    let wordmark = FontId::proportional(14.0);
+    // The wordmark. It is drawn with the bold pixel font, so it does not
+    // have to be drawn twice.
+    let wordmark = FontId::new(font_size(16.0, zoom), bold());
     let wordmark_width = painter
         .layout_no_wrap("SUSHI".to_string(), wordmark.clone(), TEXT)
         .size()
         .x;
     painter.text(
-        rect.left_top() + egui::vec2(6.0, 9.0),
+        rect.left_top() + egui::vec2(6.0, 5.0) * zoom,
         Align2::LEFT_TOP,
         "SUSHI",
         wordmark.clone(),
         TEXT,
     );
     painter.text(
-        rect.left_top() + egui::vec2(6.6, 9.0),
-        Align2::LEFT_TOP,
-        "SUSHI",
-        wordmark.clone(),
-        TEXT,
-    );
-    painter.text(
-        rect.left_top() + egui::vec2(7.0, 27.0),
+        rect.left_top() + egui::vec2(7.0, 28.0) * zoom,
         Align2::LEFT_TOP,
         "POLYPHONIC SYNTHESIZER",
-        FontId::proportional(8.0),
+        FontId::proportional(font_size(9.0, zoom)),
         MUTED,
     );
 
     // The hint that tells the user that a double click resets a parameter. It
     // sits next to the wordmark, where there is still enough room.
     painter.text(
-        egui::pos2(rect.left() + 6.6 + wordmark_width + 14.0, rect.top() + 17.0),
+        egui::pos2(
+            rect.left() + 6.0 * zoom + wordmark_width + 12.0 * zoom,
+            rect.top() + 16.0 * zoom,
+        ),
         Align2::LEFT_CENTER,
         "DBL-CLICK = RESET",
-        FontId::proportional(8.0),
+        FontId::proportional(font_size(9.0, zoom)),
         MUTED,
     );
 
     // The presets.
-    let rects = header_rects(rect);
+    let rects = header_rects(rect, zoom);
 
     let index = ctx.state.preset_index;
-    lcd(&painter, rects.display, &display_text(ctx.state));
+    lcd(&painter, rects.display, &display_text(ctx.state), zoom);
 
-    if button(ui, rects.previous, "<").clicked() {
+    // The display of the presets opens the patch browser as well.
+    let display = ui.interact(
+        rects.display,
+        ui.scope_id().with("sushi-display"),
+        Sense::click(),
+    );
+    if display.clicked() {
+        ctx.toggle_patch_browser();
+    }
+
+    if button(ui, rects.previous, "<", zoom).clicked() {
         ctx.load_preset(index + PRESETS.len() - 1);
     }
-    if button(ui, rects.next, ">").clicked() {
+    if button(ui, rects.next, ">", zoom).clicked() {
         ctx.load_preset(index + 1);
     }
-    if button(ui, rects.mutate, "MUTATE").clicked() {
+    if button(ui, rects.mutate, "MUTATE", zoom).clicked() {
         ctx.mutate();
     }
-    if button(ui, rects.patches, "PATCHES").clicked() {
-        ctx.state.patch_open = !ctx.state.patch_open;
+    if button(ui, rects.patches, "PATCHES", zoom).clicked() {
+        ctx.toggle_patch_browser();
     }
 
     // The meter that shows how many voices are playing.
@@ -772,32 +889,33 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         &painter,
         rects.meter,
         ctx.voice_count.load(Ordering::Relaxed).min(VOICE_LEDS),
+        zoom,
     );
 
     // The oscilloscope and the two lights.
     let scope = Rect::from_min_size(
-        egui::pos2(rect.right() - 154.0, rect.top() + 5.0),
-        egui::vec2(150.0, 38.0),
+        egui::pos2(rect.right() - 154.0 * zoom, rect.top() + 5.0 * zoom),
+        egui::vec2(150.0, 38.0) * zoom,
     );
-    small_scope(&painter, scope, ctx.history);
+    small_scope(&painter, scope, ctx.history, zoom);
 
-    let activity = egui::pos2(rect.right() - 190.0, rect.top() + 16.0);
-    led(&painter, activity, LED_ON, ctx.state.activity > 0.002);
+    let activity = egui::pos2(rect.right() - 190.0 * zoom, rect.top() + 16.0 * zoom);
+    led(&painter, activity, LED_ON, ctx.state.activity > 0.002, zoom);
     painter.text(
-        egui::pos2(activity.x, rect.top() + 28.0),
+        egui::pos2(activity.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "ACT",
-        FontId::proportional(8.0),
+        FontId::proportional(font_size(8.0, zoom)),
         MUTED,
     );
 
-    let clipping = egui::pos2(rect.right() - 162.0, rect.top() + 16.0);
-    led(&painter, clipping, LED_RED, ctx.state.clipping > 0.5);
+    let clipping = egui::pos2(rect.right() - 162.0 * zoom, rect.top() + 16.0 * zoom);
+    led(&painter, clipping, LED_RED, ctx.state.clipping > 0.5, zoom);
     painter.text(
-        egui::pos2(clipping.x, rect.top() + 28.0),
+        egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "CLIP",
-        FontId::proportional(8.0),
+        FontId::proportional(font_size(8.0, zoom)),
         MUTED,
     );
 }
@@ -810,12 +928,13 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 /// their own section of the second row and the levels of the oscillators live
 /// in the mixer.
 fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
     group_row(ui, "row-a", layout, 0, |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 => group(ui, rect, "VCO 1", |ui, part| match part {
+            0 => group(ui, rect, "VCO 1", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
-                Part::Body => column_row(ui, "osc1", 4, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "osc1", 4, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2)),
@@ -844,9 +963,9 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            1 => group(ui, rect, "VCO 2", |ui, part| match part {
+            1 => group(ui, rect, "VCO 2", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0),
-                Part::Body => column_row(ui, "osc2", 3, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "osc2", 3, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.int(
@@ -874,9 +993,9 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            2 => group(ui, rect, "SOURCE MIXER", |ui, part| match part {
+            2 => group(ui, rect, "SOURCE MIXER", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "mix", 6, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "mix", 6, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(ui, "osc1_level", "Lvl 1", &p.osc1_level, &Knob::percent()),
@@ -897,9 +1016,9 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            _ => group(ui, rect, "VCF", |ui, part| match part {
+            _ => group(ui, rect, "VCF", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0),
-                Part::Body => column_row(ui, "filter", 5, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "filter", 5, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -938,11 +1057,12 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 /// The second row: the pulse widths, the two envelopes and the low frequency
 /// oscillators.
 fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
     group_row(ui, "row-b", layout, 1, |index, rect, ui| {
         match index {
-            0 => group(ui, rect, "PULSE WIDTH", |ui, part| match part {
+            0 => group(ui, rect, "PULSE WIDTH", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "pw", 2, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "pw", 2, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -963,9 +1083,9 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            1 => group(ui, rect, "MOD ENV", |ui, part| match part {
-                Part::Header => text_label(ui, "ADSR", 9.0, TEXT),
-                Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, |index, ui| {
+            1 => group(ui, rect, "MOD ENV", zoom, |ui, part| match part {
+                Part::Header => text_label(ui, "ADSR", 9.0, zoom, TEXT),
+                Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -994,9 +1114,9 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            2 => group(ui, rect, "AMP ENV", |ui, part| match part {
+            2 => group(ui, rect, "AMP ENV", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "ae", 4, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "ae", 4, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -1025,9 +1145,9 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            _ => group(ui, rect, "LFO / CLK", |ui, part| match part {
+            _ => group(ui, rect, "LFO / CLK", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => sections(ui, "lfo", 2, GROUP_GAP, |index, _rect, ui| {
+                Part::Body => sections(ui, "lfo", 2, GROUP_GAP, zoom, |index, _rect, ui| {
                     let p = ctx.params;
                     let (title, wave, target, rate, amount, ids) = match index {
                         0 => (
@@ -1052,7 +1172,7 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     // popups of the oscillator.
                     let header = Rect::from_min_size(
                         ui.next_widget_position(),
-                        egui::vec2(ui.available_width(), FIELD_HEIGHT),
+                        egui::vec2(ui.available_width(), INTERACT_HEIGHT * zoom),
                     );
                     ui.scope_builder(
                         egui::UiBuilder::new()
@@ -1060,14 +1180,14 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                             .max_rect(header)
                             .layout(EguiLayout::left_to_right(Align::Center)),
                         |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-                            text_label(ui, title, 9.0, TEXT);
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0) * zoom;
+                            text_label(ui, title, 9.0, zoom, TEXT);
                             ctx.popup(ui, ids.0, wave, 58.0);
                             ctx.popup(ui, ids.1, target, 74.0);
                         },
                     );
 
-                    column_row(ui, ids.2, 2, COLUMN_GAP, |index, ui| match index {
+                    column_row(ui, ids.2, 2, COLUMN_GAP, zoom, |index, ui| match index {
                         0 => ctx.float(ui, ids.2, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
                         1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent()),
                         _ => {}
@@ -1083,34 +1203,37 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 /// The arpeggiator gets a wide section, so that all of its parameters and the
 /// strip of lights fit on one line.
 fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
     group_row(ui, "row-c", layout, 2, |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 => group(ui, rect, "ARP", |ui, part| match part {
+            0 => group(ui, rect, "ARP", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.check(ui, "arp_on", &p.arp_on, "ON");
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
-                    text_label(ui, "PATTERN", 9.0, TEXT);
+                    text_label(ui, "PATTERN", 9.0, zoom, TEXT);
                     ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
-                    text_label(ui, "RATE", 9.0, TEXT);
+                    text_label(ui, "RATE", 9.0, zoom, TEXT);
                     ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
+                    let (rect, _) = ui
+                        .allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE) * zoom, Sense::hover());
                     led(
                         &ui.painter_at(rect),
                         rect.center(),
                         LED_AMBER,
                         ctx.state.arp_light,
+                        zoom,
                     );
                 }
                 Part::Body => {
-                    // The sliders are on the left, the strip of lights that
-                    // shows the position of the arpeggiator on the right.
+                    // The sliders are on the left, the ring of the sectors
+                    // that shows the position of the arpeggiator on the
+                    // right.
                     let body = ui.max_rect();
                     let slider_rect = Rect::from_min_max(
                         body.left_top(),
                         egui::pos2(
-                            body.right() - POS_STRIP_WIDTH - POS_STRIP_GAP,
+                            body.right() - POS_RING_AREA * zoom - POS_RING_GAP * zoom,
                             body.bottom(),
                         ),
                     );
@@ -1122,7 +1245,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                             .layout(EguiLayout::top_down(Align::Min)),
                         |ui| {
                             let ctx = &mut *ctx;
-                            column_row(ui, "arp", 5, COLUMN_GAP, |index, ui| {
+                            column_row(ui, "arp", 5, COLUMN_GAP, zoom, |index, ui| {
                                 let p = ctx.params;
                                 match index {
                                     0 => ctx.float(
@@ -1166,17 +1289,27 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                         },
                     );
 
-                    // The strip of lights.
-                    let strip = Rect::from_min_size(
-                        egui::pos2(body.right() - POS_STRIP_WIDTH, body.top()),
-                        egui::vec2(POS_STRIP_WIDTH, body.height()),
+                    // The ring of the sectors.
+                    let area = Rect::from_min_size(
+                        egui::pos2(body.right() - POS_RING_AREA * zoom, body.top()),
+                        egui::vec2(POS_RING_AREA * zoom, body.height()),
                     );
-                    position_strip(&ui.painter_at(strip), strip, ctx.state.arp_step);
+                    let sectors =
+                        ctx.params.arp_length.value().clamp(1, POS_SECTORS as i32) as usize;
+                    let position = ctx.state.arp_step.min(sectors - 1);
+                    position_ring(
+                        &ui.painter_at(area),
+                        area,
+                        position,
+                        sectors,
+                        ctx.params.arp_on.value(),
+                        zoom,
+                    );
                 }
             }),
-            _ => group(ui, rect, "VOICE", |ui, part| match part {
+            _ => group(ui, rect, "VOICE", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
-                Part::Body => column_row(ui, "voice", 4, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "voice", 4, COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -1205,84 +1338,106 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 
 /// The fourth row: the effects, the macros and the output.
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
-        0 => group(ui, rect, "FX", |ui, part| match part {
+        0 => group(ui, rect, "FX", zoom, |ui, part| match part {
             Part::Header => {}
-            Part::Body => sections(ui, "fx", 3, GROUP_GAP, |index, _rect, ui| match index {
-                0 => {
-                    caption(ui, "CHORUS", 9.0, TEXT);
-                    column_row(ui, "chorus", 3, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => {
-                                ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent())
+            Part::Body => sections(
+                ui,
+                "fx",
+                3,
+                GROUP_GAP,
+                zoom,
+                |index, _rect, ui| match index {
+                    0 => {
+                        caption(ui, "CHORUS", 9.0, zoom, TEXT);
+                        column_row(ui, "chorus", 3, COLUMN_GAP, zoom, |index, ui| {
+                            let p = ctx.params;
+                            match index {
+                                0 => ctx.float(
+                                    ui,
+                                    "chorus_mix",
+                                    "Mix",
+                                    &p.chorus_mix,
+                                    &Knob::percent(),
+                                ),
+                                1 => ctx.float(
+                                    ui,
+                                    "chorus_rate",
+                                    "Rate",
+                                    &p.chorus_rate,
+                                    &Knob::logarithmic(0.05, 8.0, 2),
+                                ),
+                                2 => ctx.float(
+                                    ui,
+                                    "chorus_depth",
+                                    "Depth",
+                                    &p.chorus_depth,
+                                    &Knob::percent(),
+                                ),
+                                _ => {}
                             }
-                            1 => ctx.float(
-                                ui,
-                                "chorus_rate",
-                                "Rate",
-                                &p.chorus_rate,
-                                &Knob::logarithmic(0.05, 8.0, 2),
-                            ),
-                            2 => ctx.float(
-                                ui,
-                                "chorus_depth",
-                                "Depth",
-                                &p.chorus_depth,
-                                &Knob::percent(),
-                            ),
-                            _ => {}
-                        }
-                    });
-                }
-                1 => {
-                    caption(ui, "DELAY", 9.0, TEXT);
-                    column_row(ui, "delay", 3, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.float(
-                                ui,
-                                "delay_time",
-                                "Time",
-                                &p.delay_time,
-                                &Knob::logarithmic(10.0, 1_500.0, 1),
-                            ),
-                            1 => ctx.float(
-                                ui,
-                                "delay_feedback",
-                                "FB",
-                                &p.delay_feedback,
-                                &Knob::percent(),
-                            ),
-                            2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
-                            _ => {}
-                        }
-                    });
-                }
-                _ => {
-                    caption(ui, "REVERB", 9.0, TEXT);
-                    column_row(ui, "reverb", 2, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.float(
-                                ui,
-                                "reverb_decay",
-                                "Decay",
-                                &p.reverb_decay,
-                                &Knob::percent(),
-                            ),
-                            1 => {
-                                ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent())
+                        });
+                    }
+                    1 => {
+                        caption(ui, "DELAY", 9.0, zoom, TEXT);
+                        column_row(ui, "delay", 3, COLUMN_GAP, zoom, |index, ui| {
+                            let p = ctx.params;
+                            match index {
+                                0 => ctx.float(
+                                    ui,
+                                    "delay_time",
+                                    "Time",
+                                    &p.delay_time,
+                                    &Knob::logarithmic(10.0, 1_500.0, 1),
+                                ),
+                                1 => ctx.float(
+                                    ui,
+                                    "delay_feedback",
+                                    "FB",
+                                    &p.delay_feedback,
+                                    &Knob::percent(),
+                                ),
+                                2 => ctx.float(
+                                    ui,
+                                    "delay_mix",
+                                    "Mix",
+                                    &p.delay_mix,
+                                    &Knob::percent(),
+                                ),
+                                _ => {}
                             }
-                            _ => {}
-                        }
-                    });
-                }
-            }),
+                        });
+                    }
+                    _ => {
+                        caption(ui, "REVERB", 9.0, zoom, TEXT);
+                        column_row(ui, "reverb", 2, COLUMN_GAP, zoom, |index, ui| {
+                            let p = ctx.params;
+                            match index {
+                                0 => ctx.float(
+                                    ui,
+                                    "reverb_decay",
+                                    "Decay",
+                                    &p.reverb_decay,
+                                    &Knob::percent(),
+                                ),
+                                1 => ctx.float(
+                                    ui,
+                                    "reverb_mix",
+                                    "Mix",
+                                    &p.reverb_mix,
+                                    &Knob::percent(),
+                                ),
+                                _ => {}
+                            }
+                        });
+                    }
+                },
+            ),
         }),
-        1 => group(ui, rect, "MACROS", |ui, part| match part {
+        1 => group(ui, rect, "MACROS", zoom, |ui, part| match part {
             Part::Header => {}
-            Part::Body => column_row(ui, "macros", 3, COLUMN_GAP, |index, ui| {
+            Part::Body => column_row(ui, "macros", 3, COLUMN_GAP, zoom, |index, ui| {
                 let p = ctx.params;
                 let knob = Knob::percent().with_width(layout.macro_width());
                 match index {
@@ -1293,13 +1448,13 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 }
             }),
         }),
-        _ => group(ui, rect, "VCA", |ui, part| match part {
+        _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
                 let p = ctx.params;
-                text_label(ui, "CHARACTER", 9.0, TEXT);
+                text_label(ui, "CHARACTER", 9.0, zoom, TEXT);
                 ctx.radio_pair(ui, "character", &p.character, 70.0);
             }
-            Part::Body => column_row(ui, "output", 2, COLUMN_GAP, |index, ui| {
+            Part::Body => column_row(ui, "output", 2, COLUMN_GAP, zoom, |index, ui| {
                 let p = ctx.params;
                 match index {
                     0 => ctx.float(
@@ -1445,6 +1600,8 @@ struct Ctx<'a, 'b> {
     voice_count: &'a Arc<AtomicUsize>,
     /// The width of the sliders of the panel.
     slider_width: f32,
+    /// The zoom of the panel: how much bigger it is than its design size.
+    zoom: f32,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -1461,22 +1618,21 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
-        // The width of the column decides how wide the value field is.
-        let field = field_width(ui.available_width());
+        let zoom = self.zoom;
 
-        caption(ui, label, 9.0, TEXT);
+        caption(ui, label, 10.0, zoom, TEXT);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
         // the field always sits at the bottom of the column.
-        let height = slider_height(ui);
+        let height = slider_height(ui, zoom);
         let knob = &Knob {
             width: knob.width.max(self.slider_width),
             ..*knob
         };
 
         let mut value = param.value();
-        let response = v_slider(ui, &mut value, knob, height);
+        let response = v_slider(ui, &mut value, knob, height, zoom);
         // A double click resets the parameter to its factory default. The
         // reset is done after the value of the click, so that it wins.
         let reset = response.double_clicked();
@@ -1494,7 +1650,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.end_set_parameter(param);
         }
 
-        self.float_field(ui, id, param, knob, field, FIELD_HEIGHT);
+        self.value_popup_float(ui, id, label, param, knob, &response);
+        let value = format_number(knob.display(param.value()), knob.decimals);
+        response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
     /// Draws a stepped parameter. It works just like [`Ctx::float`], but the
@@ -1510,22 +1668,21 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
-        // The width of the column decides how wide the value field is.
-        let field = field_width(ui.available_width());
+        let zoom = self.zoom;
 
-        caption(ui, label, 9.0, TEXT);
+        caption(ui, label, 10.0, zoom, TEXT);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
         // the field always sits at the bottom of the column.
-        let height = slider_height(ui);
+        let height = slider_height(ui, zoom);
         let knob = &Knob {
             width: knob.width.max(self.slider_width),
             ..*knob
         };
 
         let mut value = param.value() as f32;
-        let response = v_slider(ui, &mut value, knob, height);
+        let response = v_slider(ui, &mut value, knob, height, zoom);
         // A double click resets the parameter to its factory default. The
         // reset is done after the value of the click, so that it wins.
         let reset = response.double_clicked();
@@ -1543,91 +1700,150 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.end_set_parameter(param);
         }
 
-        self.int_field(ui, id, param, knob, field, FIELD_HEIGHT);
+        self.value_popup_int(ui, id, label, param, knob, &response);
+        let value = format_number(knob.display(param.value() as f32), knob.decimals);
+        response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
-    /// Draws the numeric field of a continuous parameter.
-    fn float_field(
+    /// A small popup that edits the value of a continuous parameter. It opens
+    /// on a secondary click on the slider and replaces the old numeric field.
+    fn value_popup_float(
         &mut self,
-        ui: &mut egui::Ui,
+        _ui: &mut egui::Ui,
         id: &'static str,
+        label: &str,
         param: &FloatParam,
         knob: &Knob,
-        width: f32,
-        height: f32,
+        response: &egui::Response,
     ) {
-        let text = self.state.texts.entry(id).or_default();
-        let field = field_id(id);
+        let zoom = self.zoom;
+        let popup = egui::Popup::context_menu(response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .frame(
+                egui::Frame::new()
+                    .fill(BUTTON_BG)
+                    .stroke(Stroke::new(1.0, LINE))
+                    .inner_margin(Margin::same((6.0 * zoom).round() as i8)),
+            );
 
-        // While the field has the focus it is never overwritten. Otherwise it
-        // mirrors the parameter, but only when the parameter actually changed,
-        // so that a value that was just typed isn't reverted before the host
-        // has applied it.
-        if !ui.memory(|memory| memory.has_focus(field)) {
-            sync_text(ui, id, text, knob.decimals, knob.display(param.value()));
-        }
-
-        let response = number_field(ui, text, id, field, width, height);
-
-        if response.lost_focus() {
-            // The value was typed in: parse it and hand it to the host.
-            match text.trim().parse::<f32>() {
-                Ok(parsed) if parsed.is_finite() => {
-                    let plain = knob.parse(parsed);
-                    self.setter.begin_set_parameter(param);
-                    self.setter.set_parameter(param, plain);
-                    self.setter.end_set_parameter(param);
-                    self.state.dirty = true;
-                    *text = format_number(knob.display(plain), knob.decimals);
-                }
-                _ => {
-                    // Nonsense was typed: fall back to the parameter's value.
-                    *text = format_number(knob.display(param.value()), knob.decimals);
-                }
+        popup.show(|ui| {
+            let text = self.state.texts.entry(id).or_default();
+            if response.secondary_clicked() {
+                *text = format_number(knob.display(param.value()), knob.decimals);
             }
-        }
+
+            ui.label(format!("{}: {}", label, param.name()));
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
+            );
+            if !edit.has_focus() {
+                edit.request_focus();
+            }
+
+            let mut commit = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let mut cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
+            let mut invalid = false;
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    commit = true;
+                }
+                if ui.button("CANCEL").clicked() {
+                    cancel = true;
+                }
+            });
+
+            if commit {
+                match text.trim().parse::<f32>() {
+                    Ok(parsed) if parsed.is_finite() => {
+                        let plain = knob.parse(parsed);
+                        self.setter.begin_set_parameter(param);
+                        self.setter.set_parameter(param, plain);
+                        self.setter.end_set_parameter(param);
+                        self.state.dirty = true;
+                        egui::Popup::close_all(ui.ctx());
+                    }
+                    _ => invalid = true,
+                }
+            } else if cancel {
+                egui::Popup::close_all(ui.ctx());
+            }
+
+            if invalid {
+                ui.colored_label(STATUS_ERROR, "Invalid value");
+            }
+        });
     }
 
-    /// Draws the numeric field of a stepped parameter.
-    fn int_field(
+    /// The same editor for a stepped parameter.
+    fn value_popup_int(
         &mut self,
-        ui: &mut egui::Ui,
+        _ui: &mut egui::Ui,
         id: &'static str,
+        label: &str,
         param: &IntParam,
         knob: &Knob,
-        width: f32,
-        height: f32,
+        response: &egui::Response,
     ) {
-        let text = self.state.texts.entry(id).or_default();
-        let field = field_id(id);
-
-        if !ui.memory(|memory| memory.has_focus(field)) {
-            sync_text(
-                ui,
-                id,
-                text,
-                knob.decimals,
-                knob.display(param.value() as f32),
+        let zoom = self.zoom;
+        let popup = egui::Popup::context_menu(response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .frame(
+                egui::Frame::new()
+                    .fill(BUTTON_BG)
+                    .stroke(Stroke::new(1.0, LINE))
+                    .inner_margin(Margin::same((6.0 * zoom).round() as i8)),
             );
-        }
 
-        let response = number_field(ui, text, id, field, width, height);
-
-        if response.lost_focus() {
-            match text.trim().parse::<f32>() {
-                Ok(parsed) if parsed.is_finite() => {
-                    let plain = knob.parse(parsed).round() as i32;
-                    self.setter.begin_set_parameter(param);
-                    self.setter.set_parameter(param, plain);
-                    self.setter.end_set_parameter(param);
-                    self.state.dirty = true;
-                    *text = format_number(plain as f32, knob.decimals);
-                }
-                _ => {
-                    *text = format_number(param.value() as f32, knob.decimals);
-                }
+        popup.show(|ui| {
+            let text = self.state.texts.entry(id).or_default();
+            if response.secondary_clicked() {
+                *text = format_number(knob.display(param.value() as f32), knob.decimals);
             }
-        }
+
+            ui.label(format!("{}: {}", label, param.name()));
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
+            );
+            if !edit.has_focus() {
+                edit.request_focus();
+            }
+
+            let mut commit = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let mut cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
+            let mut invalid = false;
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    commit = true;
+                }
+                if ui.button("CANCEL").clicked() {
+                    cancel = true;
+                }
+            });
+
+            if commit {
+                match text.trim().parse::<f32>() {
+                    Ok(parsed) if parsed.is_finite() => {
+                        let plain = knob.parse(parsed).round() as i32;
+                        self.setter.begin_set_parameter(param);
+                        self.setter.set_parameter(param, plain);
+                        self.setter.end_set_parameter(param);
+                        self.state.dirty = true;
+                        egui::Popup::close_all(ui.ctx());
+                    }
+                    _ => invalid = true,
+                }
+            } else if cancel {
+                egui::Popup::close_all(ui.ctx());
+            }
+
+            if invalid {
+                ui.colored_label(STATUS_ERROR, "Invalid value");
+            }
+        });
     }
 
     /// Draws a popup button that opens the list of choices.
@@ -1645,7 +1861,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         let variants = T::variants();
 
         let response = egui::ComboBox::from_id_salt(id)
-            .width(width)
+            .width(width * self.zoom)
             .selected_text(variants[T::to_index(current)])
             .truncate()
             .show_ui(ui, |ui| {
@@ -1673,7 +1889,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Check);
 
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(CHECK_SIZE, CHECK_SIZE), Sense::hover());
+        let zoom = self.zoom;
+
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(CHECK_SIZE, CHECK_SIZE) * zoom, Sense::hover());
         #[cfg(test)]
         self.state.check_rects.push(rect);
         let response = ui.interact(
@@ -1689,7 +1908,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 "X",
-                FontId::monospace(9.0),
+                FontId::monospace(font_size(9.0, zoom)),
                 TEXT,
             );
         }
@@ -1705,7 +1924,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.state.dirty = true;
         }
 
-        text_label(ui, label, 9.0, TEXT);
+        text_label(ui, label, 9.0, zoom, TEXT);
     }
 
     /// Draws a pair of square buttons of which one is active.
@@ -1719,13 +1938,17 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Radio);
 
+        let zoom = self.zoom;
+
         let variants = T::variants();
         let current = T::to_index(param.value());
-        let button_width = width / variants.len() as f32;
+        let button_width = width * zoom / variants.len() as f32;
 
         for (index, variant) in variants.iter().enumerate() {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(button_width, RADIO_HEIGHT), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(button_width, RADIO_HEIGHT * zoom),
+                Sense::hover(),
+            );
             #[cfg(test)]
             self.state.radio_rects.push(rect);
             let response = ui.interact(
@@ -1748,7 +1971,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 // The name of the variant is shown in uppercase, like the
                 // other labels of the panel.
                 variant.to_ascii_uppercase(),
-                FontId::proportional(9.0),
+                FontId::proportional(font_size(9.0, zoom)),
                 TEXT,
             );
 
@@ -1777,27 +2000,28 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
     /// Draws the window of the patch browser.
     fn patch_window(&mut self, ui: &egui::Ui) {
+        let zoom = self.zoom;
         let mut open = self.state.patch_open;
         let mut close = false;
 
         // The window opens in the middle of the panel.
         let center = ui.ctx().content_rect().center();
-        let position = center - egui::vec2(PATCH_WINDOW_WIDTH * 0.5, 160.0);
+        let position = center - egui::vec2(PATCH_WINDOW_WIDTH, PATCH_WINDOW_HEIGHT) * 0.5 * zoom;
 
         egui::Window::new("PATCHES")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(PATCH_WINDOW_WIDTH)
+            .default_width(PATCH_WINDOW_WIDTH * zoom)
             .default_pos(position)
             .show(ui.ctx(), |ui| {
                 // The folder in which the patches are stored.
                 ui.horizontal(|ui| {
-                    text_label(ui, "FOLDER", 9.0, TEXT);
-                    let width = ui.available_width() - 44.0;
+                    text_label(ui, "FOLDER", 9.0, zoom, TEXT);
+                    let width = ui.available_width() - 44.0 * zoom;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_dir_text)
-                            .desired_width(width.max(80.0)),
+                            .desired_width(width.max(80.0 * zoom)),
                     );
                     if ui.button("SET").clicked() {
                         self.set_patch_folder();
@@ -1810,6 +2034,18 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     ui.colored_label(MUTED, FOLDER_HINT);
                 }
 
+                // The search field. It filters the presets of the factory
+                // and the patches of the user.
+                ui.horizontal(|ui| {
+                    text_label(ui, "SEARCH", 9.0, zoom, TEXT);
+                    let width = ui.available_width() - 52.0 * zoom;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.state.patch_search)
+                            .id(egui::Id::unique("sushi-patch-search"))
+                            .desired_width(width.max(80.0 * zoom)),
+                    );
+                });
+
                 // The list of the patches of the folder.
                 ui.horizontal(|ui| {
                     if ui.button("REFRESH").clicked() {
@@ -1820,40 +2056,75 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 });
 
                 egui::ScrollArea::vertical()
-                    .max_height(150.0)
+                    .max_height(320.0 * zoom)
                     .show(ui, |ui| {
+                        // The search is not case sensitive and it looks at
+                        // every name of the list.
+                        let search = self.state.patch_search.trim().to_lowercase();
+                        let matches =
+                            |name: &str| search.is_empty() || name.to_lowercase().contains(&search);
+
+                        // The presets of the factory.
+                        text_label(ui, "FACTORY", 9.0, zoom, MUTED);
+                        let mut found = 0;
+                        for (index, preset) in PRESETS.iter().enumerate() {
+                            if !matches(preset.name) {
+                                continue;
+                            }
+                            found += 1;
+                            if ui.selectable_label(false, preset.name).clicked() {
+                                // A factory preset replaces the patch of the
+                                // user, and the browser stays open.
+                                self.load_preset(index);
+                            }
+                        }
+
+                        // The patches of the user.
                         let files = self.state.patch_files.clone();
+                        text_label(ui, "USER", 9.0, zoom, MUTED);
                         if files.is_empty() {
                             // An empty folder would leave a blank panel
                             // behind, so it gets a caption.
                             ui.colored_label(MUTED, NO_PATCHES);
-                            return;
                         }
                         for path in files {
                             let Some(stem) = path.file_stem() else {
                                 continue;
                             };
                             let name = stem.to_string_lossy().into_owned();
+                            if !matches(&name) {
+                                continue;
+                            }
+                            found += 1;
                             if ui.selectable_label(false, name).clicked() {
                                 self.load_patch_file(&path);
                             }
+                        }
+
+                        if found == 0 {
+                            // The search did not find anything at all.
+                            ui.colored_label(MUTED, NO_MATCHES);
                         }
                     });
 
                 ui.separator();
 
-                // The name of the patch and the button that saves it.
+                // The name of the patch and the buttons that save and load
+                // it.
                 ui.horizontal(|ui| {
-                    text_label(ui, "NAME", 9.0, TEXT);
-                    let width = ui.available_width() - 48.0;
+                    text_label(ui, "NAME", 9.0, zoom, TEXT);
+                    let width = ui.available_width() - 96.0 * zoom;
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_name)
-                            .desired_width(width.max(80.0)),
+                            .desired_width(width.max(80.0 * zoom)),
                     );
                     if response.changed() {
                         // A new name is a new file, so the file does not have
                         // to be confirmed again.
                         self.state.patch_confirm_overwrite = false;
+                    }
+                    if ui.button("LOAD").clicked() {
+                        self.load_patch_by_name();
                     }
                     if ui.button("SAVE").clicked() {
                         self.save_patch();
@@ -1878,6 +2149,33 @@ impl<'a, 'b> Ctx<'a, 'b> {
         } else {
             self.state.patch_open = open;
         }
+    }
+
+    /// Opens or closes the window of the patch browser.
+    ///
+    /// Opening it reads the list of the patches of the folder again, so that
+    /// the files that were saved in the meantime show up.
+    fn toggle_patch_browser(&mut self) {
+        if self.state.patch_open {
+            self.state.patch_open = false;
+            return;
+        }
+
+        self.refresh_patch_list();
+        self.state.patch_open = true;
+    }
+
+    /// Loads the patch whose name is in the field of the name.
+    fn load_patch_by_name(&mut self) {
+        let name = patch::sanitize_file_name(&self.state.patch_name);
+        let path = self.patch_dir().join(format!("{name}.json"));
+
+        if !path.exists() {
+            self.set_status("Not found".to_string(), true);
+            return;
+        }
+
+        self.load_patch_file(&path);
     }
 
     /// The folder in which the patches are stored.
@@ -2071,7 +2369,7 @@ enum Part {
 }
 
 /// Lays out a row of sections. The places of the sections come from the
-/// layout, so that they grow with the window.
+/// layout, so that they grow with the zoom of the panel.
 fn group_row(
     ui: &mut egui::Ui,
     name: &str,
@@ -2104,24 +2402,29 @@ fn title_color(title: &str) -> Color32 {
 }
 
 /// Draws a section and hands its header and body to the given callback.
-fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut egui::Ui, Part)) {
+fn group(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    title: &str,
+    zoom: f32,
+    mut add: impl FnMut(&mut egui::Ui, Part),
+) {
     let painter = ui.painter_at(rect);
     let color = title_color(title);
 
-    // The title of the section. It is drawn twice, half a pixel apart, so
-    // that it reads as bold without a second font.
-    let font = FontId::proportional(10.0);
+    // The title of the section, in the bold pixel font.
+    let font = FontId::new(font_size(12.0, zoom), bold());
     let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, color);
     let strip = Rect::from_min_size(
-        rect.left_top() + egui::vec2(GROUP_PADDING, 0.0),
-        egui::vec2(galley.size().x + 8.0, TITLE_HEIGHT),
+        rect.left_top() + egui::vec2(GROUP_PADDING, 0.0) * zoom,
+        egui::vec2(galley.size().x + 8.0 * zoom, TITLE_HEIGHT * zoom),
     );
-    let title_pos = strip.left_top() + egui::vec2(4.0, (TITLE_HEIGHT - galley.size().y) * 0.5);
-    painter.galley(title_pos, galley.clone(), color);
-    painter.galley(title_pos + egui::vec2(0.5, 0.0), galley, color);
+    let title_pos =
+        strip.left_top() + egui::vec2(4.0, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5) * zoom;
+    painter.galley(title_pos, galley, color);
 
     // The rule below the title spans the whole section.
-    let rule_y = rect.top() + TITLE_HEIGHT;
+    let rule_y = rect.top() + TITLE_HEIGHT * zoom;
     painter.line_segment(
         [
             egui::pos2(rect.left(), rule_y),
@@ -2132,10 +2435,10 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
 
     // The header of the section, next to the title.
     let header = Rect::from_min_size(
-        egui::pos2(strip.right() + 4.0, rect.top()),
+        egui::pos2(strip.right() + 4.0 * zoom, rect.top()),
         egui::vec2(
-            (rect.right() - GROUP_PADDING - strip.right() - 4.0).max(0.0),
-            TITLE_HEIGHT,
+            (rect.right() - GROUP_PADDING * zoom - strip.right() - 4.0 * zoom).max(0.0),
+            TITLE_HEIGHT * zoom,
         ),
     );
     ui.scope_builder(
@@ -2144,7 +2447,7 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
             .max_rect(header)
             .layout(EguiLayout::left_to_right(Align::Center)),
         |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0) * zoom;
             add(ui, Part::Header);
         },
     );
@@ -2152,10 +2455,10 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
     // The body of the section, below the rule. It has no frame, so its
     // content can use the full height of the row.
     let body = Rect::from_min_size(
-        rect.left_top() + egui::vec2(GROUP_PADDING, TITLE_HEIGHT + 3.0),
+        rect.left_top() + egui::vec2(GROUP_PADDING, (TITLE_HEIGHT + 3.0) * zoom),
         egui::vec2(
-            rect.width() - 2.0 * GROUP_PADDING,
-            (rect.height() - TITLE_HEIGHT - 3.0 - GROUP_PADDING).max(0.0),
+            rect.width() - 2.0 * GROUP_PADDING * zoom,
+            (rect.height() - (TITLE_HEIGHT + 3.0) * zoom - GROUP_PADDING * zoom).max(0.0),
         ),
     );
     ui.scope_builder(
@@ -2164,7 +2467,7 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
             .max_rect(body)
             .layout(EguiLayout::top_down(Align::Min)),
         |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0) * zoom;
             add(ui, Part::Body);
         },
     );
@@ -2176,8 +2479,10 @@ fn sections(
     name: &str,
     count: usize,
     gap: f32,
+    zoom: f32,
     mut add: impl FnMut(usize, Rect, &mut egui::Ui),
 ) {
+    let gap = gap * zoom;
     let start = ui.next_widget_position();
     let width = ui.available_width();
     let height = ui.available_height();
@@ -2194,7 +2499,7 @@ fn sections(
                 .max_rect(rect)
                 .layout(EguiLayout::top_down(Align::Min)),
             |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0) * zoom;
                 add(index, rect, ui);
             },
         );
@@ -2206,8 +2511,8 @@ fn sections(
         let x = start.x + index as f32 * (slot + gap) - gap * 0.5;
         painter.line_segment(
             [
-                egui::pos2(x, start.y + 2.0),
-                egui::pos2(x, start.y + height - 2.0),
+                egui::pos2(x, start.y + 2.0 * zoom),
+                egui::pos2(x, start.y + height - 2.0 * zoom),
             ],
             Stroke::new(1.0, RULE),
         );
@@ -2223,8 +2528,10 @@ fn column_row(
     name: &str,
     count: usize,
     gap: f32,
+    zoom: f32,
     mut add: impl FnMut(usize, &mut egui::Ui),
 ) {
+    let gap = gap * zoom;
     let start = ui.next_widget_position();
     let total_width = ui.available_width();
     let height = ui.available_height();
@@ -2241,7 +2548,7 @@ fn column_row(
                 .max_rect(rect)
                 .layout(EguiLayout::top_down(Align::Center)),
             |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0) * zoom;
                 add(index, ui);
             },
         );
@@ -2252,22 +2559,22 @@ fn column_row(
 
 /// Draws a caption above a control. The caption is as wide as the space that
 /// is left in its column.
-fn caption(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) {
+fn caption(ui: &mut egui::Ui, text: &str, size: f32, zoom: f32, color: Color32) {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, LABEL_HEIGHT), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, LABEL_HEIGHT * zoom), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         text,
-        FontId::proportional(size),
+        FontId::proportional(font_size(size, zoom)),
         color,
     );
 }
 
 /// Draws a small text label that takes just as much space as it needs.
-fn text_label(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) {
-    let font = FontId::proportional(size);
+fn text_label(ui: &mut egui::Ui, text: &str, size: f32, zoom: f32, color: Color32) {
+    let font = FontId::proportional(font_size(size, zoom));
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(galley.size().x, galley.size().y), Sense::hover());
@@ -2280,37 +2587,83 @@ fn text_label(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) {
 /// this is never reached; it only keeps a slider usable in a squeezed layout.
 const MIN_SLIDER_HEIGHT: f32 = 24.0;
 
-/// The width of the numeric field of a parameter. It grows a little with the
-/// width of its column, but never gets wider than 56 px.
-const MAX_FIELD_WIDTH: f32 = 56.0;
-
-/// The height of a slider: all the room that is left in its column above the
-/// numeric field. The slider therefore grows with the row it is in, and the
-/// field always sits at the bottom of the column.
-fn slider_height(ui: &egui::Ui) -> f32 {
-    // What is left after the caption: the slider, the gap below it and the
-    // numeric field.
-    let room = ui.available_height() - FIELD_HEIGHT - 2.0;
-    room.max(MIN_SLIDER_HEIGHT)
+/// The height of a slider: all the room that is left in its column below its
+/// caption. Without a numeric field the slider uses the full height, which
+/// keeps the panel compact.
+fn slider_height(ui: &egui::Ui, zoom: f32) -> f32 {
+    ui.available_height().max(MIN_SLIDER_HEIGHT * zoom)
 }
 
-/// The width of the numeric field of a parameter. It scales with the width of
-/// the column, so that a wide column gets a wide field.
-fn field_width(column: f32) -> f32 {
-    (column * 0.72).clamp(FIELD_WIDTH, MAX_FIELD_WIDTH)
+/// The step of the mouse wheel of a slider: a hundredth of the range.
+const WHEEL_STEP: f32 = 0.01;
+/// The step of the mouse wheel of a slider while the shift key is held
+/// down: a five hundredth of the range.
+const WHEEL_STEP_FINE: f32 = 0.002;
+
+/// The scroll of the mouse wheel of this frame and whether the fine step was
+/// asked for.
+///
+/// The wheel events of the frame carry the raw scroll of the wheel and the
+/// modifiers of the wheel itself, which is more reliable than the ones of the
+/// input state. The smooth scroll delta of egui is the fallback for the
+/// hosts that do not send the wheel events. It is only used when it grows,
+/// so that the tail of a scroll that egui smoothed out does not move the
+/// value again and again.
+fn wheel_scroll(ui: &egui::Ui) -> (f32, bool) {
+    let (raw, fine) = ui.input(|input| {
+        let mut scroll = 0.0;
+        let mut fine = input.modifiers.shift;
+
+        for event in &input.events {
+            if let egui::Event::MouseWheel {
+                delta, modifiers, ..
+            } = event
+            {
+                scroll += delta.y;
+                fine = modifiers.shift;
+            }
+        }
+
+        (scroll, fine)
+    });
+
+    let smooth = ui.input(|input| input.smooth_scroll_delta.y);
+
+    // The last smooth scroll of this slider, so that the tail of a scroll
+    // can be told apart from a new one.
+    let id = ui.scope_id().with("sushi-wheel");
+    let last: Option<f32> = ui.memory(|memory| memory.data.get_temp(id));
+    ui.memory_mut(|memory| memory.data.insert_temp(id, smooth));
+
+    if raw != 0.0 {
+        return (raw, fine);
+    }
+
+    let fresh = match last {
+        Some(last) => smooth.abs() > last.abs(),
+        None => smooth != 0.0,
+    };
+
+    if fresh { (smooth, fine) } else { (0.0, fine) }
 }
 
 /// A vertical slider: a flat white track with a thin outline, a light tick in
 /// the middle and a black handle band that is fully embedded inside the
 /// track: it never sticks out of it, no matter where the value is.
-fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob, height: f32) -> egui::Response {
+fn v_slider(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    knob: &Knob,
+    height: f32,
+    zoom: f32,
+) -> egui::Response {
     let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(knob.width, height), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
     // The track. It has no fill below the handle and no bevel at all.
     flat_box(&painter, rect, TRACK);
-    let track = rect.shrink(GROOVE_INSET);
+    let track = rect.shrink(GROOVE_INSET * zoom);
 
     // The tick in the middle of the track marks the centre of the range. The
     // handle covers it while the value sits in the middle.
@@ -2324,18 +2677,21 @@ fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob, height: f32) -> egu
 
     // The handle itself: a black band that stays fully inside the track.
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
+    let handle_height = HANDLE_HEIGHT * zoom;
     let handle_center = position.clamp(
-        track.top() + HANDLE_HEIGHT * 0.5,
-        track.bottom() - HANDLE_HEIGHT * 0.5,
+        track.top() + handle_height * 0.5,
+        track.bottom() - handle_height * 0.5,
     );
     let handle = Rect::from_center_size(
         egui::pos2(rect.center().x, handle_center),
-        egui::vec2(track.width(), HANDLE_HEIGHT),
+        egui::vec2(track.width(), handle_height),
     );
     painter.rect_filled(handle, CornerRadius::ZERO, HANDLE);
 
-    // Dragging anywhere on the track sets the value.
-    if (response.is_pointer_button_down_on() || response.dragged())
+    // Dragging anywhere on the track sets the value with the primary button.
+    // The secondary button opens the value editor instead.
+    if (response.dragged_by(egui::PointerButton::Primary)
+        || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
         && let Some(pointer) = response.interact_pointer_pos()
     {
         let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
@@ -2343,62 +2699,26 @@ fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob, height: f32) -> egu
         response.mark_changed();
     }
 
-    response
-}
-
-/// The numeric value field of a parameter.
-fn number_field(
-    ui: &mut egui::Ui,
-    text: &mut String,
-    id: &'static str,
-    field: egui::Id,
-    width: f32,
-    height: f32,
-) -> egui::Response {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
-    let painter = ui.painter_at(rect);
-    // A flat white field with a thin outline, no bevel.
-    flat_box(&painter, rect, FIELD_BG);
-
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt(("sushi-field", id))
-            .max_rect(rect)
-            .layout(EguiLayout::top_down(Align::Center)),
-        |ui| {
-            ui.add(
-                egui::TextEdit::singleline(text)
-                    .id(field)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(width)
-                    .align(egui::Align2::CENTER_CENTER)
-                    .frame(
-                        egui::Frame::new()
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE)
-                            .inner_margin(Margin::symmetric(2, 0)),
-                    ),
-            )
-        },
-    )
-    .inner
-}
-
-/// The id of the numeric value field of a parameter.
-fn field_id(id: &'static str) -> egui::Id {
-    egui::Id::unique(("sushi-value-field", id))
-}
-
-/// Mirrors the parameter's value into the text buffer, but only when the
-/// parameter actually changed. This way a value that was just typed in isn't
-/// reverted before the host has applied it.
-fn sync_text(ui: &egui::Ui, id: &'static str, text: &mut String, decimals: usize, display: f32) {
-    let memory_id = egui::Id::unique(("sushi-value", id));
-    let last: Option<f32> = ui.memory(|memory| memory.data.get_temp(memory_id));
-    if last != Some(display) {
-        *text = format_number(display, decimals);
-        ui.memory_mut(|memory| memory.data.insert_temp(memory_id, display));
+    // The mouse wheel moves the value by one step, as long as the slider is
+    // hovered and is not being dragged. The value is moved in the
+    // normalized space of the range, so that a logarithmic range is as
+    // gentle as a linear one.
+    if response.hovered() && !response.dragged() && !response.is_pointer_button_down_on() {
+        let (scroll, fine) = wheel_scroll(ui);
+        if scroll != 0.0 {
+            let step = if fine { WHEEL_STEP_FINE } else { WHEEL_STEP };
+            let direction = if scroll > 0.0 { 1.0 } else { -1.0 };
+            let normalized = value_to_normalized(*value, knob.min, knob.max, knob.log);
+            let moved = (normalized + direction * step).clamp(0.0, 1.0);
+            let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
+            if new_value != *value {
+                *value = new_value;
+                response.mark_changed();
+            }
+        }
     }
+
+    response
 }
 
 /// Formats a number for the tiny value fields. Trailing zeros are dropped so
@@ -2422,17 +2742,18 @@ fn format_number(value: f32, decimals: usize) -> String {
 /// The meter of the header that shows how many voices are playing. The lights
 /// are tiny squares, so that the whole meter fits between the presets and the
 /// lights of the activity meter.
-fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize) {
-    let font = FontId::proportional(8.0);
+fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
+    let font = FontId::proportional(font_size(8.0, zoom));
     let label = painter.layout_no_wrap("VOICES".to_string(), font.clone(), MUTED);
     let label_width = label.size().x;
 
-    let row_width = VOICE_LEDS as f32 * VOICE_LED_WIDTH + (VOICE_LEDS as f32 - 1.0) * VOICE_LED_GAP;
-    let total = label_width + VOICE_METER_GAP + row_width;
+    let row_width =
+        (VOICE_LEDS as f32 * VOICE_LED_WIDTH + (VOICE_LEDS as f32 - 1.0) * VOICE_LED_GAP) * zoom;
+    let total = label_width + VOICE_METER_GAP * zoom + row_width;
 
     // The meter is centered in the free space of the header.
     let left = (rect.left() + (rect.width() - total) * 0.5).round();
-    let top = rect.center().y - VOICE_LED_HEIGHT * 0.5;
+    let top = rect.center().y - VOICE_LED_HEIGHT * zoom * 0.5;
 
     painter.text(
         egui::pos2(left, rect.center().y),
@@ -2444,14 +2765,14 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize) {
 
     // The row of the lights. Every light that stands for a playing voice is
     // green, the others are dark.
-    let row_left = (left + label_width + VOICE_METER_GAP).round();
+    let row_left = (left + label_width + VOICE_METER_GAP * zoom).round();
     for index in 0..VOICE_LEDS {
-        let x = row_left + index as f32 * (VOICE_LED_WIDTH + VOICE_LED_GAP);
+        let x = row_left + index as f32 * (VOICE_LED_WIDTH + VOICE_LED_GAP) * zoom;
         let color = if index < voices { LED_ON } else { LED_OFF };
         painter.rect_filled(
             Rect::from_min_size(
                 egui::pos2(x, top),
-                egui::vec2(VOICE_LED_WIDTH, VOICE_LED_HEIGHT),
+                egui::vec2(VOICE_LED_WIDTH, VOICE_LED_HEIGHT) * zoom,
             ),
             CornerRadius::ZERO,
             color,
@@ -2459,57 +2780,126 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize) {
     }
 }
 
-/// The strip of lights that shows the position of the arpeggiator.
+/// The ring of sectors that shows the position of the arpeggiator.
 ///
-/// The light of the step that is currently playing shines amber, the other
-/// ones are dark.
-fn position_strip(painter: &egui::Painter, rect: Rect, position: usize) {
+/// The ring is divided into as many sectors as the pattern of the
+/// arpeggiator has steps. The sector of the step that is currently playing
+/// shines amber, the other ones are dark. The number of the step is shown in
+/// the middle of the ring.
+fn position_ring(
+    painter: &egui::Painter,
+    area: Rect,
+    position: usize,
+    sectors: usize,
+    active: bool,
+    zoom: f32,
+) {
+    // The label of the ring sits above it.
+    let label_height = LABEL_HEIGHT * zoom;
     painter.text(
-        egui::pos2(rect.center().x, rect.top() + LABEL_HEIGHT * 0.5),
+        egui::pos2(area.center().x, area.top() + label_height * 0.5),
         Align2::CENTER_CENTER,
         "POS",
-        FontId::proportional(9.0),
+        FontId::proportional(font_size(9.0, zoom)),
         TEXT,
     );
 
-    let row_width = POS_LEDS as f32 * POS_LED_WIDTH + (POS_LEDS as f32 - 1.0) * POS_LED_GAP;
-    let left = (rect.center().x - row_width * 0.5).round();
-    let top = rect.top() + LABEL_HEIGHT + 4.0;
-
-    // The lights sit in a flat frame with a single outline.
-    let frame = Rect::from_min_size(
-        egui::pos2(left - 3.0, top - 3.0),
-        egui::vec2(row_width + 6.0, POS_LED_HEIGHT + 6.0),
+    // The ring is a square that fits into the room that is left.
+    let room = Rect::from_min_size(
+        egui::pos2(area.left(), area.top() + label_height),
+        egui::vec2(area.width(), (area.height() - label_height).max(0.0)),
     );
-    painter.rect_filled(frame, CornerRadius::ZERO, TRACK);
-    painter.rect_stroke(
-        frame,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, LINE),
-        egui::StrokeKind::Inside,
-    );
+    let side = room.width().min(room.height()).max(0.0);
+    let center = Rect::from_center_size(room.center(), egui::vec2(side, side)).center();
+    let outer = side * 0.5;
+    let inner = outer * 0.58;
 
-    for index in 0..POS_LEDS {
-        let x = left + index as f32 * (POS_LED_WIDTH + POS_LED_GAP);
-        let color = if index == position {
-            LED_AMBER
+    // The base of the ring: the whole disc.
+    painter.circle_filled(center, outer, LED_OFF);
+
+    // The sector of the step that is playing.
+    if active {
+        if sectors <= 1 {
+            // A single sector is the whole ring.
+            painter.circle_filled(center, outer, LED_AMBER);
         } else {
-            LED_OFF
-        };
-        painter.rect_filled(
-            Rect::from_min_size(
-                egui::pos2(x, top),
-                egui::vec2(POS_LED_WIDTH, POS_LED_HEIGHT),
-            ),
-            CornerRadius::ZERO,
-            color,
-        );
+            let points = sector_points(center, outer, sectors, position);
+            painter.add(egui::Shape::convex_polygon(points, LED_AMBER, Stroke::NONE));
+        }
     }
+
+    // The hole of the ring. It is drawn over the sector, so that the sector
+    // is a piece of the ring and not a piece of the disc.
+    painter.circle_filled(center, inner, BG);
+
+    // The hairlines between the sectors. They are painted over the ring and
+    // the wedge, so that the sectors stay visible even when none of them is
+    // lit. They are not gaps: the ring is still a single piece.
+    if sectors > 1 {
+        for index in 0..sectors {
+            let angle = -std::f32::consts::FRAC_PI_2
+                + index as f32 * std::f32::consts::TAU / sectors as f32;
+            let direction = egui::vec2(angle.cos(), angle.sin());
+            painter.line_segment(
+                [
+                    center + direction * (inner + 1.0 * zoom),
+                    center + direction * (outer - 1.0 * zoom),
+                ],
+                Stroke::new(1.0, BG),
+            );
+        }
+    }
+
+    // The outlines of the ring and of its hole.
+    painter.circle_stroke(center, outer, Stroke::new(1.0, LINE));
+    painter.circle_stroke(center, inner, Stroke::new(1.0, LINE));
+
+    // The number of the step in the middle of the ring.
+    let text = if active {
+        format!("{}", position + 1)
+    } else {
+        "-".to_string()
+    };
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(font_size(10.0, zoom)),
+        TEXT,
+    );
+}
+
+/// The points of the wedge of a step of the ring of the arpeggiator.
+///
+/// The wedge is a piece of the disc between the centre and the outer circle.
+/// The hole of the ring is drawn over it, so that only the piece of the ring
+/// itself stays visible. The wedge is a little bigger than its own sector,
+/// so that no seam shows between the sectors.
+fn sector_points(center: Pos2, outer: f32, sectors: usize, step: usize) -> Vec<Pos2> {
+    /// The number of the pieces of the arc of the wedge.
+    const SEGMENTS: usize = 12;
+    /// The angle that the wedge is bigger than its sector.
+    const SLACK: f32 = 0.003;
+
+    let span = std::f32::consts::TAU / sectors as f32;
+    let start = -std::f32::consts::FRAC_PI_2 + step as f32 * span - SLACK;
+    let end = start + span + 2.0 * SLACK;
+
+    let mut points = Vec::with_capacity(SEGMENTS + 2);
+
+    // The centre of the ring, and then the arc of the sector.
+    points.push(center);
+    for index in 0..=SEGMENTS {
+        let angle = start + (end - start) * index as f32 / SEGMENTS as f32;
+        points.push(center + egui::vec2(angle.cos(), angle.sin()) * outer);
+    }
+
+    points
 }
 
 /// A small light: a flat square that is either lit or switched off.
-fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool) {
-    let rect = Rect::from_center_size(center, egui::vec2(LED_SIZE, LED_SIZE));
+fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool, zoom: f32) {
+    let rect = Rect::from_center_size(center, egui::vec2(LED_SIZE, LED_SIZE) * zoom);
     let fill = if on { color } else { LED_OFF };
     painter.rect_filled(rect, CornerRadius::ZERO, fill);
     painter.rect_stroke(
@@ -2521,19 +2911,19 @@ fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool) {
 }
 
 /// The flat white display that shows the name of the preset.
-fn lcd(painter: &egui::Painter, rect: Rect, text: &str) {
+fn lcd(painter: &egui::Painter, rect: Rect, text: &str, zoom: f32) {
     flat_box(painter, rect, LCD_BG);
     painter.text(
         rect.left_top() + egui::vec2(7.0, rect.height() * 0.5),
         Align2::LEFT_CENTER,
         text,
-        FontId::monospace(12.0),
+        FontId::monospace(font_size(14.0, zoom)),
         LCD_FG,
     );
 }
 
 /// A flat square button: it is filled darker while it is pressed.
-fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
+fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Response {
     let response = ui.interact(
         rect,
         ui.scope_id().with(("sushi-button", text)),
@@ -2551,7 +2941,7 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
         rect.center(),
         Align2::CENTER_CENTER,
         text,
-        FontId::proportional(9.0),
+        FontId::proportional(font_size(11.0, zoom)),
         TEXT,
     );
 
@@ -2560,10 +2950,10 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
 
 /// The small oscilloscope of the header. It is just here to give the panel a
 /// bit of life, not to be a measurement tool.
-fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>) {
+fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoom: f32) {
     // A flat white field with a dark trace, no bevel.
     flat_box(painter, rect, LCD_BG);
-    let inner = rect.shrink(3.0);
+    let inner = rect.shrink(3.0 * zoom);
 
     let length = history.len();
     if length < 2 {
@@ -2597,16 +2987,22 @@ fn log_bounds(min: f32, max: f32) -> (f32, f32) {
     (min + offset, max + offset)
 }
 
-/// Maps a value to its position in the track, where 0 is the bottom and 1 is
-/// the top.
-fn value_to_position(value: f32, min: f32, max: f32, log: bool, track: Rect) -> f32 {
-    let position = if log {
+/// Maps a value to its place in the range, where 0 is the bottom and 1 is the
+/// top.
+fn value_to_normalized(value: f32, min: f32, max: f32, log: bool) -> f32 {
+    if log {
         let (low, high) = log_bounds(min, max);
         let value = value + log_offset(min);
         ((value.max(f32::MIN_POSITIVE).ln() - low.ln()) / (high.ln() - low.ln())).clamp(0.0, 1.0)
     } else {
         ((value - min) / (max - min)).clamp(0.0, 1.0)
-    };
+    }
+}
+
+/// Maps a value to its position in the track, where 0 is the bottom and 1 is
+/// the top.
+fn value_to_position(value: f32, min: f32, max: f32, log: bool, track: Rect) -> f32 {
+    let position = value_to_normalized(value, min, max, log);
     track.bottom() - position * track.height()
 }
 
@@ -2664,7 +3060,7 @@ fn absolute_path(path: &Path) -> PathBuf {
 
 // --- The theme ---------------------------------------------------------------
 
-fn apply_theme(ctx: &egui::Context) {
+fn apply_theme(ctx: &egui::Context, zoom: f32) {
     let mut visuals = egui::Visuals::light();
     visuals.dark_mode = false;
     visuals.override_text_color = Some(TEXT);
@@ -2727,26 +3123,26 @@ fn apply_theme(ctx: &egui::Context) {
 
     ctx.all_styles_mut(|style| {
         style.visuals = visuals.clone();
-        style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        style.spacing.button_padding = egui::vec2(4.0, 1.0);
-        style.spacing.interact_size.y = FIELD_HEIGHT;
-        style.spacing.slider_rail_height = 8.0;
-        style.spacing.slider_width = SLIDER_WIDTH;
+        style.spacing.item_spacing = egui::vec2(6.0, 4.0) * zoom;
+        style.spacing.button_padding = egui::vec2(4.0, 1.0) * zoom;
+        style.spacing.interact_size.y = INTERACT_HEIGHT * zoom;
+        style.spacing.slider_rail_height = 8.0 * zoom;
+        style.spacing.slider_width = SLIDER_WIDTH * zoom;
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+            egui::FontId::new(font_size(12.0, zoom), egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(10.0, egui::FontFamily::Proportional),
+            egui::FontId::new(font_size(11.0, zoom), egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(10.0, egui::FontFamily::Proportional),
+            egui::FontId::new(font_size(11.0, zoom), egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Monospace,
-            egui::FontId::new(10.0, egui::FontFamily::Monospace),
+            egui::FontId::new(font_size(12.0, zoom), egui::FontFamily::Monospace),
         );
     });
 }
@@ -2775,6 +3171,19 @@ mod tests {
         static GESTURES: Cell<usize> = const { Cell::new(0) };
         /// The number of parameter values that have been set.
         static SETS: Cell<usize> = const { Cell::new(0) };
+        /// The time of the last frame of the tests. It only grows, so that the
+        /// time of the frames never moves backwards.
+        static TIME: Cell<f64> = const { Cell::new(0.0) };
+    }
+
+    /// The time of the next frame of the tests. The frames of a test always
+    /// move forward, so that the animations of the panel can settle.
+    fn next_time(step: f64) -> f64 {
+        TIME.with(|time| {
+            let next = time.get() + step;
+            time.set(next);
+            next
+        })
     }
 
     /// A counter that makes the names of the temporary folders unique.
@@ -2840,7 +3249,7 @@ mod tests {
         let mut editor = SushiEditor::new(params.clone(), rx, arp_led, arp_position, voice_count);
         let ctx = egui::Context::default();
         editor.gui_ctx = Some(GuiContext::new(Arc::new(Stub)));
-        apply_theme(&ctx);
+        apply_theme(&ctx, 1.0);
         (ctx, editor, params)
     }
 
@@ -2857,6 +3266,7 @@ mod tests {
             history: &editor.history,
             voice_count: &editor.voice_count,
             slider_width: SLIDER_WIDTH,
+            zoom: 1.0,
         }
     }
 
@@ -2879,7 +3289,10 @@ mod tests {
         frames: Vec<egui::RawInput>,
     ) -> egui::FullOutput {
         let mut last = None;
-        for input in frames {
+        for mut input in frames {
+            // Every frame of a test moves the time forward, so that the
+            // animations of the panel can settle.
+            input.time = Some(next_time(1.0 / 60.0));
             let mut output = ctx.run_ui(input, |ui| {
                 editor.draw(ui);
             });
@@ -2889,17 +3302,26 @@ mod tests {
         last.unwrap()
     }
 
+    /// The zoom of the panel in the given context. It is the zoom of the
+    /// layout that the panel uses in the window of the context.
+    fn zoom_of(ctx: &egui::Context) -> f32 {
+        Layout::for_rect(ctx.viewport_rect())
+            .map(|layout| layout.zoom)
+            .unwrap_or(1.0)
+    }
+
     /// The rects of all the vertical sliders, in the order they are drawn.
-    /// The sliders grow a little with the window, so they are recognized by
-    /// their width and their height.
+    /// The sliders grow with the zoom of the panel, so they are recognized
+    /// by their width and their height.
     fn slider_rects(ctx: &egui::Context, output: &egui::FullOutput) -> Vec<egui::Rect> {
+        let zoom = zoom_of(ctx);
         let mut rects = Vec::new();
         for clipped in ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point()) {
             if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
                 let rect = clipped.clip_rect;
                 let width = rect.width();
-                let is_slider = (SLIDER_WIDTH..=20.0).contains(&width)
-                    || (MACRO_SLIDER_WIDTH..=28.0).contains(&width);
+                let is_slider = (width - SLIDER_WIDTH * zoom).abs() < 0.5
+                    || (width - MACRO_SLIDER_WIDTH * zoom).abs() < 0.5;
                 if is_slider && rect.height() > 40.0 {
                     rects.push(rect);
                 }
@@ -2920,26 +3342,6 @@ mod tests {
             .collect()
     }
 
-    /// The rects of all the numeric value fields, in the order they are
-    /// drawn. The fields grow with their column, so they are recognized by
-    /// their height and their width.
-    fn field_rects(ctx: &egui::Context, output: &egui::FullOutput) -> Vec<egui::Rect> {
-        let mut rects: Vec<egui::Rect> = Vec::new();
-        for clipped in ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point()) {
-            if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
-                let rect = clipped.clip_rect;
-                let is_field = (rect.height() - FIELD_HEIGHT).abs() < 0.5
-                    && rect.width() >= FIELD_WIDTH
-                    && rect.width() <= MAX_FIELD_WIDTH;
-                // Every field is drawn twice: once filled and once stroked.
-                if is_field && !rects.contains(&rect) {
-                    rects.push(rect);
-                }
-            }
-        }
-        rects
-    }
-
     /// All the texts of a frame, with their positions and their sizes.
     fn text_shapes(output: &egui::FullOutput) -> Vec<(String, egui::Pos2, egui::Vec2)> {
         output
@@ -2954,12 +3356,43 @@ mod tests {
             .collect()
     }
 
+    /// The centre of the ring of the arpeggiator and the number of its lit
+    /// sectors.
+    fn ring(output: &egui::FullOutput) -> Option<(egui::Pos2, usize)> {
+        let mut center = None;
+        let mut sectors = 0;
+
+        for shape in &output.shapes {
+            match &shape.shape {
+                egui::epaint::Shape::Path(path) if path.fill == LED_AMBER => {
+                    sectors += 1;
+                    center = path.points.first().copied();
+                }
+                egui::epaint::Shape::Circle(circle) if circle.fill == LED_AMBER => {
+                    sectors += 1;
+                    center = Some(circle.center);
+                }
+                _ => {}
+            }
+        }
+
+        center.map(|center| (center, sectors))
+    }
+
+    /// The text that is drawn at the given place.
+    fn text_at(output: &egui::FullOutput, pos: egui::Pos2) -> Option<String> {
+        text_shapes(output)
+            .into_iter()
+            .find(|(_, text_pos, size)| (*text_pos + *size / 2.0 - pos).length() < 4.0)
+            .map(|(text, _, _)| text)
+    }
+
     /// Runs a few frames, so that the animations of the panel can settle.
     fn settle(ctx: &egui::Context, editor: &mut SushiEditor) -> egui::FullOutput {
         let mut last = None;
-        for step in 0..10 {
+        for _ in 0..10 {
             let mut raw = input(vec![]);
-            raw.time = Some(step as f64 * 0.05);
+            raw.time = Some(next_time(0.05));
             let mut output = ctx.run_ui(raw, |ui| {
                 editor.draw(ui);
             });
@@ -3128,23 +3561,49 @@ mod tests {
         assert!(sets >= 2, "the value was not set while dragging");
     }
 
-    #[test]
-    fn typing_a_value_sets_it_exactly() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[CUTOFF_SLIDER];
-        // The value field is right below the slider.
-        let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
+    /// Right-clicks the cutoff slider, clears the editor and types `text`.
+    fn edit_cutoff(editor: &mut SushiEditor, ctx: &egui::Context, text: &str) {
+        let output = run_frames(ctx, editor, vec![input(vec![])]);
+        let sliders = slider_rects(ctx, &output);
+        let pos = sliders[CUTOFF_SLIDER].center();
 
-        let mut events = vec![egui::Event::Key {
-            key: egui::Key::A,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::COMMAND,
-        }];
-        for character in "1000".chars() {
+        // Open the value editor with a secondary click.
+        run_frames(
+            ctx,
+            editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(pos)]),
+                input(vec![
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ]),
+                input(vec![]),
+                input(vec![]),
+            ],
+        );
+
+        // Clear the current value and type the new one.
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            events.push(egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        for character in text.chars() {
             events.push(egui::Event::Text(character.to_string()));
         }
         events.push(egui::Event::Key {
@@ -3154,88 +3613,47 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::default(),
         });
-
-        run_frames(
-            &ctx,
-            &mut editor,
-            vec![
-                input(vec![]),
-                input(vec![
-                    egui::Event::PointerMoved(field),
-                    egui::Event::PointerButton {
-                        pos: field,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: field,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                ]),
-                input(events),
-                input(vec![]),
-            ],
-        );
-
-        assert_eq!(params.cutoff.value(), 1000.0);
+        run_frames(ctx, editor, vec![input(events), input(vec![])]);
     }
 
     #[test]
-    fn typing_nonsense_keeps_the_old_value() {
+    fn right_click_does_not_move_the_slider() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[CUTOFF_SLIDER];
-        // The value field is right below the slider.
-        let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
-
-        let mut events = vec![egui::Event::Key {
-            key: egui::Key::A,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::COMMAND,
-        }];
-        for character in "NaN".chars() {
-            events.push(egui::Event::Text(character.to_string()));
-        }
-        events.push(egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::default(),
-        });
-
+        let pos = slider_rects(&ctx, &output)[CUTOFF_SLIDER].center();
         run_frames(
             &ctx,
             &mut editor,
-            vec![
-                input(vec![]),
-                input(vec![
-                    egui::Event::PointerMoved(field),
-                    egui::Event::PointerButton {
-                        pos: field,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: field,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                ]),
-                input(events),
-                input(vec![]),
-            ],
+            vec![input(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ])],
         );
+        assert_eq!(params.cutoff.value(), 3_000.0);
+    }
 
-        // "NaN" is not a number, so the parameter keeps its old value.
+    #[test]
+    fn the_right_click_editor_sets_the_value() {
+        let (ctx, mut editor, params) = make_editor();
+        edit_cutoff(&mut editor, &ctx, "1000");
+        assert_eq!(params.cutoff.value(), 1_000.0);
+    }
+
+    #[test]
+    fn the_right_click_editor_rejects_nonsense() {
+        let (ctx, mut editor, params) = make_editor();
+        edit_cutoff(&mut editor, &ctx, "NaN");
         assert_eq!(params.cutoff.value(), 3_000.0);
     }
 
@@ -3287,6 +3705,119 @@ mod tests {
         run_frames(&ctx, &mut editor, click(item));
 
         assert_eq!(params.osc1_wave.value(), crate::params::Waveform::Triangle);
+    }
+
+    /// A scroll of the mouse wheel at the given position.
+    fn wheel(pos: egui::Pos2, delta: f32, shift: bool) -> Vec<egui::RawInput> {
+        let modifiers = egui::Modifiers {
+            shift,
+            ..Default::default()
+        };
+
+        vec![
+            input(vec![egui::Event::PointerMoved(pos)]),
+            input(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, delta),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers,
+                },
+            ]),
+        ]
+    }
+
+    #[test]
+    fn the_mouse_wheel_moves_a_slider() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let rect = sliders[CUTOFF_SLIDER];
+        let pos = rect.center();
+
+        let before = params.cutoff.value();
+        run_frames(&ctx, &mut editor, wheel(pos, 1.0, false));
+
+        // The wheel moved the slider one step up.
+        let after = params.cutoff.value();
+        assert!(
+            after > before,
+            "the wheel did not move the slider: {before}"
+        );
+        assert!(
+            editor.state.dirty,
+            "the wheel did not mark the sound as dirty"
+        );
+
+        // And down again.
+        run_frames(&ctx, &mut editor, wheel(pos, -1.0, false));
+        let back = params.cutoff.value();
+        assert!(
+            (back - before).abs() < 0.001,
+            "the wheel did not move the slider back: {back} instead of {before}"
+        );
+    }
+
+    #[test]
+    fn the_mouse_wheel_moves_a_slider_in_small_steps_with_shift() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let rect = sliders[CUTOFF_SLIDER];
+        let pos = rect.center();
+
+        let before = params.cutoff.value();
+
+        // A whole step.
+        run_frames(&ctx, &mut editor, wheel(pos, 1.0, false));
+        let coarse = params.cutoff.value();
+
+        // And a small one.
+        run_frames(&ctx, &mut editor, wheel(pos, 1.0, true));
+        let fine = params.cutoff.value();
+
+        assert!(fine > coarse, "the shift did not move the slider: {fine}");
+        assert!(
+            fine - coarse < coarse - before,
+            "the shift did not move the slider in small steps: {fine} {coarse} {before}"
+        );
+    }
+
+    #[test]
+    fn the_mouse_wheel_does_not_move_a_slider_that_is_not_hovered() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let rect = sliders[CUTOFF_SLIDER];
+
+        // The wheel is somewhere else on the panel.
+        let elsewhere = egui::pos2(rect.center().x + 40.0, rect.center().y);
+        let before = params.cutoff.value();
+        run_frames(&ctx, &mut editor, wheel(elsewhere, 1.0, false));
+
+        assert_eq!(params.cutoff.value(), before);
+    }
+
+    #[test]
+    fn the_mouse_wheel_does_not_steal_the_scroll_of_the_browser() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.patch_open = true;
+
+        let output = settle(&ctx, &mut editor);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "FACTORY")
+            .expect("the browser has no list");
+        let list = pos + egui::vec2(2.0, 2.0);
+
+        // The wheel is over the list of the browser, so it belongs to the
+        // list and not to a slider of the panel.
+        let before = params.cutoff.value();
+        run_frames(&ctx, &mut editor, wheel(list, 1.0, false));
+
+        assert_eq!(params.cutoff.value(), before);
     }
 
     #[test]
@@ -3465,27 +3996,30 @@ mod tests {
         // touch the presets.
         assert!(pos.y > MARGIN && pos.y < MARGIN + HEADER_HEIGHT);
         assert!(
-            pos.x + size.x < MARGIN + 150.0,
+            pos.x + size.x < MARGIN + 172.0,
             "the hint overlaps the presets: {pos:?} {size:?}"
         );
     }
 
     #[test]
     fn the_patches_button_does_not_overlap_the_voice_meter() {
-        let rect = Rect::from_min_size(
-            egui::pos2(MARGIN, MARGIN),
-            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, HEADER_HEIGHT),
-        );
-        let rects = header_rects(rect);
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let rect = Rect::from_min_size(
+                egui::pos2(MARGIN, MARGIN) * zoom,
+                egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, HEADER_HEIGHT) * zoom,
+            );
+            let rects = header_rects(rect, zoom);
 
-        // The button of the patch browser sits between the mutation and the
-        // meter of the voices.
-        assert!(rects.patches.left() >= rects.mutate.right());
-        assert!(!rects.patches.intersects(rects.meter));
-        // The meter still fits between the button and the lights of the
-        // activity meter.
-        assert!(rects.meter.right() <= rect.right() - 194.0);
-        assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH);
+            // The button of the patch browser sits between the mutation and the
+            // meter of the voices.
+            assert!(rects.patches.left() >= rects.mutate.right());
+            assert!(!rects.patches.intersects(rects.meter));
+            // The meter still fits between the button and the lights of the
+            // activity meter.
+            assert!(rects.meter.right() <= rect.right() - 194.0 * zoom);
+            assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH * zoom);
+        }
     }
 
     #[test]
@@ -3560,6 +4094,237 @@ mod tests {
         assert!(!editor.state.patch_open);
         run_frames(&ctx, &mut editor, click(button));
         assert!(editor.state.patch_open);
+    }
+
+    #[test]
+    fn clicking_the_display_opens_the_patch_browser() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "01 INIT PAD")
+            .expect("the header has no display");
+        let display = pos + egui::vec2(2.0, 2.0);
+
+        assert!(!editor.state.patch_open);
+        run_frames(&ctx, &mut editor, click(display));
+        assert!(
+            editor.state.patch_open,
+            "the display did not open the browser"
+        );
+
+        // And it closes it again.
+        run_frames(&ctx, &mut editor, click(display));
+        assert!(
+            !editor.state.patch_open,
+            "the display did not close the browser"
+        );
+    }
+
+    #[test]
+    fn the_list_of_the_browser_is_refreshed_when_it_opens() {
+        let (ctx, mut editor, _params) = make_editor();
+        let dir = TempDir::new("refresh-on-open");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+
+        // A patch that was saved after the editor was started.
+        std::fs::write(
+            dir.path.join("LATE.json"),
+            r#"{"format":"sushi-patch","version":1,"name":"LATE","params":{"cutoff":800.0}}"#,
+        )
+        .expect("the patch was not written");
+        editor.state.patch_files.clear();
+        assert!(
+            editor.state.patch_files.is_empty(),
+            "the list is not empty yet"
+        );
+
+        // Opening the browser reads the list of the folder again.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "PATCHES")
+            .expect("the header has no patch button");
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+
+        assert!(editor.state.patch_open);
+        assert_eq!(editor.state.patch_files.len(), 1, "the list was not read");
+
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"LATE".to_string()),
+            "the list was not refreshed: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_search_filters_the_presets_and_the_patches() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("search");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+
+        // A patch of the user.
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        editor.state.patch_name = "MY PATCH".to_string();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // The name of the patch is not in the list, so that the entries of the
+        // list can be told apart from it.
+        editor.state.patch_name = "SOMETHING ELSE".to_string();
+        editor.state.patch_active = None;
+        editor.state.patch_open = true;
+
+        // The search for a preset of the factory. It does not care about the
+        // case of the letters.
+        editor.state.patch_search = "GlAsS".to_string();
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"GLASS KEYS".to_string()),
+            "the search hid the preset: {names:?}"
+        );
+        assert!(
+            !names.contains(&"INIT PAD".to_string()),
+            "the search did not hide the preset: {names:?}"
+        );
+        assert!(
+            !names.contains(&"MY PATCH".to_string()),
+            "the search did not hide the patch: {names:?}"
+        );
+
+        // The search for a patch of the user.
+        editor.state.patch_search = "my".to_string();
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"MY PATCH".to_string()),
+            "the search hid the patch: {names:?}"
+        );
+        assert!(
+            !names.contains(&"GLASS KEYS".to_string()),
+            "the search did not hide the preset: {names:?}"
+        );
+
+        // A search that finds nothing at all.
+        editor.state.patch_search = "nothing at all".to_string();
+        let output = settle(&ctx, &mut editor);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&NO_MATCHES.to_string()),
+            "the browser has no caption: {names:?}"
+        );
+        assert!(
+            !names.contains(&"GLASS KEYS".to_string()),
+            "the search did not hide the preset: {names:?}"
+        );
+        assert!(
+            !names.contains(&"MY PATCH".to_string()),
+            "the search did not hide the patch: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_preset_of_the_factory_can_be_loaded_from_the_browser() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.patch_active = Some("MY PATCH".to_string());
+        editor.state.patch_open = true;
+
+        let output = settle(&ctx, &mut editor);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "GLASS KEYS")
+            .expect("the browser has no preset");
+        let preset = pos + egui::vec2(2.0, 2.0);
+
+        run_frames(&ctx, &mut editor, click(preset));
+
+        // The preset was applied and it replaced the patch of the user.
+        assert_eq!(editor.state.preset_index, 1);
+        assert!(editor.state.patch_active.is_none());
+        assert!(!editor.state.dirty);
+        assert_eq!(params.cutoff.value(), 4_200.0);
+
+        // The browser stays open.
+        assert!(editor.state.patch_open);
+    }
+
+    #[test]
+    fn a_patch_can_be_loaded_by_its_name() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("load");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // The sound is changed and the patch is loaded by its name.
+        setter.set_parameter(&params.cutoff, 500.0);
+        editor.state.patch_name = "MY PATCH".to_string();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_by_name();
+        }
+
+        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
+        assert_eq!(editor.state.patch_status, "Loaded MY PATCH");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+        assert!(!editor.state.dirty);
+
+        // A name that is not in the folder is reported.
+        editor.state.patch_name = "NOT THERE".to_string();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_by_name();
+        }
+        assert_eq!(editor.state.patch_status, "Not found");
+        assert!(editor.state.patch_status_error);
+    }
+
+    #[test]
+    fn the_load_button_of_the_browser_loads_the_patch_of_the_name() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("load-button");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // The sound is changed and the patch is loaded with the button.
+        setter.set_parameter(&params.cutoff, 500.0);
+        editor.state.patch_name = "MY PATCH".to_string();
+        editor.state.patch_open = true;
+
+        let output = settle(&ctx, &mut editor);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "LOAD")
+            .expect("the browser has no load button");
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+
+        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
     }
 
     #[test]
@@ -3998,29 +4763,132 @@ mod tests {
     }
 
     #[test]
-    fn the_position_strip_lights_the_current_step() {
-        let (ctx, mut editor, _params) = make_editor();
+    fn the_position_ring_lights_the_current_step() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.arp_length, 8);
+        setter.set_parameter(&params.arp_on, true);
         editor.arp_position.store(5, Ordering::Relaxed);
 
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        // Only the light of the fifth step shines.
-        let lights: Vec<egui::Rect> = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::epaint::Shape::Rect(rect)
-                    if rect.fill == LED_AMBER
-                        && rect.rect.width() == POS_LED_WIDTH
-                        && rect.rect.height() == POS_LED_HEIGHT =>
-                {
-                    Some(rect.rect)
-                }
-                _ => None,
-            })
-            .collect();
+        // Only the sector of the sixth step shines.
+        let (center, sectors) = ring(&output).expect("the panel has no ring");
+        assert_eq!(sectors, 1, "the ring does not have one lit sector");
 
-        assert_eq!(lights.len(), 1, "the strip does not have one lit light");
+        // The number of the step is shown in the middle of the ring, and the
+        // ring has its label.
+        assert_eq!(
+            text_at(&output, center).as_deref(),
+            Some("6"),
+            "the ring does not show the step"
+        );
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"POS".to_string()),
+            "the ring has no label: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_position_of_the_ring_is_clamped_to_the_length() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.arp_length, 2);
+        setter.set_parameter(&params.arp_on, true);
+        // The arpeggiator is far beyond the end of its pattern.
+        editor.arp_position.store(9, Ordering::Relaxed);
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The ring shows the last step of the pattern, and it has exactly one
+        // lit sector.
+        let (center, sectors) = ring(&output).expect("the panel has no ring");
+        assert_eq!(sectors, 1, "the ring does not have one lit sector");
+        assert_eq!(
+            text_at(&output, center).as_deref(),
+            Some("2"),
+            "the ring does not show the step"
+        );
+    }
+
+    #[test]
+    fn the_ring_is_drawn_for_every_length_of_the_pattern() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.arp_on, true);
+
+        for length in 1..=16 {
+            setter.set_parameter(&params.arp_length, length);
+            editor
+                .arp_position
+                .store(length as usize - 1, Ordering::Relaxed);
+
+            let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+            // Every length has a ring with exactly one lit sector that shows
+            // the number of its step.
+            let (center, sectors) = ring(&output).expect("the panel has no ring");
+            assert_eq!(sectors, 1, "the ring of the length {length} is wrong");
+            assert_eq!(
+                text_at(&output, center).as_deref(),
+                Some(length.to_string().as_str()),
+                "the ring of the length {length} does not show its step"
+            );
+
+            // And the label of the ring is there.
+            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+            assert!(
+                names.contains(&"POS".to_string()),
+                "the ring of the length {length} has no label: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sectors_of_the_ring_have_the_right_geometry() {
+        let center = egui::pos2(30.0, 40.0);
+        let outer = 50.0;
+
+        for sectors in 1..=16 {
+            for step in 0..sectors {
+                let points = sector_points(center, outer, sectors, step);
+
+                // The wedge starts in the middle of the ring and ends on its
+                // outer circle.
+                assert_eq!(points.first(), Some(&center));
+                for point in &points[1..] {
+                    assert!(
+                        (point.distance(center) - outer).abs() < 0.001,
+                        "a point of the wedge is not on the outer circle: {point:?}"
+                    );
+                }
+
+                // The wedge covers its own sector and a little more, so that
+                // no seam shows between the sectors.
+                let span = std::f32::consts::TAU / sectors as f32;
+                let middle = points.len() / 2;
+                let angle = (points[middle] - center)
+                    .y
+                    .atan2((points[middle] - center).x);
+                let expected = -std::f32::consts::FRAC_PI_2 + step as f32 * span + span * 0.5;
+                let mut difference = angle - expected;
+                while difference > std::f32::consts::PI {
+                    difference -= std::f32::consts::TAU;
+                }
+                while difference < -std::f32::consts::PI {
+                    difference += std::f32::consts::TAU;
+                }
+                assert!(
+                    difference.abs() < 0.01,
+                    "the wedge of the step {step} is at the wrong angle: {difference}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4101,22 +4969,6 @@ mod tests {
             }
         }
 
-        // The same goes for the fields of the values.
-        let fields = field_rects(ctx, output);
-        assert_eq!(fields.len(), 54, "unexpected number of value fields");
-        for (index, rect) in fields.iter().enumerate() {
-            assert!(
-                panel.contains_rect(*rect),
-                "a value field is outside of the panel: {rect:?}"
-            );
-            for other in &fields[index + 1..] {
-                assert!(
-                    !rect.intersects(*other),
-                    "two value fields touch each other: {rect:?} {other:?}"
-                );
-            }
-        }
-
         // And no text sticks out of the panel.
         for shape in &output.shapes {
             if let egui::epaint::Shape::Text(text) = &shape.shape {
@@ -4170,12 +5022,13 @@ mod tests {
         assert_eq!(params.voices.value(), 16);
     }
 
-    /// The sizes that the panel has to survive.
-    const SIZES: [(f32, f32); 4] = [
+    /// The sizes of the windows in which the panel is drawn.
+    const SIZES: [(f32, f32); 5] = [
         (960.0, 640.0),
         (1280.0, 800.0),
         (1600.0, 900.0),
         (2000.0, 1000.0),
+        (1024.0, 1122.0),
     ];
 
     #[test]
@@ -4192,6 +5045,7 @@ mod tests {
             (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT),
             (WINDOW_WIDTH, WINDOW_HEIGHT - 1.0),
             (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT - 1.0),
+            (800.0, 600.0),
             (300.0, 200.0),
             (0.0, 0.0),
         ] {
@@ -4204,36 +5058,89 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_fills_the_window() {
-        for (width, height) in SIZES {
+    fn the_panel_follows_the_window_continuously() {
+        // The size of the window, the zoom of the panel and the size of the
+        // panel that goes with it.
+        let cases = [
+            (960.0, 640.0, 1.0, 960.0, 640.0),
+            (1280.0, 800.0, 1.25, 1200.0, 800.0),
+            (1600.0, 900.0, 1.40625, 1350.0, 900.0),
+            (2000.0, 1000.0, 1.5625, 1500.0, 1000.0),
+            (1024.0, 1122.0, 1024.0 / 960.0, 1024.0, 682.6667),
+            (1280.0, 701.0, 701.0 / 640.0, 1051.5, 701.0),
+        ];
+
+        for (width, height, zoom, panel_width, panel_height) in cases {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
             let layout = Layout::for_rect(rect).expect("the window is big enough");
 
-            // The header sits at the top of the panel and never grows.
             assert!(
-                (layout.header.top() - MARGIN).abs() < 0.01,
-                "the header is at the wrong place: {:?}",
-                layout.header
+                (layout.zoom - zoom).abs() < 0.001,
+                "the window of {width} x {height} has the zoom {} instead of {zoom}",
+                layout.zoom
             );
-            assert!((layout.header.height() - HEADER_HEIGHT).abs() < 0.01);
+            assert!(
+                (layout.panel.width() - panel_width).abs() < 0.01,
+                "the panel of the window of {width} x {height} has the wrong width: {:?}",
+                layout.panel
+            );
+            assert!(
+                (layout.panel.height() - panel_height).abs() < 0.01,
+                "the panel of the window of {width} x {height} has the wrong height: {:?}",
+                layout.panel
+            );
+            // The panel sits in the middle of the window.
+            assert!((layout.panel.center().x - rect.center().x).abs() < 0.01);
+            assert!((layout.panel.center().y - rect.center().y).abs() < 0.01);
+            // The panel keeps the proportions of the design.
+            let ratio = layout.panel.width() / layout.panel.height();
+            assert!((ratio - WINDOW_WIDTH / WINDOW_HEIGHT).abs() < 0.001);
+        }
 
-            // The rows fill the rest of the height of the window.
+        // The panel of a window of 1280 x 800 has a width of 1200, so it
+        // starts 40 px from the left edge.
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0));
+        let layout = Layout::for_rect(rect).expect("the window is big enough");
+        assert!((layout.panel.left() - 40.0).abs() < 0.01);
+        assert!((layout.panel.top() - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_layout_keeps_the_design_of_the_panel() {
+        for (width, height) in SIZES {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            let layout = Layout::for_rect(rect).expect("the window is big enough");
+            let zoom = layout.zoom;
+
+            // The header sits at the top of the panel and grows with the zoom.
+            let header = layout.header();
             assert!(
-                (layout.rows[0].top() - (MARGIN + HEADER_HEIGHT + GROUP_GAP)).abs() < 0.01,
-                "the first row is at the wrong place: {:?}",
-                layout.rows[0]
+                (header.left() - (layout.panel.left() + MARGIN * zoom)).abs() < 0.01,
+                "the header is at the wrong place: {header:?}"
             );
             assert!(
-                (layout.rows[3].bottom() - (height - MARGIN)).abs() < 0.01,
-                "the last row does not fill the window: {:?}",
-                layout.rows[3]
+                (header.top() - (layout.panel.top() + MARGIN * zoom)).abs() < 0.01,
+                "the header is at the wrong place: {header:?}"
             );
-            for row in layout.rows {
-                assert!(row.height() > 0.0, "a row has no height: {row:?}");
-                // The rows fill the width of the window.
-                assert!((row.left() - MARGIN).abs() < 0.01);
-                assert!((row.right() - (width - MARGIN)).abs() < 0.01);
-            }
+            assert!((header.height() - HEADER_HEIGHT * zoom).abs() < 0.01);
+
+            // The rows fill the rest of the panel.
+            let first = layout.group(0, 0);
+            assert!(
+                (first.top() - (layout.panel.top() + (MARGIN + HEADER_HEIGHT + GROUP_GAP) * zoom))
+                    .abs()
+                    < 0.01,
+                "the first row is at the wrong place: {first:?}"
+            );
+            let last = layout.group(3, 0);
+            assert!(
+                (last.bottom() - (layout.panel.bottom() - MARGIN * zoom)).abs() < 0.01,
+                "the last row does not fill the panel: {last:?}"
+            );
+
+            // The panel is never bigger than the window.
+            assert!(layout.panel.width() <= width + 0.01);
+            assert!(layout.panel.height() <= height + 0.01);
         }
     }
 
@@ -4248,7 +5155,7 @@ mod tests {
                 for index in 0..count {
                     let group = layout.group(row, index);
                     assert!(
-                        rect.contains_rect(group),
+                        layout.panel.contains_rect(group),
                         "a section is outside of the panel: {group:?}"
                     );
                     assert!(
@@ -4268,11 +5175,62 @@ mod tests {
                 // The sections of a row fill the whole row.
                 let last = layout.group(row, count - 1);
                 assert!(
-                    (last.right() - (width - MARGIN)).abs() < 0.01,
-                    "the sections of the row {row} do not fill the window: {last:?}"
+                    (last.right() - (layout.panel.right() - MARGIN * layout.zoom)).abs() < 0.01,
+                    "the sections of the row {row} do not fill the panel: {last:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_fonts_scale_with_the_zoom() {
+        // The size of a font is the size of the design times the zoom.
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            for size in [8.0, 9.0, 10.0, 12.0, 14.0] {
+                assert!(
+                    (font_size(size, zoom) - size * zoom).abs() < 0.0001,
+                    "the font of {size} does not scale with the zoom {zoom}"
+                );
+            }
+        }
+        assert!((font_size(10.0, 1.25) - 12.5).abs() < 0.0001);
+        assert!((font_size(10.0, 1.0) - 10.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn the_texts_of_the_panel_grow_with_the_zoom() {
+        let (ctx, mut editor, _params) = make_editor();
+
+        // The wordmark of the header at the zoom of 100 %.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, _, small) = text_shapes(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == "SUSHI")
+            .expect("the header has no wordmark");
+
+        // The same wordmark at the zoom of 125 %.
+        let output = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input_at(egui::vec2(1280.0, 800.0), vec![])],
+        );
+        let (_, _, big) = text_shapes(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == "SUSHI")
+            .expect("the header has no wordmark");
+
+        // The pixel font is snapped to whole pixels, so the growth is close
+        // to the zoom instead of exactly proportional.
+        assert!(
+            big.x > small.x && big.y > small.y,
+            "the wordmark did not grow with the zoom: {small:?} {big:?}"
+        );
+        let ratio = big.y / small.y;
+        assert!(
+            (1.05..1.6).contains(&ratio),
+            "the wordmark grew by {ratio} instead of about 1.25: {small:?} {big:?}"
+        );
     }
 
     #[test]
@@ -4360,6 +5318,26 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_fits_into_a_huge_window() {
+        // The biggest zoom level needs a window of 3840 x 2560.
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input_at(egui::vec2(3840.0, 2560.0), vec![])],
+        );
+        let panel = Layout::for_rect(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(3840.0, 2560.0),
+        ))
+        .expect("the window is big enough")
+        .panel;
+        assert!((panel.width() - 3840.0).abs() < 0.01);
+        assert!((panel.height() - 2560.0).abs() < 0.01);
+        assert_the_widgets_fit(&ctx, &output, panel);
+    }
+
+    #[test]
     fn the_widgets_fit_into_every_window() {
         for (width, height) in SIZES {
             let (ctx, mut editor, _params) = make_editor();
@@ -4368,7 +5346,14 @@ mod tests {
                 &mut editor,
                 vec![input_at(egui::vec2(width, height), vec![])],
             );
-            let panel = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            // The panel sits in the middle of the window, so that is where
+            // the widgets have to stay.
+            let panel = Layout::for_rect(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(width, height),
+            ))
+            .expect("the window is big enough")
+            .panel;
             assert_the_widgets_fit(&ctx, &output, panel);
         }
     }
