@@ -30,12 +30,16 @@
 
 **界面**
 
-- 平面（SH-101 蓝图风格）单页面板：绿色分区标题（与声部灯同色）、1 px 横竖细线、竖向推子（黑色滑块完全嵌入凹槽）、波形/模式点击弹出
+- 深色复古仪器面板：暖纸色丝印 + 单一琥珀结构色；绿色只表示“活着”的状态（LCD、示波器、声部灯、ARP 灯、悬停的推子）
+- 四个信号带：`01 GENERATORS`（VCO 1 / VCO 2 / PULSE WIDTH / SOURCE MIXER）→ `02 SHAPING`（VCF / MOD ENV / AMP ENV）→ `03 MODULATION`（LFO 1 / LFO 2 / ARP / VOICE）→ `04 OUTPUT`（FX / MACROS / VCA）
+- 每个分区：近白 13 px 标题 + 4 px 琥珀标签 + 短线；参数名 9 px 暗纸色，形成标题 / 参数 / 数值三层
+- 推子为深色铣槽 + 开口侧轨 + 五档刻度；双极参数有中心刻线；纸色推子帽带帽沿和永久中线，悬停/拖动时变绿
+- 固定列距（发生器 52、塑形/调制 60、Voice 48、输出 60），推子中心在分行内可预测；FX 的 CHORUS / DELAY / REVERB 子标题放在标题行，所有推子共享同一行程
 - **右键任意推子**弹出数值输入框，回车或 OK 精确写入；不再为每个推子保留横向数字框，面板更紧凑
 - **鼠标滚轮**调节推子（按住 Shift 微调）；**双击**推子/开关/单选/弹窗恢复出厂默认值
 - **拖动窗口边框连续缩放**整个面板与字体（没有 zoom 菜单或档位）；小于 960×600 时只显示 `:(`
 - 界面字体为 **Silkscreen** 像素字体（SIL Open Font License，见 `assets/fonts/OFL.txt`）
-- 4 行分区（学习 SH-101 蓝图的合理布局）：VCO 1 / VCO 2 / SOURCE MIXER / VCF · PULSE WIDTH / MOD ENV / AMP ENV / LFO / CLK · ARP / VOICE · FX / MACROS / VCA
+- 底栏保留 `SUSHI INSTRUMENTS / MODEL 101` 与双击/右键提示
 - 标题栏的 **PATCHES** 按钮打开补丁浏览器：可 **搜索**；**用户补丁排在最前**，工厂预设在后面；点击读取，也可以按名字 LOAD 或 SAVE（同名文件需连按两次 SAVE 才会覆盖）
 - LCD 显示当前声音的名字：用户补丁显示补丁名，工厂预设显示编号与预设名，被改动过时名字后带 `*`
 

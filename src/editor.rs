@@ -36,42 +36,54 @@ use presets::{PRESETS, Rng};
 // --- Flat blueprint palette -------------------------------------------------
 
 /// The background of the whole panel. The sections have no fill of their own.
-const BG: Color32 = Color32::from_rgb(0xF1, 0xF1, 0xF1);
+const BG: Color32 = Color32::from_rgb(0x15, 0x17, 0x13);
+/// The header sits on a slightly deeper plate than the faceplate.
+const HEADER_BG: Color32 = Color32::from_rgb(0x0C, 0x0E, 0x0B);
 /// The 1 px rules: below the section titles, below the header, around fields.
-const RULE: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
+const RULE: Color32 = Color32::from_rgb(0x3E, 0x42, 0x38);
 /// The outlines of the widgets.
-const LINE: Color32 = Color32::from_rgb(0x7A, 0x7A, 0x7A);
-const TEXT: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
-const MUTED: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
-/// The accent of the panel: the section titles and the oscilloscope use the
-/// same green as the lights of the voice meter.
-const TITLE_GREEN: Color32 = Color32::from_rgb(0x1E, 0x6B, 0x38);
-/// The track of a slider.
-const TRACK: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const LINE: Color32 = Color32::from_rgb(0x6F, 0x73, 0x64);
+const TEXT: Color32 = Color32::from_rgb(0xE8, 0xE1, 0xCF);
+const MUTED: Color32 = Color32::from_rgb(0x9C, 0x9A, 0x8B);
+/// The warm paper of the silkscreen and of the fader handles.
+const PAPER: Color32 = Color32::from_rgb(0xE3, 0xDA, 0xC6);
+/// The accent of the section titles. It is paper, so the colour of a domain
+/// comes from its small tab and its rule, not from the type.
+const TITLE_GREEN: Color32 = Color32::from_rgb(0xF4, 0xEE, 0xDF);
+/// The track of a slider: a dark milled slot, not a white groove.
+const TRACK: Color32 = Color32::from_rgb(0x0C, 0x0E, 0x0B);
 /// The handle band of a slider.
-const HANDLE: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
-/// The tick in the middle of the track of a slider.
-const TICK: Color32 = Color32::from_rgb(0xD8, 0xD8, 0xD8);
+const HANDLE: Color32 = Color32::from_rgb(0xCF, 0xC6, 0xB2);
+/// The tick marks of a slider.
+const TICK: Color32 = Color32::from_rgb(0x7E, 0x82, 0x71);
 /// The background of the numeric fields.
-const FIELD_BG: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-const BUTTON_BG: Color32 = Color32::from_rgb(0xE7, 0xE7, 0xE7);
-const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0xCF, 0xCF, 0xCF);
-/// The background of the display of the presets.
-const LCD_BG: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const FIELD_BG: Color32 = Color32::from_rgb(0x1E, 0x21, 0x1B);
+const BUTTON_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x1F);
+const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0x3B, 0x42, 0x33);
+/// The background of the display of the presets and of the scope.
+const LCD_BG: Color32 = Color32::from_rgb(0x0A, 0x12, 0x0A);
 /// The color of the text in the display of the presets.
-const LCD_FG: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+const LCD_FG: Color32 = Color32::from_rgb(0x9B, 0xE0, 0x8C);
 /// The color of a light of the activity meter.
-const LED_ON: Color32 = Color32::from_rgb(0x22, 0xA8, 0x4A);
+const LED_ON: Color32 = Color32::from_rgb(0x72, 0xD6, 0x6E);
 /// The color of the light of the clip meter.
-const LED_RED: Color32 = Color32::from_rgb(0xC8, 0x32, 0x32);
+const LED_RED: Color32 = Color32::from_rgb(0xE0, 0x5A, 0x48);
 /// The color of a light that is switched off.
-const LED_OFF: Color32 = Color32::from_rgb(0xB8, 0xB8, 0xB8);
+const LED_OFF: Color32 = Color32::from_rgb(0x4A, 0x4E, 0x40);
 /// The color of the trace of the oscilloscope.
-const TRACE: Color32 = Color32::from_rgb(0x1E, 0x5C, 0x33);
+const TRACE: Color32 = Color32::from_rgb(0x7F, 0xE0, 0x8A);
 /// The color of the text of a status line that reports a success.
-const STATUS_OK: Color32 = Color32::from_rgb(0x00, 0x60, 0x00);
+const STATUS_OK: Color32 = Color32::from_rgb(0x9B, 0xE0, 0x8C);
 /// The color of the text of a status line that reports a problem.
-const STATUS_ERROR: Color32 = Color32::from_rgb(0x90, 0x10, 0x10);
+const STATUS_ERROR: Color32 = Color32::from_rgb(0xE0, 0x7A, 0x6A);
+
+/// The one structural accent: warm amber, used for the band numbers, the
+/// section tabs and the short head of a rule. Green is reserved for live
+/// state: the display, the scope, the voice meter and the ARP step light.
+const ACCENT: Color32 = Color32::from_rgb(0xD9, 0xA4, 0x41);
+/// The parameter captions are deliberately dimmer than the titles and the
+/// field values, so that the hierarchy survives at 1x.
+const LABEL: Color32 = Color32::from_rgb(0xC6, 0xC2, 0xB1);
 
 // --- The fonts ---------------------------------------------------------------
 
@@ -132,12 +144,12 @@ pub const WINDOW_HEIGHT: f32 = 600.0;
 const MARGIN: f32 = 8.0;
 /// The height of the header.
 const HEADER_HEIGHT: f32 = 48.0;
-/// The width of the sections of the third and the fourth row.
-const GROUP_WIDTH: f32 = 230.0;
-/// The width of the section of the effects in the fourth row.
-const DOUBLE_GROUP_WIDTH: f32 = 2.0 * GROUP_WIDTH + GROUP_GAP;
 /// The gap between two sections.
-const GROUP_GAP: f32 = 8.0;
+const GROUP_GAP: f32 = 12.0;
+/// The gap between two bands. It holds the legend of the band.
+const BAND_GAP: f32 = 16.0;
+/// The footer strip under the last band.
+const FOOTER_HEIGHT: f32 = 12.0;
 /// The padding inside a section.
 const GROUP_PADDING: f32 = 4.0;
 /// The height of the line that holds the title of a section and the controls
@@ -148,19 +160,19 @@ const COLUMN_GAP: f32 = 4.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
-const ROW_HEIGHTS: [f32; 4] = [134.0, 126.0, 128.0, 116.0];
+const ROW_HEIGHTS: [f32; 4] = [117.0, 117.0, 117.0, 117.0];
 
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
 /// VCF`. They are the proportions of the sections and are scaled with the
 /// zoom of the panel.
-const ROW_A_WIDTHS: [f32; 4] = [200.0, 160.0, 280.0, 280.0];
+const ROW_A_WIDTHS: [f32; 4] = [240.0, 184.0, 128.0, 356.0];
 /// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
 /// ENV | LFO / CLK`.
-const ROW_B_WIDTHS: [f32; 4] = [160.0, 180.0, 180.0, 400.0];
+const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
 /// The widths of the sections of the third row: `ARP | VOICE`.
-const ROW_C_WIDTHS: [f32; 2] = [DOUBLE_GROUP_WIDTH, DOUBLE_GROUP_WIDTH];
+const ROW_C_WIDTHS: [f32; 4] = [190.0, 190.0, 320.0, 208.0];
 /// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
-const ROW_D_WIDTHS: [f32; 3] = [DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH];
+const ROW_D_WIDTHS: [f32; 3] = [552.0, 216.0, 152.0];
 
 /// The widths of the sections of every row.
 const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTHS, &ROW_D_WIDTHS];
@@ -168,13 +180,13 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
-const SLIDER_WIDTH: f32 = 18.0;
+const SLIDER_WIDTH: f32 = 20.0;
 /// The width of the sliders of the macros.
 const MACRO_SLIDER_WIDTH: f32 = 26.0;
 /// The height of the slider handle.
-const HANDLE_HEIGHT: f32 = 8.0;
+const HANDLE_HEIGHT: f32 = 9.0;
 /// How far the track and the handle are kept away from the edge of the slider.
-const GROOVE_INSET: f32 = 2.0;
+const GROOVE_INSET: f32 = 3.0;
 /// The smallest height of the buttons and of the text fields of the panel.
 const INTERACT_HEIGHT: f32 = 16.0;
 /// The height of the captions above the controls.
@@ -275,13 +287,13 @@ impl Layout {
         // The rows share the rest of the height. There is a gap between the
         // header and the first row and between every two rows.
         let mut base_rows = [Rect::ZERO; 4];
-        let mut y = MARGIN + HEADER_HEIGHT + GROUP_GAP;
+        let mut y = MARGIN + HEADER_HEIGHT + BAND_GAP;
         for (index, height) in ROW_HEIGHTS.iter().enumerate() {
             base_rows[index] = Rect::from_min_size(
                 egui::pos2(MARGIN, y),
                 egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, *height),
             );
-            y += height + GROUP_GAP;
+            y += height + BAND_GAP;
         }
 
         Some(Self {
@@ -645,33 +657,84 @@ impl SushiEditor {
             |ui| header(ui, header_rect, &mut ctx),
         );
 
+        draw_band_legends(ui, &layout);
         row_a(ui, &layout, &mut ctx);
         row_b(ui, &layout, &mut ctx);
         row_c(ui, &layout, &mut ctx);
         row_d(ui, &layout, &mut ctx);
-        draw_row_rules(ui, &layout);
+        draw_footer(ui, &layout);
 
         // The window of the patch browser floats above the panel.
         ctx.patch_window(ui);
     }
 }
 
-/// Thin vertical rules between the sections of a row. They are drawn in the
-/// gap, so they never cover a control, and they make the column structure of
-/// the panel easier to read.
-fn draw_row_rules(ui: &egui::Ui, layout: &Layout) {
+/// The names of the four signal bands. They sit in the gap above each band and
+/// give the panel the structure of a rack instead of four anonymous strips.
+const BAND_LEGENDS: [&str; 4] = ["GENERATORS", "SHAPING", "MODULATION", "OUTPUT"];
+const BAND_NUMBERS: [&str; 4] = ["01", "02", "03", "04"];
+const BAND_ACCENTS: [Color32; 4] = [ACCENT; 4];
+
+/// Draws the band legends in the gaps between the rows: a number in the
+/// domain colour, the name in muted paper, and a fine rule that spans the
+/// panel. The rule is the only full-width horizontal besides the header.
+fn draw_band_legends(ui: &egui::Ui, layout: &Layout) {
     let painter = ui.painter();
-    for (row, widths) in BASE_ROW_WIDTHS.iter().enumerate() {
-        for index in 0..widths.len().saturating_sub(1) {
-            let left = layout.group(row, index);
-            let right = layout.group(row, index + 1);
-            let x = (left.right() + right.left()) * 0.5;
-            painter.line_segment(
-                [egui::pos2(x, left.top()), egui::pos2(x, left.bottom())],
-                Stroke::new(1.0, RULE),
-            );
-        }
+    let zoom = layout.zoom;
+    for (index, row) in layout.base_rows.iter().enumerate() {
+        let row = layout.scale(*row);
+        let number_pos = egui::pos2(row.left(), row.top() - 13.0 * zoom);
+        painter.text(
+            number_pos,
+            Align2::LEFT_TOP,
+            BAND_NUMBERS[index],
+            FontId::new(font_size(9.0, zoom), bold()),
+            BAND_ACCENTS[index],
+        );
+        painter.text(
+            number_pos + egui::vec2(23.0, 0.0) * zoom,
+            Align2::LEFT_TOP,
+            BAND_LEGENDS[index],
+            FontId::new(font_size(9.0, zoom), bold()),
+            MUTED,
+        );
+        let y = row.top() - 2.0 * zoom;
+        painter.line_segment(
+            [egui::pos2(row.left(), y), egui::pos2(row.right(), y)],
+            Stroke::new(1.0, RULE),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(row.left(), y),
+                egui::pos2(row.left() + 24.0 * zoom, y),
+            ],
+            Stroke::new(1.0, BAND_ACCENTS[index]),
+        );
     }
+}
+
+/// The footer silkscreen: the model name and the two shortcuts that are not
+/// visible on the faceplate.
+fn draw_footer(ui: &egui::Ui, layout: &Layout) {
+    let painter = ui.painter();
+    let zoom = layout.zoom;
+    let y = layout.panel.bottom() - (FOOTER_HEIGHT - 0.5) * zoom;
+    let left = layout.scale(layout.base_rows[3]).left();
+    let right = layout.scale(layout.base_rows[3]).right();
+    painter.text(
+        egui::pos2(left + 4.0 * zoom, y),
+        Align2::LEFT_TOP,
+        "SUSHI INSTRUMENTS  /  MODEL 101",
+        FontId::new(font_size(8.0, zoom), bold()),
+        MUTED,
+    );
+    painter.text(
+        egui::pos2(right, y),
+        Align2::RIGHT_TOP,
+        "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
+        FontId::new(font_size(8.0, zoom), bold()),
+        MUTED,
+    );
 }
 
 /// Draws the sad face that tells the user that the window is too small for
@@ -805,7 +868,8 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let painter = ui.painter_at(rect);
 
-    // The header is flat and only separated from the sections by a rule.
+    // The header sits on its own deeper plate, separated by a full-width rule.
+    painter.rect_filled(rect, CornerRadius::ZERO, HEADER_BG);
     let rule_y = rect.bottom() - 0.5;
     painter.line_segment(
         [
@@ -817,47 +881,23 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
     // The wordmark. It is drawn with the bold pixel font, so it does not
     // have to be drawn twice.
-    let wordmark = FontId::new(font_size(16.0, zoom), bold());
-    let wordmark_width = painter
-        .layout_no_wrap("SUSHI".to_string(), wordmark.clone(), TEXT)
-        .size()
-        .x;
+    let wordmark = FontId::new(font_size(20.0, zoom), bold());
     painter.text(
-        rect.left_top() + egui::vec2(6.0, 5.0) * zoom,
+        rect.left_top() + egui::vec2(8.0, 2.0) * zoom,
         Align2::LEFT_TOP,
         "SUSHI",
-        wordmark.clone(),
+        wordmark,
         TEXT,
     );
     painter.text(
-        rect.left_top() + egui::vec2(7.0, 28.0) * zoom,
+        rect.left_top() + egui::vec2(8.0, 27.0) * zoom,
         Align2::LEFT_TOP,
         "POLYPHONIC SYNTHESIZER",
-        FontId::proportional(font_size(9.0, zoom)),
-        MUTED,
-    );
-
-    // The hint that tells the user that a double click resets a parameter. It
-    // sits next to the wordmark and is clipped before the preset block, so it
-    // can never be covered by the display when the panel is scaled up.
-    let rects = header_rects(rect, zoom);
-    let hint_clip = Rect::from_min_max(
-        rect.left_top(),
-        egui::pos2(rects.display.left() - 4.0 * zoom, rect.bottom()),
-    );
-    painter.with_clip_rect(hint_clip).text(
-        egui::pos2(
-            rect.left() + 6.0 * zoom + wordmark_width + 12.0 * zoom,
-            rect.top() + 16.0 * zoom,
-        ),
-        Align2::LEFT_CENTER,
-        "DBL-CLICK = RESET",
         FontId::proportional(font_size(8.0, zoom)),
         MUTED,
     );
-
     // The presets.
-
+    let rects = header_rects(rect, zoom);
     let index = ctx.state.preset_index;
     lcd(&painter, rects.display, &display_text(ctx.state), zoom);
 
@@ -912,11 +952,10 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
 // --- The rows of sections ------------------------------------------------
 
-/// The first row: `VCO 1 | VCO 2 | SOURCE MIXER | VCF`.
+/// The first row: the two oscillators, the pulse widths and the source mixer.
 ///
-/// The master tune is shown in the first oscillator, the pulse widths live in
-/// their own section of the second row and the levels of the oscillators live
-/// in the mixer.
+/// This is the dense generator band. The pulse widths sit next to the
+/// oscillators they shape, and the filter opens the second band.
 fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-a", layout, 0, |index, rect, ui| {
@@ -924,135 +963,74 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         match index {
             0 => group(ui, rect, "VCO 1", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
-                Part::Body => column_row(ui, "osc1", 4, COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2)),
-                        1 => ctx.int(
-                            ui,
-                            "osc1_octave",
-                            "Oct",
-                            &p.osc1_octave,
-                            &Knob::plain(-2.0, 2.0, 0),
-                        ),
-                        2 => ctx.int(
-                            ui,
-                            "osc1_semi",
-                            "Semi",
-                            &p.osc1_semi,
-                            &Knob::plain(-12.0, 12.0, 0),
-                        ),
-                        3 => ctx.float(
-                            ui,
-                            "osc1_fine",
-                            "Fine",
-                            &p.osc1_fine,
-                            &Knob::plain(-100.0, 100.0, 0),
-                        ),
-                        _ => {}
-                    }
-                }),
+                Part::Body => {
+                    column_row_fixed(ui, "osc1", 4, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => {
+                                ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2))
+                            }
+                            1 => ctx.int(
+                                ui,
+                                "osc1_octave",
+                                "Oct",
+                                &p.osc1_octave,
+                                &Knob::plain(-2.0, 2.0, 0),
+                            ),
+                            2 => ctx.int(
+                                ui,
+                                "osc1_semi",
+                                "Semi",
+                                &p.osc1_semi,
+                                &Knob::plain(-12.0, 12.0, 0),
+                            ),
+                            3 => ctx.float(
+                                ui,
+                                "osc1_fine",
+                                "Fine",
+                                &p.osc1_fine,
+                                &Knob::plain(-100.0, 100.0, 0),
+                            ),
+                            _ => {}
+                        }
+                    })
+                }
             }),
             1 => group(ui, rect, "VCO 2", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0),
-                Part::Body => column_row(ui, "osc2", 3, COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.int(
-                            ui,
-                            "osc2_octave",
-                            "Oct",
-                            &p.osc2_octave,
-                            &Knob::plain(-2.0, 2.0, 0),
-                        ),
-                        1 => ctx.int(
-                            ui,
-                            "osc2_semi",
-                            "Semi",
-                            &p.osc2_semi,
-                            &Knob::plain(-12.0, 12.0, 0),
-                        ),
-                        2 => ctx.float(
-                            ui,
-                            "osc2_fine",
-                            "Fine",
-                            &p.osc2_fine,
-                            &Knob::plain(-100.0, 100.0, 0),
-                        ),
-                        _ => {}
-                    }
-                }),
-            }),
-            2 => group(ui, rect, "SOURCE MIXER", zoom, |ui, part| match part {
-                Part::Header => {}
-                Part::Body => column_row(ui, "mix", 6, COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(ui, "osc1_level", "Lvl 1", &p.osc1_level, &Knob::percent()),
-                        1 => ctx.float(ui, "osc2_level", "Lvl 2", &p.osc2_level, &Knob::percent()),
-                        2 => {
-                            ctx.float(ui, "noise_level", "Noise", &p.noise_level, &Knob::percent())
+                Part::Body => {
+                    column_row_fixed(ui, "osc2", 3, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.int(
+                                ui,
+                                "osc2_octave",
+                                "Oct",
+                                &p.osc2_octave,
+                                &Knob::plain(-2.0, 2.0, 0),
+                            ),
+                            1 => ctx.int(
+                                ui,
+                                "osc2_semi",
+                                "Semi",
+                                &p.osc2_semi,
+                                &Knob::plain(-12.0, 12.0, 0),
+                            ),
+                            2 => ctx.float(
+                                ui,
+                                "osc2_fine",
+                                "Fine",
+                                &p.osc2_fine,
+                                &Knob::plain(-100.0, 100.0, 0),
+                            ),
+                            _ => {}
                         }
-                        3 => ctx.int(ui, "unison", "Uni", &p.unison, &Knob::plain(1.0, 4.0, 0)),
-                        4 => ctx.float(
-                            ui,
-                            "detune",
-                            "Detune",
-                            &p.detune,
-                            &Knob::plain(0.0, 50.0, 0),
-                        ),
-                        5 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent()),
-                        _ => {}
-                    }
-                }),
+                    })
+                }
             }),
-            _ => group(ui, rect, "VCF", zoom, |ui, part| match part {
-                Part::Header => ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0),
-                Part::Body => column_row(ui, "filter", 5, COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "cutoff",
-                            "Cut",
-                            &p.cutoff,
-                            &Knob::logarithmic(20.0, 20_000.0, 0),
-                        ),
-                        1 => ctx.float(ui, "resonance", "Res", &p.resonance, &Knob::percent()),
-                        2 => ctx.float(
-                            ui,
-                            "filter_env_amount",
-                            "Env",
-                            &p.filter_env_amount,
-                            &Knob::bipolar(),
-                        ),
-                        3 => ctx.float(
-                            ui,
-                            "filter_keytrack",
-                            "Key",
-                            &p.filter_keytrack,
-                            &Knob::percent(),
-                        ),
-                        4 => {
-                            ctx.float(ui, "filter_drive", "Drv", &p.filter_drive, &Knob::percent())
-                        }
-                        _ => {}
-                    }
-                }),
-            }),
-        }
-    });
-}
-
-/// The second row: the pulse widths, the two envelopes and the low frequency
-/// oscillators.
-fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
-    let zoom = ctx.zoom;
-    group_row(ui, "row-b", layout, 1, |index, rect, ui| {
-        match index {
-            0 => group(ui, rect, "PULSE WIDTH", zoom, |ui, part| match part {
+            2 => group(ui, rect, "PULSE WIDTH", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "pw", 2, COLUMN_GAP, zoom, |index, ui| {
+                Part::Body => column_row_fixed(ui, "pw", 2, COLUMN_GAP, 52.0, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -1073,9 +1051,103 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
+            _ => group(ui, rect, "SOURCE MIXER", zoom, |ui, part| match part {
+                Part::Header => {}
+                Part::Body => {
+                    column_row_fixed(ui, "mix", 6, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "osc1_level",
+                                "Lvl 1",
+                                &p.osc1_level,
+                                &Knob::percent(),
+                            ),
+                            1 => ctx.float(
+                                ui,
+                                "osc2_level",
+                                "Lvl 2",
+                                &p.osc2_level,
+                                &Knob::percent(),
+                            ),
+                            2 => ctx.float(
+                                ui,
+                                "noise_level",
+                                "Noise",
+                                &p.noise_level,
+                                &Knob::percent(),
+                            ),
+                            3 => ctx.int(ui, "unison", "Uni", &p.unison, &Knob::plain(1.0, 4.0, 0)),
+                            4 => ctx.float(
+                                ui,
+                                "detune",
+                                "Detune",
+                                &p.detune,
+                                &Knob::plain(0.0, 50.0, 0),
+                            ),
+                            5 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent()),
+                            _ => {}
+                        }
+                    })
+                }
+            }),
+        }
+    });
+}
+
+/// The second row: the filter and the two envelopes.
+///
+/// The filter is the first section of the shaping band, so that the signal
+/// still reads left to right: oscillators above, filter and envelopes here.
+fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    group_row(ui, "row-b", layout, 1, |index, rect, ui| {
+        let p = ctx.params;
+        match index {
+            0 => group(ui, rect, "VCF", zoom, |ui, part| match part {
+                Part::Header => ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0),
+                Part::Body => {
+                    column_row_fixed(ui, "filter", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "cutoff",
+                                "Cut",
+                                &p.cutoff,
+                                &Knob::logarithmic(20.0, 20_000.0, 0),
+                            ),
+                            1 => ctx.float(ui, "resonance", "Res", &p.resonance, &Knob::percent()),
+                            2 => ctx.float(
+                                ui,
+                                "filter_env_amount",
+                                "Env",
+                                &p.filter_env_amount,
+                                &Knob::bipolar(),
+                            ),
+                            3 => ctx.float(
+                                ui,
+                                "filter_keytrack",
+                                "Key",
+                                &p.filter_keytrack,
+                                &Knob::percent(),
+                            ),
+                            4 => ctx.float(
+                                ui,
+                                "filter_drive",
+                                "Drv",
+                                &p.filter_drive,
+                                &Knob::percent(),
+                            ),
+                            _ => {}
+                        }
+                    })
+                }
+            }),
             1 => group(ui, rect, "MOD ENV", zoom, |ui, part| match part {
-                Part::Header => text_label(ui, "ADSR", 9.0, zoom, TEXT),
-                Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, zoom, |index, ui| {
+                Part::Header => {}
+                Part::Body => column_row_fixed(ui, "fe", 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -1104,9 +1176,9 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            2 => group(ui, rect, "AMP ENV", zoom, |ui, part| match part {
+            _ => group(ui, rect, "AMP ENV", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "ae", 4, COLUMN_GAP, zoom, |index, ui| {
+                Part::Body => column_row_fixed(ui, "ae", 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -1135,74 +1207,67 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            _ => group(ui, rect, "LFO / CLK", zoom, |ui, part| match part {
-                Part::Header => {}
-                Part::Body => sections(ui, "lfo", 2, GROUP_GAP, zoom, |index, _rect, ui| {
-                    let p = ctx.params;
-                    let (title, wave, target, rate, amount, ids) = match index {
-                        0 => (
-                            "LFO 1",
-                            &p.lfo1_wave,
-                            &p.lfo1_target,
-                            &p.lfo1_rate,
-                            &p.lfo1_amount,
-                            ("lfo1_wave", "lfo1_target", "lfo1_rate", "lfo1_amount"),
-                        ),
-                        _ => (
-                            "LFO 2",
-                            &p.lfo2_wave,
-                            &p.lfo2_target,
-                            &p.lfo2_rate,
-                            &p.lfo2_amount,
-                            ("lfo2_wave", "lfo2_target", "lfo2_rate", "lfo2_amount"),
-                        ),
-                    };
-
-                    // The header of the sub section: its name and the two
-                    // popups of the oscillator.
-                    let header = Rect::from_min_size(
-                        ui.next_widget_position(),
-                        egui::vec2(ui.available_width(), INTERACT_HEIGHT * zoom),
-                    );
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .id_salt(("sushi-lfo-header", index))
-                            .max_rect(header)
-                            .layout(EguiLayout::left_to_right(Align::Center)),
-                        |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0) * zoom;
-                            text_label(ui, title, 9.0, zoom, TEXT);
-                            ctx.popup(ui, ids.0, wave, 58.0);
-                            ctx.popup(ui, ids.1, target, 74.0);
-                        },
-                    );
-
-                    column_row(ui, ids.2, 2, COLUMN_GAP, zoom, |index, ui| match index {
-                        0 => ctx.float(ui, ids.2, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
-                        1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent()),
-                        _ => {}
-                    });
-                }),
-            }),
         }
     });
 }
 
-/// The third row: the arpeggiator and the voice.
+/// The third row: the two LFOs, the arpeggiator and the voice.
 ///
-/// The arpeggiator gets a wide section, so that all of its parameters and the
-/// strip of lights fit on one line.
+/// Splitting the LFOs into two small sections gives each one its own waveform
+/// and destination field, so neither is hidden behind an "OFF" box.
 fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-c", layout, 2, |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 => group(ui, rect, "ARP", zoom, |ui, part| match part {
+            0 | 1 => {
+                let (title, wave, target, rate, amount, ids) = if index == 0 {
+                    (
+                        "LFO 1",
+                        &p.lfo1_wave,
+                        &p.lfo1_target,
+                        &p.lfo1_rate,
+                        &p.lfo1_amount,
+                        ("lfo1_wave", "lfo1_target", "lfo1_rate", "lfo1_amount"),
+                    )
+                } else {
+                    (
+                        "LFO 2",
+                        &p.lfo2_wave,
+                        &p.lfo2_target,
+                        &p.lfo2_rate,
+                        &p.lfo2_amount,
+                        ("lfo2_wave", "lfo2_target", "lfo2_rate", "lfo2_amount"),
+                    )
+                };
+                group(ui, rect, title, zoom, |ui, part| match part {
+                    Part::Header => {
+                        ctx.popup(ui, ids.0, wave, 58.0);
+                        ctx.popup(ui, ids.1, target, 64.0);
+                    }
+                    Part::Body => {
+                        column_row_fixed(ui, ids.2, 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
+                            match index {
+                                0 => ctx.float(
+                                    ui,
+                                    ids.2,
+                                    "Rate",
+                                    rate,
+                                    &Knob::logarithmic(0.01, 40.0, 2),
+                                ),
+                                1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent()),
+                                _ => {}
+                            }
+                        });
+                    }
+                });
+            }
+            2 => group(ui, rect, "ARP", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.check(ui, "arp_on", &p.arp_on, "ON");
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
-                    ctx.popup(ui, "arp_pattern", &p.arp_pattern, 118.0);
-                    ctx.popup(ui, "arp_rate", &p.arp_rate, 66.0);
+                    ctx.popup(ui, "arp_pattern", &p.arp_pattern, 74.0);
+                    ctx.popup(ui, "arp_rate", &p.arp_rate, 52.0);
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(ARP_LED_SIZE, ARP_LED_SIZE) * zoom,
                         Sense::hover(),
@@ -1216,7 +1281,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     );
                 }
                 Part::Body => {
-                    column_row(ui, "arp", 5, COLUMN_GAP, zoom, |index, ui| {
+                    column_row_fixed(ui, "arp", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -1261,28 +1326,30 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             }),
             _ => group(ui, rect, "VOICE", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
-                Part::Body => column_row(ui, "voice", 4, COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "glide",
-                            "Glide",
-                            &p.glide,
-                            &Knob::logarithmic(0.0, 2_000.0, 1),
-                        ),
-                        1 => ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent()),
-                        2 => ctx.float(ui, "velocity", "Vel", &p.velocity, &Knob::percent()),
-                        3 => ctx.int(
-                            ui,
-                            "voices",
-                            "Voices",
-                            &p.voices,
-                            &Knob::plain(1.0, 16.0, 0),
-                        ),
-                        _ => {}
-                    }
-                }),
+                Part::Body => {
+                    column_row_fixed(ui, "voice", 4, COLUMN_GAP, 48.0, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "glide",
+                                "Glide",
+                                &p.glide,
+                                &Knob::logarithmic(0.0, 2_000.0, 1),
+                            ),
+                            1 => ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent()),
+                            2 => ctx.float(ui, "velocity", "Vel", &p.velocity, &Knob::percent()),
+                            3 => ctx.int(
+                                ui,
+                                "voices",
+                                "Voices",
+                                &p.voices,
+                                &Knob::plain(1.0, 16.0, 0),
+                            ),
+                            _ => {}
+                        }
+                    })
+                }
             }),
         }
     });
@@ -1292,104 +1359,145 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
-        0 => group(ui, rect, "FX", zoom, |ui, part| match part {
-            Part::Header => {}
-            Part::Body => sections(
-                ui,
-                "fx",
-                3,
-                GROUP_GAP,
-                zoom,
-                |index, _rect, ui| match index {
-                    0 => {
-                        caption(ui, "CHORUS", 9.0, zoom, TEXT);
-                        column_row(ui, "chorus", 3, COLUMN_GAP, zoom, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "chorus_mix",
-                                    "Mix",
-                                    &p.chorus_mix,
-                                    &Knob::percent(),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "chorus_rate",
-                                    "Rate",
-                                    &p.chorus_rate,
-                                    &Knob::logarithmic(0.05, 8.0, 2),
-                                ),
-                                2 => ctx.float(
-                                    ui,
-                                    "chorus_depth",
-                                    "Depth",
-                                    &p.chorus_depth,
-                                    &Knob::percent(),
-                                ),
-                                _ => {}
-                            }
-                        });
-                    }
-                    1 => {
-                        caption(ui, "DELAY", 9.0, zoom, TEXT);
-                        column_row(ui, "delay", 3, COLUMN_GAP, zoom, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "delay_time",
-                                    "Time",
-                                    &p.delay_time,
-                                    &Knob::logarithmic(10.0, 1_500.0, 1),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "delay_feedback",
-                                    "FB",
-                                    &p.delay_feedback,
-                                    &Knob::percent(),
-                                ),
-                                2 => ctx.float(
-                                    ui,
-                                    "delay_mix",
-                                    "Mix",
-                                    &p.delay_mix,
-                                    &Knob::percent(),
-                                ),
-                                _ => {}
-                            }
-                        });
-                    }
-                    _ => {
-                        caption(ui, "REVERB", 9.0, zoom, TEXT);
-                        column_row(ui, "reverb", 2, COLUMN_GAP, zoom, |index, ui| {
-                            let p = ctx.params;
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    "reverb_decay",
-                                    "Decay",
-                                    &p.reverb_decay,
-                                    &Knob::percent(),
-                                ),
-                                1 => ctx.float(
-                                    ui,
-                                    "reverb_mix",
-                                    "Mix",
-                                    &p.reverb_mix,
-                                    &Knob::percent(),
-                                ),
-                                _ => {}
-                            }
-                        });
-                    }
-                },
-            ),
-        }),
+        0 => {
+            group(ui, rect, "FX", zoom, |ui, part| match part {
+                Part::Header => {}
+                Part::Body => sections(
+                    ui,
+                    "fx",
+                    3,
+                    GROUP_GAP,
+                    zoom,
+                    |index, _rect, ui| match index {
+                        0 => {
+                            column_row_fixed(
+                                ui,
+                                "chorus",
+                                3,
+                                COLUMN_GAP,
+                                52.0,
+                                zoom,
+                                |index, ui| {
+                                    let p = ctx.params;
+                                    match index {
+                                        0 => ctx.float(
+                                            ui,
+                                            "chorus_mix",
+                                            "Mix",
+                                            &p.chorus_mix,
+                                            &Knob::percent(),
+                                        ),
+                                        1 => ctx.float(
+                                            ui,
+                                            "chorus_rate",
+                                            "Rate",
+                                            &p.chorus_rate,
+                                            &Knob::logarithmic(0.05, 8.0, 2),
+                                        ),
+                                        2 => ctx.float(
+                                            ui,
+                                            "chorus_depth",
+                                            "Depth",
+                                            &p.chorus_depth,
+                                            &Knob::percent(),
+                                        ),
+                                        _ => {}
+                                    }
+                                },
+                            );
+                        }
+                        1 => {
+                            column_row_fixed(
+                                ui,
+                                "delay",
+                                3,
+                                COLUMN_GAP,
+                                52.0,
+                                zoom,
+                                |index, ui| {
+                                    let p = ctx.params;
+                                    match index {
+                                        0 => ctx.float(
+                                            ui,
+                                            "delay_time",
+                                            "Time",
+                                            &p.delay_time,
+                                            &Knob::logarithmic(10.0, 1_500.0, 1),
+                                        ),
+                                        1 => ctx.float(
+                                            ui,
+                                            "delay_feedback",
+                                            "FB",
+                                            &p.delay_feedback,
+                                            &Knob::percent(),
+                                        ),
+                                        2 => ctx.float(
+                                            ui,
+                                            "delay_mix",
+                                            "Mix",
+                                            &p.delay_mix,
+                                            &Knob::percent(),
+                                        ),
+                                        _ => {}
+                                    }
+                                },
+                            );
+                        }
+                        _ => {
+                            column_row_fixed(
+                                ui,
+                                "reverb",
+                                2,
+                                COLUMN_GAP,
+                                52.0,
+                                zoom,
+                                |index, ui| {
+                                    let p = ctx.params;
+                                    match index {
+                                        0 => ctx.float(
+                                            ui,
+                                            "reverb_decay",
+                                            "Decay",
+                                            &p.reverb_decay,
+                                            &Knob::percent(),
+                                        ),
+                                        1 => ctx.float(
+                                            ui,
+                                            "reverb_mix",
+                                            "Mix",
+                                            &p.reverb_mix,
+                                            &Knob::percent(),
+                                        ),
+                                        _ => {}
+                                    }
+                                },
+                            );
+                        }
+                    },
+                ),
+            });
+
+            // The labels sit over the centre of their real subgroups, not at
+            // arbitrary fractions of the title bar.
+            let painter = ui.painter_at(rect);
+            let body_left = rect.left() + GROUP_PADDING * zoom;
+            let body_width = rect.width() - 2.0 * GROUP_PADDING * zoom;
+            let gap = GROUP_GAP * zoom;
+            let slot = (body_width - 2.0 * gap) / 3.0;
+            for (index, label) in ["CHORUS", "DELAY", "REVERB"].iter().enumerate() {
+                let x = body_left + index as f32 * (slot + gap) + 4.0 * zoom;
+                painter.text(
+                    egui::pos2(x, rect.top() + TITLE_HEIGHT * 0.5 * zoom),
+                    Align2::LEFT_CENTER,
+                    *label,
+                    FontId::new(font_size(8.0, zoom), bold()),
+                    MUTED,
+                );
+            }
+        }
         1 => group(ui, rect, "MACROS", zoom, |ui, part| match part {
             Part::Header => {}
-            Part::Body => column_row(ui, "macros", 3, COLUMN_GAP, zoom, |index, ui| {
+            Part::Body => column_row_fixed(ui, "macros", 3, COLUMN_GAP, 60.0, zoom, |index, ui| {
                 let p = ctx.params;
                 let knob = Knob::percent().with_width(layout.macro_width());
                 match index {
@@ -1403,10 +1511,10 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
                 let p = ctx.params;
-                text_label(ui, "CHARACTER", 9.0, zoom, TEXT);
-                ctx.radio_pair(ui, "character", &p.character, 70.0);
+                text_label(ui, "CHAR", 8.0, zoom, MUTED);
+                ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
-            Part::Body => column_row(ui, "output", 2, COLUMN_GAP, zoom, |index, ui| {
+            Part::Body => column_row_fixed(ui, "output", 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
                 let p = ctx.params;
                 match index {
                     0 => ctx.float(
@@ -1572,7 +1680,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let zoom = self.zoom;
 
-        caption(ui, label, 10.0, zoom, TEXT);
+        caption(ui, label, 9.0, zoom, LABEL);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
@@ -1622,7 +1730,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let zoom = self.zoom;
 
-        caption(ui, label, 10.0, zoom, TEXT);
+        caption(ui, label, 9.0, zoom, LABEL);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
@@ -2375,6 +2483,13 @@ fn title_color(_title: &str) -> Color32 {
     TITLE_GREEN
 }
 
+/// The domain colour of a section. It is used for the small tab at the left
+/// of its title and for the short segment of its rule; it never colours the
+/// type itself.
+fn title_accent(_title: &str) -> Color32 {
+    ACCENT
+}
+
 /// Draws a section and hands its header and body to the given callback.
 fn group(
     ui: &mut egui::Ui,
@@ -2385,19 +2500,28 @@ fn group(
 ) {
     let painter = ui.painter_at(rect);
     let color = title_color(title);
+    let accent = title_accent(title);
 
-    // The title of the section, in the bold pixel font.
-    let font = FontId::new(font_size(12.0, zoom), bold());
+    // The tab of the domain, then the title in warm paper. The tab is the only
+    // colour on the title line; the type itself stays neutral and readable.
+    let tab = Rect::from_min_size(
+        rect.left_top() + egui::vec2(GROUP_PADDING, 4.0) * zoom,
+        egui::vec2(4.0, 12.0) * zoom,
+    );
+    painter.rect_filled(tab, CornerRadius::ZERO, accent);
+
+    let font = FontId::new(font_size(13.0, zoom), bold());
     let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, color);
     let strip = Rect::from_min_size(
-        rect.left_top() + egui::vec2(GROUP_PADDING, 0.0) * zoom,
+        rect.left_top() + egui::vec2(GROUP_PADDING + 8.0, 0.0) * zoom,
         egui::vec2(galley.size().x + 8.0 * zoom, TITLE_HEIGHT * zoom),
     );
     let title_pos =
         strip.left_top() + egui::vec2(4.0, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5) * zoom;
     painter.galley(title_pos, galley, color);
 
-    // The rule below the title spans the whole section.
+    // The rule below the title spans the whole section; the first 26 design
+    // pixels are the domain colour, the rest recedes.
     let rule_y = rect.top() + TITLE_HEIGHT * zoom;
     painter.line_segment(
         [
@@ -2405,6 +2529,13 @@ fn group(
             egui::pos2(rect.right(), rule_y),
         ],
         Stroke::new(1.0, RULE),
+    );
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), rule_y),
+            egui::pos2(rect.left() + 26.0 * zoom, rule_y),
+        ],
+        Stroke::new(1.0, accent),
     );
 
     // The header of the section, next to the title.
@@ -2495,30 +2626,35 @@ fn sections(
     ui.advance_cursor_after_rect(Rect::from_min_size(start, egui::vec2(width, height)));
 }
 
-/// Lays out a row of parameter columns inside a section. All the columns
-/// have the same width, no matter how much space they actually use.
-fn column_row(
+/// Lays out a row of parameter columns with a fixed slot width. The bank is
+/// centered in its section, so a four-fader oscillator and a six-fader mixer
+/// share the same pitch: one of the strongest cues that this is a machined
+/// instrument rather than a form.
+fn column_row_fixed(
     ui: &mut egui::Ui,
     name: &str,
     count: usize,
     gap: f32,
+    slot: f32,
     zoom: f32,
     mut add: impl FnMut(usize, &mut egui::Ui),
 ) {
     let gap = gap * zoom;
+    let slot = slot * zoom;
     let start = ui.next_widget_position();
     let total_width = ui.available_width();
     let height = ui.available_height();
-    let slot = ((total_width - gap * (count as f32 - 1.0)) / count as f32).max(1.0);
+    let bank = count as f32 * slot + (count as f32 - 1.0) * gap;
+    let left = start.x + (total_width - bank).max(0.0) * 0.5;
 
     for index in 0..count {
         let rect = Rect::from_min_size(
-            egui::pos2(start.x + index as f32 * (slot + gap), start.y),
+            egui::pos2(left + index as f32 * (slot + gap), start.y),
             egui::vec2(slot, height),
         );
         ui.scope_builder(
             egui::UiBuilder::new()
-                .id_salt(("sushi-column", name, index))
+                .id_salt(("sushi-column-fixed", name, index))
                 .max_rect(rect)
                 .layout(EguiLayout::top_down(Align::Center)),
             |ui| {
@@ -2540,7 +2676,7 @@ fn caption(ui: &mut egui::Ui, text: &str, size: f32, zoom: f32, color: Color32) 
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
-        text,
+        text.to_ascii_uppercase(),
         FontId::proportional(font_size(size, zoom)),
         color,
     );
@@ -2621,9 +2757,10 @@ fn wheel_scroll(ui: &egui::Ui) -> (f32, bool) {
     if fresh { (smooth, fine) } else { (0.0, fine) }
 }
 
-/// A vertical slider: a flat white track with a thin outline, a light tick in
-/// the middle and a black handle band that is fully embedded inside the
-/// track: it never sticks out of it, no matter where the value is.
+/// A vertical slider: a dark milled slot with open sides, five scale ticks, a
+/// bipolar centre mark and a solid paper handle. The handle never leaves the
+/// slot; the track has no white fill, so the fifty-four faders do not read as
+/// a barcode.
 fn v_slider(
     ui: &mut egui::Ui,
     value: &mut f32,
@@ -2635,21 +2772,45 @@ fn v_slider(
         ui.allocate_exact_size(egui::vec2(knob.width, height), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    // The track. It has no fill below the handle and no bevel at all.
-    flat_box(&painter, rect, TRACK);
     let track = rect.shrink(GROOVE_INSET * zoom);
+    painter.rect_filled(track, CornerRadius::ZERO, TRACK);
 
-    // The tick in the middle of the track marks the centre of the range. The
-    // handle covers it while the value sits in the middle.
-    painter.line_segment(
-        [
-            egui::pos2(track.left(), rect.center().y),
-            egui::pos2(track.right(), rect.center().y),
-        ],
-        Stroke::new(1.0, TICK),
-    );
+    // Open sides: a milled slot has no top or bottom border, only two rails.
+    for x in [track.left(), track.right()] {
+        painter.line_segment(
+            [egui::pos2(x, track.top()), egui::pos2(x, track.bottom())],
+            Stroke::new(1.0, LINE),
+        );
+    }
 
-    // The handle itself: a black band that stays fully inside the track.
+    // Five ticks, drawn inside the left rail so they survive the narrow
+    // columns. They are deliberately quiet: they help the hand, not the eye.
+    for index in 0..=4 {
+        let t = index as f32 / 4.0;
+        let y = track.bottom() - t * track.height();
+        painter.line_segment(
+            [
+                egui::pos2(track.left() + 1.0, y),
+                egui::pos2(track.left() + 5.0 * zoom.min(1.2), y),
+            ],
+            Stroke::new(1.0, TICK),
+        );
+    }
+
+    // A bipolar control gets a centre detent across the slot.
+    if knob.min < 0.0 && knob.max > 0.0 {
+        painter.line_segment(
+            [
+                egui::pos2(track.left(), track.center().y),
+                egui::pos2(track.right(), track.center().y),
+            ],
+            Stroke::new(1.0, MUTED),
+        );
+    }
+
+    // The handle itself: a paper band, fully inside the slot. It turns green
+    // only while the pointer is on it, which makes the live control obvious
+    // without decorating all fifty-four faders.
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
     let handle_height = HANDLE_HEIGHT * zoom;
     let handle_center = position.clamp(
@@ -2658,9 +2819,26 @@ fn v_slider(
     );
     let handle = Rect::from_center_size(
         egui::pos2(rect.center().x, handle_center),
-        egui::vec2(track.width(), handle_height),
+        egui::vec2(
+            (track.width() + 4.0 * zoom).min(rect.width()),
+            handle_height,
+        ),
     );
-    painter.rect_filled(handle, CornerRadius::ZERO, HANDLE);
+    let live = response.hovered() || response.dragged();
+    painter.rect_filled(
+        handle,
+        CornerRadius::ZERO,
+        if live { LED_ON } else { HANDLE },
+    );
+    // The index line is permanent, so every cap has a readable value edge
+    // even when the pointer is elsewhere.
+    painter.line_segment(
+        [
+            egui::pos2(handle.left() + 1.0, handle.center().y),
+            egui::pos2(handle.right() - 1.0, handle.center().y),
+        ],
+        Stroke::new(1.0, BG),
+    );
 
     // Dragging anywhere on the track sets the value with the primary button.
     // The secondary button opens the value editor instead.
@@ -2692,7 +2870,7 @@ fn v_slider(
         }
     }
 
-    response
+    response.on_hover_cursor(egui::CursorIcon::ResizeVertical)
 }
 
 /// Formats a number for the tiny value fields. Trailing zeros are dropped so
@@ -2820,18 +2998,30 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
     );
     let painter = ui.painter_at(rect);
 
-    let fill = if response.is_pointer_button_down_on() {
-        BUTTON_ACTIVE
-    } else {
-        BUTTON_BG
-    };
+    let primary = text == "MUTATE";
+    let pressed = response.is_pointer_button_down_on();
+    let fill = if pressed { BUTTON_ACTIVE } else { BUTTON_BG };
     flat_box(&painter, rect, fill);
+    if primary {
+        painter.rect_filled(
+            Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()) * zoom),
+            CornerRadius::ZERO,
+            ACCENT,
+        );
+    }
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         text,
-        FontId::proportional(font_size(11.0, zoom)),
-        TEXT,
+        FontId::new(
+            font_size(10.0, zoom),
+            if primary {
+                bold()
+            } else {
+                egui::FontFamily::Proportional
+            },
+        ),
+        if primary { PAPER } else { TEXT },
     );
 
     response
@@ -2840,12 +3030,34 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
 /// The small oscilloscope of the header. It is just here to give the panel a
 /// bit of life, not to be a measurement tool.
 fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoom: f32) {
-    // A flat white field with a dark trace, no bevel.
+    // A dark instrument screen with a quiet grid, even while the sound is
+    // silent. It is the one live object in the header.
     flat_box(painter, rect, LCD_BG);
     let inner = rect.shrink(3.0 * zoom);
+    for index in 1..4 {
+        let x = inner.left() + inner.width() * index as f32 / 4.0;
+        painter.line_segment(
+            [egui::pos2(x, inner.top()), egui::pos2(x, inner.bottom())],
+            Stroke::new(1.0, RULE),
+        );
+    }
+    for index in 1..3 {
+        let y = inner.top() + inner.height() * index as f32 / 3.0;
+        painter.line_segment(
+            [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
+            Stroke::new(1.0, RULE),
+        );
+    }
 
     let length = history.len();
     if length < 2 {
+        painter.line_segment(
+            [
+                egui::pos2(inner.left(), inner.center().y),
+                egui::pos2(inner.right(), inner.center().y),
+            ],
+            Stroke::new(1.0, TRACE),
+        );
         return;
     }
     let count = length.min(1024);
@@ -2950,8 +3162,8 @@ fn absolute_path(path: &Path) -> PathBuf {
 // --- The theme ---------------------------------------------------------------
 
 fn apply_theme(ctx: &egui::Context, zoom: f32) {
-    let mut visuals = egui::Visuals::light();
-    visuals.dark_mode = false;
+    let mut visuals = egui::Visuals::dark();
+    visuals.dark_mode = true;
     visuals.override_text_color = Some(TEXT);
     visuals.panel_fill = BG;
     visuals.window_fill = BG;
@@ -2962,7 +3174,7 @@ fn apply_theme(ctx: &egui::Context, zoom: f32) {
     visuals.popup_shadow = egui::epaint::Shadow::NONE;
     visuals.extreme_bg_color = FIELD_BG;
     visuals.text_edit_bg_color = Some(FIELD_BG);
-    visuals.faint_bg_color = BG;
+    visuals.faint_bg_color = FIELD_BG;
     visuals.code_bg_color = FIELD_BG;
     visuals.hyperlink_color = TEXT;
     visuals.slider_trailing_fill = false;
@@ -3296,7 +3508,7 @@ mod tests {
     /// The index of the slider of the cutoff in the list of the sliders of a
     /// frame. It is the first slider of the filter, the fourth group of the
     /// first row.
-    const CUTOFF_SLIDER: usize = 13;
+    const CUTOFF_SLIDER: usize = 15;
     /// The index of the slider of the master tune. It is the first slider of
     /// the panel.
     const TUNE_SLIDER: usize = 0;
@@ -3843,22 +4055,17 @@ mod tests {
     }
 
     #[test]
-    fn the_header_hints_at_the_double_click_reset() {
+    fn the_footer_hints_at_the_double_click_reset() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        let (_, pos, size) = text_shapes(&output)
+        let (_, pos, _) = text_shapes(&output)
             .into_iter()
-            .find(|(text, _, _)| text == "DBL-CLICK = RESET")
-            .expect("the header has no hint");
+            .find(|(text, _, _)| text.contains("DBL-CLICK = RESET"))
+            .expect("the footer has no hint");
 
-        // The hint sits in the header, next to the wordmark, and it does not
-        // touch the presets.
-        assert!(pos.y > MARGIN && pos.y < MARGIN + HEADER_HEIGHT);
-        assert!(
-            pos.x + size.x < MARGIN + 172.0,
-            "the hint overlaps the presets: {pos:?} {size:?}"
-        );
+        // The hint sits in the footer strip, below the last band.
+        assert!(pos.y > WINDOW_HEIGHT - FOOTER_HEIGHT - 4.0);
     }
 
     #[test]
@@ -4605,19 +4812,20 @@ mod tests {
         // The title of every section and the place where it has to be: the
         // left edge of its section and the top of its row.
         let expected = [
-            ("VCO 1", 16.0, 64.0),
-            ("VCO 2", 224.0, 64.0),
-            ("SOURCE MIXER", 392.0, 64.0),
-            ("VCF", 680.0, 64.0),
-            ("PULSE WIDTH", 16.0, 206.0),
-            ("MOD ENV", 184.0, 206.0),
-            ("AMP ENV", 372.0, 206.0),
-            ("LFO / CLK", 560.0, 206.0),
-            ("ARP", 16.0, 340.0),
-            ("VOICE", 492.0, 340.0),
-            ("FX", 16.0, 476.0),
-            ("MACROS", 492.0, 476.0),
-            ("VCA", 730.0, 476.0),
+            ("VCO 1", 24.0, 72.0),
+            ("VCO 2", 276.0, 72.0),
+            ("PULSE WIDTH", 472.0, 72.0),
+            ("SOURCE MIXER", 612.0, 72.0),
+            ("VCF", 24.0, 205.0),
+            ("MOD ENV", 384.0, 205.0),
+            ("AMP ENV", 680.0, 205.0),
+            ("LFO 1", 24.0, 338.0),
+            ("LFO 2", 226.0, 338.0),
+            ("ARP", 428.0, 338.0),
+            ("VOICE", 760.0, 338.0),
+            ("FX", 24.0, 471.0),
+            ("MACROS", 588.0, 471.0),
+            ("VCA", 816.0, 471.0),
         ];
 
         let titles: Vec<(String, egui::Pos2)> = texts(&output)
@@ -4832,14 +5040,14 @@ mod tests {
             // The rows fill the rest of the panel.
             let first = layout.group(0, 0);
             assert!(
-                (first.top() - (layout.panel.top() + (MARGIN + HEADER_HEIGHT + GROUP_GAP) * zoom))
+                (first.top() - (layout.panel.top() + (MARGIN + HEADER_HEIGHT + BAND_GAP) * zoom))
                     .abs()
                     < 0.01,
                 "the first row is at the wrong place: {first:?}"
             );
             let last = layout.group(3, 0);
             assert!(
-                (last.bottom() - (layout.panel.bottom() - MARGIN * zoom)).abs() < 0.01,
+                (last.bottom() - (layout.panel.bottom() - FOOTER_HEIGHT * zoom)).abs() < 0.01,
                 "the last row does not fill the panel: {last:?}"
             );
 
