@@ -6,8 +6,9 @@ use std::f32::consts::PI;
 
 use super::adsr::{Adsr, EnvCoeffs};
 use super::filter::Svf;
+use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
-use crate::params::{FilterMode, LfoTarget, Waveform};
+use crate::params::{FilterMode, LfoTarget, MOD_SLOTS, ModSlot, Waveform};
 
 /// The maximum number of unison voices per oscillator.
 pub const MAX_UNISON: usize = 4;
@@ -108,6 +109,15 @@ pub struct VoiceSettings {
     pub drift_amount: f32,
     /// Whether the harsh character is active. It adds a bit of filter drive.
     pub character_grit: bool,
+    /// The eight slots of the modulation matrix.
+    pub mod_slots: [ModSlot; MOD_SLOTS],
+    /// The value of the first macro, `0..1`. It is a source of the modulation
+    /// matrix.
+    pub macro1: f32,
+    /// The value of the second macro, `0..1`.
+    pub macro2: f32,
+    /// The value of the third macro, `0..1`.
+    pub macro3: f32,
 }
 
 impl Default for VoiceSettings {
@@ -138,6 +148,10 @@ impl Default for VoiceSettings {
             velocity_amount: 0.0,
             drift_amount: 0.0,
             character_grit: false,
+            mod_slots: [ModSlot::default(); MOD_SLOTS],
+            macro1: 0.5,
+            macro2: 0.5,
+            macro3: 0.5,
         }
     }
 }
@@ -230,6 +244,9 @@ pub struct Voice {
     drift_rng: u32,
     /// The random number generator of the phases of the oscillators.
     phase_rng: u32,
+    /// The modulation of the destinations of the modulation matrix. It is
+    /// refreshed at the control rate.
+    modulation: Modulation,
 }
 
 impl Voice {
@@ -296,6 +313,7 @@ impl Voice {
             drift_value: 0.0,
             drift_rng,
             phase_rng,
+            modulation: Modulation::default(),
         };
 
         voice.reset_osc_phases();
@@ -384,15 +402,23 @@ impl Voice {
         // The drift.
         self.update_drift(sample_rate);
 
-        // The control rate. The pitch and the filter are updated every eighth
-        // sample only, which saves a lot of CPU time.
+        // The control rate. The pitch, the filter and the modulation matrix
+        // are updated every eighth sample only, which saves a lot of CPU
+        // time.
         self.control_counter = (self.control_counter + 1) % CONTROL_RATE;
         if self.control_counter == 0 {
+            // The modulation matrix. Its sources are read at the control
+            // rate as well, which is fast enough for the ear.
+            self.modulation = evaluate(
+                &settings.mod_slots,
+                &self.mod_sources(settings, lfo1, lfo2, amp),
+            );
+
             self.update_control(
                 settings,
                 cutoff_hz,
-                pitch_semitones,
-                filter_octaves,
+                pitch_semitones + self.modulation.pitch_semitones,
+                filter_octaves + self.modulation.filter_octaves,
                 sample_rate,
             );
         }
@@ -412,7 +438,8 @@ impl Voice {
             unison,
             unison_gain,
             settings.spread,
-            pulse_width_offset,
+            pulse_width_offset + self.modulation.pulse_width1,
+            self.modulation.pan,
         );
         render_oscillator(
             &mut self.osc2_bank,
@@ -423,7 +450,8 @@ impl Voice {
             unison,
             unison_gain,
             settings.spread,
-            pulse_width_offset,
+            pulse_width_offset + self.modulation.pulse_width2,
+            self.modulation.pan,
         );
 
         // The noise generator is shared by both channels. It is kept at half
@@ -432,15 +460,18 @@ impl Voice {
         left += noise;
         right += noise;
 
+        // The resonance of the filter, with the modulation of the matrix.
+        let resonance = (settings.resonance + self.modulation.resonance).clamp(0.0, 1.0);
+
         // A high resonance would make the filter gain a lot of energy, so the
         // input of the filter is turned down a little.
-        let attenuation = 1.0 / (1.0 + 0.35 * settings.resonance);
+        let attenuation = 1.0 / (1.0 + 0.35 * resonance);
 
         // The harsh character adds a bit of drive to the filter.
         let drive = if settings.character_grit {
-            (settings.filter_drive + 0.12).clamp(0.0, 1.0)
+            (settings.filter_drive + 0.12 + self.modulation.drive).clamp(0.0, 1.0)
         } else {
-            settings.filter_drive.clamp(0.0, 1.0)
+            (settings.filter_drive + self.modulation.drive).clamp(0.0, 1.0)
         };
 
         let left = self.filter_left.process(
@@ -464,8 +495,29 @@ impl Voice {
         let right = self.dc_right.process(right, sample_rate);
 
         // The amplifier.
-        let gain = amp * self.velocity * amp_scale;
+        let gain = amp * self.velocity * amp_scale * self.modulation.volume;
         (left * gain, right * gain)
+    }
+
+    /// The values of the sources of the modulation matrix.
+    fn mod_sources(
+        &self,
+        settings: &VoiceSettings,
+        lfo1: f32,
+        lfo2: f32,
+        amp_env: f32,
+    ) -> ModSources {
+        ModSources {
+            lfo1,
+            lfo2,
+            filter_env: self.filter_env_level,
+            amp_env,
+            velocity: self.velocity_raw,
+            key: key_source(self.key.number_or_middle_c() as f32),
+            macro1: settings.macro1,
+            macro2: settings.macro2,
+            macro3: settings.macro3,
+        }
     }
 
     /// Updates the pitch and the filter of the voice. This only happens every
@@ -495,7 +547,10 @@ impl Voice {
             + drift_filter;
         let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
         self.g = (PI * cutoff / sample_rate).tan();
-        self.k = 2.0 - 1.98 * settings.resonance;
+
+        // The resonance of the filter, with the modulation of the matrix.
+        let resonance = (settings.resonance + self.modulation.resonance).clamp(0.0, 1.0);
+        self.k = 2.0 - 1.98 * resonance;
 
         // The phase increments of the unison voices.
         let unison = self.unison.clamp(1, MAX_UNISON);
@@ -561,6 +616,7 @@ fn render_oscillator(
     unison_gain: f32,
     spread: f32,
     pulse_width_offset: f32,
+    pan_offset: f32,
 ) {
     let pulse_width = (osc.pulse_width + pulse_width_offset).clamp(0.05, 0.95);
 
@@ -568,8 +624,9 @@ fn render_oscillator(
         let offset = unison_offset(index, unison);
         let sample = oscillator.next(phase_deltas[index], osc.waveform, pulse_width);
 
-        // Equal power panning.
-        let pan = (offset * spread).clamp(-1.0, 1.0);
+        // Equal power panning. The pan of the modulation matrix moves the
+        // whole voice inside the image of the unison bank.
+        let pan = (offset * spread + pan_offset).clamp(-1.0, 1.0);
         let angle = (pan + 1.0) * PI * 0.25;
         let gain_left = angle.cos();
         let gain_right = angle.sin();
@@ -615,11 +672,25 @@ fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{ModDest, ModSource};
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
     fn voice(settings: &VoiceSettings) -> Voice {
         Voice::new(1, Channel::Number(0), Key::Number(60), 0, 1.0, settings)
+    }
+
+    /// A matrix with a single slot.
+    fn matrix(slot: ModSlot) -> [ModSlot; MOD_SLOTS] {
+        let mut slots = [ModSlot::default(); MOD_SLOTS];
+        slots[0] = slot;
+        slots
+    }
+
+    /// The root mean square of a block of samples.
+    fn rms(samples: &[f32]) -> f32 {
+        let sum: f32 = samples.iter().map(|sample| sample * sample).sum();
+        (sum / samples.len() as f32).sqrt()
     }
 
     /// The frequency of the voice, measured by its zero crossings.
@@ -1002,5 +1073,195 @@ mod tests {
         }
 
         assert!(peak < 25.0, "the filter gained too much energy ({peak})");
+    }
+
+    /// A voice with a single sine wave, so that the tests can measure what
+    /// the modulation matrix does to it.
+    fn plain_settings() -> VoiceSettings {
+        VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            filter_keytrack: 0.0,
+            velocity_amount: 0.0,
+            drift_amount: 0.0,
+            ..VoiceSettings::default()
+        }
+    }
+
+    #[test]
+    fn the_matrix_bends_the_pitch() {
+        let settings = plain_settings();
+
+        let mut plain = voice(&settings);
+        let plain_frequency = measure_frequency(&mut plain, &settings);
+
+        // A macro at its top bends the pitch by an octave.
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Pitch,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut bent = voice(&modulated);
+        let bent_frequency = measure_frequency(&mut bent, &modulated);
+
+        let expected = plain_frequency * 2.0;
+        assert!(
+            (bent_frequency - expected).abs() < 5.0,
+            "the bent voice played at {bent_frequency} Hz instead of {expected} Hz"
+        );
+    }
+
+    #[test]
+    fn the_matrix_opens_the_filter() {
+        // A sine that is far above the cutoff of the filter.
+        let settings = VoiceSettings {
+            tune_semitones: 36.0,
+            ..plain_settings()
+        };
+
+        let mut closed = voice(&settings);
+        let mut closed_samples = Vec::new();
+        for _ in 0..4_800 {
+            let (left, _) = closed.next_sample(&settings, 200.0, 0.0, 0.0, SAMPLE_RATE);
+            closed_samples.push(left);
+        }
+
+        // The matrix opens the filter by five octaves.
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Cutoff,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut open = voice(&modulated);
+        let mut open_samples = Vec::new();
+        for _ in 0..4_800 {
+            let (left, _) = open.next_sample(&modulated, 200.0, 0.0, 0.0, SAMPLE_RATE);
+            open_samples.push(left);
+        }
+
+        let closed = rms(&closed_samples);
+        let open = rms(&open_samples);
+        assert!(
+            open > closed * 5.0,
+            "the filter did not open ({open} instead of {closed})"
+        );
+    }
+
+    #[test]
+    fn the_matrix_moves_the_voice_in_the_stereo_field() {
+        let settings = plain_settings();
+
+        // A macro at its top pans the voice to the right.
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Pan,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut voice = voice(&modulated);
+        let mut left = 0.0;
+        let mut right = 0.0;
+        for _ in 0..4_800 {
+            let (a, b) = voice.next_sample(&modulated, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            left += a.abs();
+            right += b.abs();
+        }
+
+        assert!(
+            right > left * 10.0,
+            "the voice was not panned to the right ({left} vs {right})"
+        );
+    }
+
+    #[test]
+    fn the_matrix_scales_the_level_of_the_voice() {
+        let settings = plain_settings();
+
+        let mut plain = voice(&settings);
+        let mut plain_samples = Vec::new();
+        for _ in 0..4_800 {
+            let (left, _) = plain.next_sample(&settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            plain_samples.push(left);
+        }
+
+        // A macro at its top doubles the level of the voice.
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Volume,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut loud = voice(&modulated);
+        let mut loud_samples = Vec::new();
+        for _ in 0..4_800 {
+            let (left, _) = loud.next_sample(&modulated, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            loud_samples.push(left);
+        }
+
+        let plain = rms(&plain_samples);
+        let loud = rms(&loud_samples);
+        assert!(
+            (loud - plain * 2.0).abs() < plain * 0.1,
+            "the level of the voice was {loud} instead of {}",
+            plain * 2.0
+        );
+    }
+
+    #[test]
+    fn the_default_matrix_is_neutral() {
+        let settings = plain_settings();
+
+        // Every slot of the default matrix is switched off.
+        for slot in settings.mod_slots {
+            assert_eq!(slot.source, ModSource::Off);
+            assert_eq!(slot.dest, ModDest::Off);
+            assert_eq!(slot.amount, 0.0);
+        }
+
+        // The voice is not moved at all: both channels are the same and the
+        // pitch is the one of the key.
+        let mut first = voice(&settings);
+        let mut difference = 0.0;
+        for _ in 0..4_800 {
+            let (left, right) = first.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            difference += (left - right).abs();
+        }
+        assert!(
+            difference < 1e-6,
+            "the default matrix moved the voice ({difference})"
+        );
+
+        let mut second = voice(&settings);
+        let frequency = measure_frequency(&mut second, &settings);
+        assert!(
+            (frequency - 261.6).abs() < 5.0,
+            "the default matrix changed the pitch ({frequency} Hz)"
+        );
     }
 }

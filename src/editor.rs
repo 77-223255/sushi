@@ -399,6 +399,8 @@ struct EditorState {
     arp_counter: usize,
     /// The position of the arpeggiator in its pattern.
     arp_step: usize,
+    /// Whether the modulation matrix page is shown in the two upper bands.
+    mod_page: bool,
     /// The peak level of the samples of the last frame.
     activity: f32,
     /// Whether the samples of the last frame were clipping.
@@ -488,6 +490,7 @@ impl SushiEditor {
                 rng: Rng::new(0x2545_F491),
                 arp_counter: 0,
                 arp_step: 0,
+                mod_page: false,
                 activity: 0.0,
                 clipping: 0.0,
                 #[cfg(test)]
@@ -657,9 +660,15 @@ impl SushiEditor {
             |ui| header(ui, header_rect, &mut ctx),
         );
 
-        draw_band_legends(ui, &layout);
-        row_a(ui, &layout, &mut ctx);
-        row_b(ui, &layout, &mut ctx);
+        let mod_page = ctx.state.mod_page;
+        draw_band_legends(ui, &layout, mod_page);
+        if mod_page {
+            row_mod(ui, &layout, 0, 0, &mut ctx);
+            row_mod(ui, &layout, 1, 4, &mut ctx);
+        } else {
+            row_a(ui, &layout, &mut ctx);
+            row_b(ui, &layout, &mut ctx);
+        }
         row_c(ui, &layout, &mut ctx);
         row_d(ui, &layout, &mut ctx);
         draw_footer(ui, &layout);
@@ -678,7 +687,7 @@ const BAND_ACCENTS: [Color32; 4] = [ACCENT; 4];
 /// Draws the band legends in the gaps between the rows: a number in the
 /// domain colour, the name in muted paper, and a fine rule that spans the
 /// panel. The rule is the only full-width horizontal besides the header.
-fn draw_band_legends(ui: &egui::Ui, layout: &Layout) {
+fn draw_band_legends(ui: &egui::Ui, layout: &Layout, mod_page: bool) {
     let painter = ui.painter();
     let zoom = layout.zoom;
     for (index, row) in layout.base_rows.iter().enumerate() {
@@ -691,10 +700,15 @@ fn draw_band_legends(ui: &egui::Ui, layout: &Layout) {
             FontId::new(font_size(9.0, zoom), bold()),
             BAND_ACCENTS[index],
         );
+        let legend = if mod_page && index < 2 {
+            ["MOD ROUTES A", "MOD ROUTES B"][index]
+        } else {
+            BAND_LEGENDS[index]
+        };
         painter.text(
             number_pos + egui::vec2(23.0, 0.0) * zoom,
             Align2::LEFT_TOP,
-            BAND_LEGENDS[index],
+            legend,
             FontId::new(font_size(9.0, zoom), bold()),
             MUTED,
         );
@@ -794,6 +808,8 @@ struct HeaderRects {
     mutate: Rect,
     /// The button that opens the patch browser.
     patches: Rect,
+    /// The button that switches the two upper bands to the modulation matrix.
+    mod_page: Rect,
     /// The meter that shows the number of the voices that are playing.
     meter: Rect,
 }
@@ -824,10 +840,16 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
         egui::vec2(PATCHES_BUTTON_WIDTH, 28.0) * zoom,
     );
 
+    // The page switch sits between the patch commands and the meter.
+    let mod_page = Rect::from_min_size(
+        egui::pos2(patches.right() + 4.0 * zoom, button_y),
+        egui::vec2(44.0, 28.0) * zoom,
+    );
+
     // The meter that shows how many voices are playing. It sits in the free
-    // space between the patches and the lights of the activity meter.
+    // space between the page switch and the lights of the activity meter.
     let meter = Rect::from_min_max(
-        egui::pos2(patches.right() + 8.0 * zoom, rect.top()),
+        egui::pos2(mod_page.right() + 8.0 * zoom, rect.top()),
         egui::pos2(rect.right() - 194.0 * zoom, rect.bottom()),
     );
 
@@ -837,6 +859,7 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
         next,
         mutate,
         patches,
+        mod_page,
         meter,
     }
 }
@@ -914,6 +937,20 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         ctx.toggle_patch_browser();
     }
 
+    // The page switch: MOD replaces the two upper bands with the routing
+    // matrix, while the performance and output bands stay exactly where they
+    // are.
+    if button(ui, rects.mod_page, "MOD", zoom).clicked() {
+        ctx.state.mod_page = !ctx.state.mod_page;
+    }
+    if ctx.state.mod_page {
+        let underline = Rect::from_min_max(
+            egui::pos2(rects.mod_page.left(), rects.mod_page.bottom() - 2.0 * zoom),
+            rects.mod_page.right_bottom(),
+        );
+        painter.rect_filled(underline, CornerRadius::ZERO, ACCENT);
+    }
+
     // The meter that shows how many voices are playing.
     voice_meter(
         &painter,
@@ -951,6 +988,101 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 }
 
 // --- The rows of sections ------------------------------------------------
+
+/// The upper two bands of the modulation page: eight routing slots, four per
+/// band. Each slot keeps the same grammar as a section: a number, a source
+/// field, a destination field and one bipolar amount fader.
+fn row_mod(ui: &mut egui::Ui, layout: &Layout, row: usize, first: usize, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    let row_rect = layout.scale(layout.base_rows[row]);
+    let gap = GROUP_GAP * zoom;
+    let width = (row_rect.width() - 3.0 * gap) / 4.0;
+
+    let sources = [
+        &ctx.params.mod1_source,
+        &ctx.params.mod2_source,
+        &ctx.params.mod3_source,
+        &ctx.params.mod4_source,
+        &ctx.params.mod5_source,
+        &ctx.params.mod6_source,
+        &ctx.params.mod7_source,
+        &ctx.params.mod8_source,
+    ];
+    let dests = [
+        &ctx.params.mod1_dest,
+        &ctx.params.mod2_dest,
+        &ctx.params.mod3_dest,
+        &ctx.params.mod4_dest,
+        &ctx.params.mod5_dest,
+        &ctx.params.mod6_dest,
+        &ctx.params.mod7_dest,
+        &ctx.params.mod8_dest,
+    ];
+    let amounts = [
+        &ctx.params.mod1_amount,
+        &ctx.params.mod2_amount,
+        &ctx.params.mod3_amount,
+        &ctx.params.mod4_amount,
+        &ctx.params.mod5_amount,
+        &ctx.params.mod6_amount,
+        &ctx.params.mod7_amount,
+        &ctx.params.mod8_amount,
+    ];
+    let source_ids = [
+        "mod1_source",
+        "mod2_source",
+        "mod3_source",
+        "mod4_source",
+        "mod5_source",
+        "mod6_source",
+        "mod7_source",
+        "mod8_source",
+    ];
+    let dest_ids = [
+        "mod1_dest",
+        "mod2_dest",
+        "mod3_dest",
+        "mod4_dest",
+        "mod5_dest",
+        "mod6_dest",
+        "mod7_dest",
+        "mod8_dest",
+    ];
+    let amount_ids = [
+        "mod1_amount",
+        "mod2_amount",
+        "mod3_amount",
+        "mod4_amount",
+        "mod5_amount",
+        "mod6_amount",
+        "mod7_amount",
+        "mod8_amount",
+    ];
+
+    for index in 0..4 {
+        let slot = first + index;
+        let rect = Rect::from_min_size(
+            egui::pos2(
+                row_rect.left() + index as f32 * (width + gap),
+                row_rect.top(),
+            ),
+            egui::vec2(width, row_rect.height()),
+        );
+        let title = format!("{:02}", slot + 1);
+
+        group(ui, rect, &title, zoom, |ui, part| match part {
+            Part::Header => {
+                ctx.popup(ui, source_ids[slot], sources[slot], 70.0);
+                ctx.popup(ui, dest_ids[slot], dests[slot], 70.0);
+            }
+            Part::Body => {
+                column_row_fixed(ui, amount_ids[slot], 1, 0.0, 60.0, zoom, |_, ui| {
+                    ctx.float(ui, amount_ids[slot], "Amt", amounts[slot], &Knob::bipolar());
+                });
+            }
+        });
+    }
+}
 
 /// The first row: the two oscillators, the pulse widths and the source mixer.
 ///
@@ -1485,10 +1617,10 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             let gap = GROUP_GAP * zoom;
             let slot = (body_width - 2.0 * gap) / 3.0;
             for (index, label) in ["CHORUS", "DELAY", "REVERB"].iter().enumerate() {
-                let x = body_left + index as f32 * (slot + gap) + 4.0 * zoom;
+                let x = body_left + slot * 0.5 + index as f32 * (slot + gap);
                 painter.text(
                     egui::pos2(x, rect.top() + TITLE_HEIGHT * 0.5 * zoom),
-                    Align2::LEFT_CENTER,
+                    Align2::CENTER_CENTER,
                     *label,
                     FontId::new(font_size(8.0, zoom), bold()),
                     MUTED,
@@ -4081,12 +4213,66 @@ mod tests {
             // The button of the patch browser sits between the mutation and the
             // meter of the voices.
             assert!(rects.patches.left() >= rects.mutate.right());
+            assert!(rects.mod_page.left() >= rects.patches.right());
+            assert!(rects.meter.left() >= rects.mod_page.right());
             assert!(!rects.patches.intersects(rects.meter));
             // The meter still fits between the button and the lights of the
             // activity meter.
             assert!(rects.meter.right() <= rect.right() - 194.0 * zoom);
             assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH * zoom);
         }
+    }
+
+    #[test]
+    fn the_mod_button_opens_the_matrix_page() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "MOD")
+            .expect("the header has no mod button");
+        let button = pos + egui::vec2(2.0, 2.0);
+
+        run_frames(&ctx, &mut editor, click(button));
+        assert!(editor.state.mod_page);
+        editor.state.counts = Counts::default();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let counts = editor.state.counts;
+        assert_eq!(counts.sliders, 34, "unexpected number of matrix sliders");
+        assert_eq!(counts.popups, 23, "unexpected number of matrix popups");
+        assert_eq!(counts.checks, 2);
+        assert_eq!(counts.radios, 1);
+
+        // The two upper bands now show eight routes; the performance and
+        // output bands have not moved.
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for route in ["01", "02", "03", "04", "05", "06", "07", "08"] {
+            assert!(names.contains(&route.to_string()), "missing route {route}");
+        }
+        assert!(names.contains(&"MOD ROUTES A".to_string()));
+        assert!(names.contains(&"MOD ROUTES B".to_string()));
+
+        // A second click brings the sound controls back.
+        run_frames(&ctx, &mut editor, click(button));
+        assert!(!editor.state.mod_page);
+        editor.state.counts = Counts::default();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert_eq!(editor.state.counts.sliders, 54);
+        assert_eq!(editor.state.counts.popups, 10);
+    }
+
+    #[test]
+    fn the_matrix_page_fits_into_the_panel() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.mod_page = true;
+        editor.state.counts = Counts::default();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let panel = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        );
+        assert_the_widgets_fit(&ctx, &output, panel);
     }
 
     #[test]
@@ -4869,7 +5055,6 @@ mod tests {
     fn assert_the_widgets_fit(ctx: &egui::Context, output: &egui::FullOutput, panel: Rect) {
         // Every slider is inside of the panel and touches no other slider.
         let sliders = slider_rects(ctx, output);
-        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
         for (index, rect) in sliders.iter().enumerate() {
             assert!(
                 panel.contains_rect(*rect),

@@ -51,6 +51,61 @@ pub enum LfoTarget {
     PulseWidth,
 }
 
+/// The sources of the modulation matrix.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ModSource {
+    #[default]
+    Off,
+    #[name = "LFO 1"]
+    Lfo1,
+    #[name = "LFO 2"]
+    Lfo2,
+    #[name = "Mod Env"]
+    ModEnv,
+    #[name = "Amp Env"]
+    AmpEnv,
+    Velocity,
+    Key,
+    #[name = "Macro 1"]
+    Macro1,
+    #[name = "Macro 2"]
+    Macro2,
+    #[name = "Macro 3"]
+    Macro3,
+}
+
+/// The destinations of the modulation matrix.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ModDest {
+    #[default]
+    Off,
+    Pitch,
+    #[name = "Pulse 1"]
+    Pulse1,
+    #[name = "Pulse 2"]
+    Pulse2,
+    Cutoff,
+    Resonance,
+    Drive,
+    Pan,
+    Volume,
+}
+
+/// The number of slots of the modulation matrix.
+pub const MOD_SLOTS: usize = 8;
+
+/// A single slot of the modulation matrix: a source, a destination and the
+/// amount of the modulation.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ModSlot {
+    /// The source of the modulation.
+    pub source: ModSource,
+    /// The destination of the modulation.
+    pub dest: ModDest,
+    /// The amount of the modulation, `-1..1`.
+    pub amount: f32,
+}
+
 /// How incoming notes are turned into voices.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum PolyMode {
@@ -336,6 +391,79 @@ pub struct SushiParams {
     #[id = "reverb_decay"]
     pub reverb_decay: FloatParam,
 
+    // --- Modulation matrix ------------------------------------------------
+    #[id = "mod1_source"]
+    pub mod1_source: EnumParam<ModSource>,
+
+    #[id = "mod1_dest"]
+    pub mod1_dest: EnumParam<ModDest>,
+
+    #[id = "mod1_amount"]
+    pub mod1_amount: FloatParam,
+
+    #[id = "mod2_source"]
+    pub mod2_source: EnumParam<ModSource>,
+
+    #[id = "mod2_dest"]
+    pub mod2_dest: EnumParam<ModDest>,
+
+    #[id = "mod2_amount"]
+    pub mod2_amount: FloatParam,
+
+    #[id = "mod3_source"]
+    pub mod3_source: EnumParam<ModSource>,
+
+    #[id = "mod3_dest"]
+    pub mod3_dest: EnumParam<ModDest>,
+
+    #[id = "mod3_amount"]
+    pub mod3_amount: FloatParam,
+
+    #[id = "mod4_source"]
+    pub mod4_source: EnumParam<ModSource>,
+
+    #[id = "mod4_dest"]
+    pub mod4_dest: EnumParam<ModDest>,
+
+    #[id = "mod4_amount"]
+    pub mod4_amount: FloatParam,
+
+    #[id = "mod5_source"]
+    pub mod5_source: EnumParam<ModSource>,
+
+    #[id = "mod5_dest"]
+    pub mod5_dest: EnumParam<ModDest>,
+
+    #[id = "mod5_amount"]
+    pub mod5_amount: FloatParam,
+
+    #[id = "mod6_source"]
+    pub mod6_source: EnumParam<ModSource>,
+
+    #[id = "mod6_dest"]
+    pub mod6_dest: EnumParam<ModDest>,
+
+    #[id = "mod6_amount"]
+    pub mod6_amount: FloatParam,
+
+    #[id = "mod7_source"]
+    pub mod7_source: EnumParam<ModSource>,
+
+    #[id = "mod7_dest"]
+    pub mod7_dest: EnumParam<ModDest>,
+
+    #[id = "mod7_amount"]
+    pub mod7_amount: FloatParam,
+
+    #[id = "mod8_source"]
+    pub mod8_source: EnumParam<ModSource>,
+
+    #[id = "mod8_dest"]
+    pub mod8_dest: EnumParam<ModDest>,
+
+    #[id = "mod8_amount"]
+    pub mod8_amount: FloatParam,
+
     // --- Macros ------------------------------------------------------------
     #[id = "macro_bright"]
     pub macro_bright: FloatParam,
@@ -597,6 +725,39 @@ impl Default for SushiParams {
             reverb_decay: percentage_param("Reverb Decay", 0.6)
                 .with_smoother(SmoothingStyle::Linear(10.0)),
 
+            // --- Modulation matrix ---------------------------------------------
+            mod1_source: EnumParam::new("MOD 1 Source", ModSource::Off),
+            mod1_dest: EnumParam::new("MOD 1 Dest", ModDest::Off),
+            mod1_amount: bipolar_param("MOD 1 Amount", 0.0),
+
+            mod2_source: EnumParam::new("MOD 2 Source", ModSource::Off),
+            mod2_dest: EnumParam::new("MOD 2 Dest", ModDest::Off),
+            mod2_amount: bipolar_param("MOD 2 Amount", 0.0),
+
+            mod3_source: EnumParam::new("MOD 3 Source", ModSource::Off),
+            mod3_dest: EnumParam::new("MOD 3 Dest", ModDest::Off),
+            mod3_amount: bipolar_param("MOD 3 Amount", 0.0),
+
+            mod4_source: EnumParam::new("MOD 4 Source", ModSource::Off),
+            mod4_dest: EnumParam::new("MOD 4 Dest", ModDest::Off),
+            mod4_amount: bipolar_param("MOD 4 Amount", 0.0),
+
+            mod5_source: EnumParam::new("MOD 5 Source", ModSource::Off),
+            mod5_dest: EnumParam::new("MOD 5 Dest", ModDest::Off),
+            mod5_amount: bipolar_param("MOD 5 Amount", 0.0),
+
+            mod6_source: EnumParam::new("MOD 6 Source", ModSource::Off),
+            mod6_dest: EnumParam::new("MOD 6 Dest", ModDest::Off),
+            mod6_amount: bipolar_param("MOD 6 Amount", 0.0),
+
+            mod7_source: EnumParam::new("MOD 7 Source", ModSource::Off),
+            mod7_dest: EnumParam::new("MOD 7 Dest", ModDest::Off),
+            mod7_amount: bipolar_param("MOD 7 Amount", 0.0),
+
+            mod8_source: EnumParam::new("MOD 8 Source", ModSource::Off),
+            mod8_dest: EnumParam::new("MOD 8 Dest", ModDest::Off),
+            mod8_amount: bipolar_param("MOD 8 Amount", 0.0),
+
             // --- Macros -------------------------------------------------------
             macro_bright: percentage_param("Macro Bright", 0.5)
                 .with_smoother(SmoothingStyle::Linear(20.0)),
@@ -646,6 +807,58 @@ impl Default for SushiParams {
             arp_length: IntParam::new("Arp Length", 16, IntRange::Linear { min: 1, max: 16 }),
             arp_ratchet: IntParam::new("Arp Ratchet", 1, IntRange::Linear { min: 1, max: 4 }),
         }
+    }
+}
+
+impl SushiParams {
+    /// The eight slots of the modulation matrix, in the order of their
+    /// parameters.
+    ///
+    /// The slots are built once per audio block, so that the audio thread
+    /// never has to allocate.
+    pub fn mod_slots(&self) -> [ModSlot; MOD_SLOTS] {
+        [
+            ModSlot {
+                source: self.mod1_source.value(),
+                dest: self.mod1_dest.value(),
+                amount: self.mod1_amount.value(),
+            },
+            ModSlot {
+                source: self.mod2_source.value(),
+                dest: self.mod2_dest.value(),
+                amount: self.mod2_amount.value(),
+            },
+            ModSlot {
+                source: self.mod3_source.value(),
+                dest: self.mod3_dest.value(),
+                amount: self.mod3_amount.value(),
+            },
+            ModSlot {
+                source: self.mod4_source.value(),
+                dest: self.mod4_dest.value(),
+                amount: self.mod4_amount.value(),
+            },
+            ModSlot {
+                source: self.mod5_source.value(),
+                dest: self.mod5_dest.value(),
+                amount: self.mod5_amount.value(),
+            },
+            ModSlot {
+                source: self.mod6_source.value(),
+                dest: self.mod6_dest.value(),
+                amount: self.mod6_amount.value(),
+            },
+            ModSlot {
+                source: self.mod7_source.value(),
+                dest: self.mod7_dest.value(),
+                amount: self.mod7_amount.value(),
+            },
+            ModSlot {
+                source: self.mod8_source.value(),
+                dest: self.mod8_dest.value(),
+                amount: self.mod8_amount.value(),
+            },
+        ]
     }
 }
 
@@ -721,6 +934,39 @@ mod tests {
         assert_eq!(params.arp_swing.value(), 0.0);
         assert_eq!(params.arp_length.value(), 16);
         assert_eq!(params.arp_ratchet.value(), 1);
+    }
+
+    #[test]
+    fn the_modulation_matrix_starts_empty() {
+        let params = SushiParams::default();
+
+        // Every slot of the matrix is switched off.
+        let slots = params.mod_slots();
+        assert_eq!(slots.len(), 8);
+        for slot in slots {
+            assert_eq!(slot.source, ModSource::Off);
+            assert_eq!(slot.dest, ModDest::Off);
+            assert_eq!(slot.amount, 0.0);
+        }
+
+        assert_eq!(params.mod1_source.value(), ModSource::Off);
+        assert_eq!(params.mod1_dest.value(), ModDest::Off);
+        assert_eq!(params.mod1_amount.value(), 0.0);
+        assert_eq!(params.mod8_source.value(), ModSource::Off);
+        assert_eq!(params.mod8_dest.value(), ModDest::Off);
+        assert_eq!(params.mod8_amount.value(), 0.0);
+    }
+
+    #[test]
+    fn the_modulation_sources_and_destinations_have_readable_names() {
+        assert_eq!(ModSource::variants()[0], "Off");
+        assert_eq!(ModSource::variants()[1], "LFO 1");
+        assert_eq!(ModSource::variants()[3], "Mod Env");
+        assert_eq!(ModSource::variants()[7], "Macro 1");
+        assert_eq!(ModDest::variants()[0], "Off");
+        assert_eq!(ModDest::variants()[1], "Pitch");
+        assert_eq!(ModDest::variants()[2], "Pulse 1");
+        assert_eq!(ModDest::variants()[4], "Cutoff");
     }
 
     #[test]

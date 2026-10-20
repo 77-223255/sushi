@@ -13,6 +13,7 @@
 - 每声部带直流阻断（DC Blocker），波形不会累积直流偏置
 - 独立的 Amp / Filter ADSR 包络
 - 双 LFO（Sine / Triangle / Saw / Square / S&H），可路由到音高、滤波、音量、脉宽
+- **8 槽调制矩阵**：每个槽选源（LFO 1/2、MOD ENV、AMP ENV、力度、键位、Macro 1–3）和目标（音高、PW 1/2、截止、共振、驱动、声像、音量），双极深度；同一目标可叠加多个源
 - 每声部模拟漂移（Drift），Poly / Mono / Legato、Glide
 - **Tune** 全局调音（±12 半音）与 **Voices** 复音数限制（1–16，超出时抢最老声部）
 - **Character**：Silk / Grit 两档性格，统一改变饱和、驱动和漂移
@@ -32,6 +33,7 @@
 
 - 深色复古仪器面板：暖纸色丝印 + 单一琥珀结构色；绿色只表示“活着”的状态（LCD、示波器、声部灯、ARP 灯、悬停的推子）
 - 四个信号带：`01 GENERATORS`（VCO 1 / VCO 2 / PULSE WIDTH / SOURCE MIXER）→ `02 SHAPING`（VCF / MOD ENV / AMP ENV）→ `03 MODULATION`（LFO 1 / LFO 2 / ARP / VOICE）→ `04 OUTPUT`（FX / MACROS / VCA）
+- 标题栏 **MOD** 按钮把上方两个信号带切换成 **8 槽调制矩阵**（两行 × 四槽，源 / 目标 / 双极 AMT 推子）；下方 `03 MODULATION` 与 `04 OUTPUT` 永远不动，演奏位置不丢
 - 每个分区：近白 13 px 标题 + 4 px 琥珀标签 + 短线；参数名 9 px 暗纸色，形成标题 / 参数 / 数值三层
 - 推子为深色铣槽 + 开口侧轨 + 五档刻度；双极参数有中心刻线；纸色推子帽带帽沿和永久中线，悬停/拖动时变绿
 - 固定列距（发生器 52、塑形/调制 60、Voice 48、输出 60），推子中心在分行内可预测；FX 的 CHORUS / DELAY / REVERB 子标题放在标题行，所有推子共享同一行程
@@ -40,6 +42,7 @@
 - **拖动窗口边框连续缩放**整个面板与字体（没有 zoom 菜单或档位）；小于 960×600 时只显示 `:(`
 - 界面字体为 **Silkscreen** 像素字体（SIL Open Font License，见 `assets/fonts/OFL.txt`）
 - 底栏保留 `SUSHI INSTRUMENTS / MODEL 101` 与双击/右键提示
+- 页面切换只有 `PANEL` / `MOD` 两个状态，没有隐藏抽屉、没有滚动条；矩阵参数和主面板参数一样可被宿主自动化、存进 JSON 补丁
 - 标题栏的 **PATCHES** 按钮打开补丁浏览器：可 **搜索**；**用户补丁排在最前**，工厂预设在后面；点击读取，也可以按名字 LOAD 或 SAVE（同名文件需连按两次 SAVE 才会覆盖）
 - LCD 显示当前声音的名字：用户补丁显示补丁名，工厂预设显示编号与预设名，被改动过时名字后带 `*`
 
@@ -84,6 +87,7 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 - 滤波截止频率：`cutoff × 2^(MOD ENV × 5 oct + keytrack + velocity × 1.5 + LFO × 4 oct + drift)`
 - 音高：`key + glide + Tune + LFO × 2 st + drift`，再叠加每个振荡器的八度/半音/微调与 Unison 失谐
 - 宏：Brilliance 推 cutoff/共振/驱动；Motion 推 LFO 深度与 Drift；Space 推 Chorus/Delay/Reverb 的 Mix
+- 调制矩阵：在控制率（每 8 个样本）把 8 个槽的 `源 × 深度` 求和，分别叠加到音高（±12 st）、PW（±0.45）、截止（±5 oct）、共振/驱动（±1）、声像（±1）和音量；槽全为 Off/0 时与旧版逐样本一致
 - Character：Silk / Grit 统一改变饱和器、滤波驱动、漂移
 - Voices：限制同时发声数，超出时抢最老声部；ARP 自己生成的声部不计入该限制
 - FX：三个 Mix 为 0 时完全旁路，不消耗处理时间
@@ -103,7 +107,8 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 | ARP | `arp_*`（on、pattern、rate、octaves、gate、latch、swing、length、ratchet） | `src/dsp/arp.rs` |
 | FX | `chorus_*`、`delay_*`、`reverb_*` | `src/dsp/fx.rs` |
 | MACROS / VCA | `macro_bright/motion/space`、`character`、`volume`、`tone` | `src/lib.rs` |
-| PATCHES | 全部 67 个参数（JSON） | `src/patch.rs`、`src/editor/presets.rs` |
+| MOD MATRIX | `mod1_source` … `mod8_amount`（8 × 源/目标/深度） | `src/dsp/mod_matrix.rs`、`src/dsp/voice.rs`、`src/lib.rs` |
+| PATCHES | 全部 91 个参数（JSON） | `src/patch.rs`、`src/editor/presets.rs` |
 
 ## 修改指南
 
@@ -119,7 +124,7 @@ MIDI/ARP -> Voice: OSC1 + OSC2 + Noise -> VCF -> DC block -> Amp env
 
 ## 补丁（Patch）
 
-补丁是纯 JSON 文本，任何语言都能读写。保存时写出全部 67 个参数，读取时先回到出厂默认值，
+补丁是纯 JSON 文本，任何语言都能读写。保存时写出全部 91 个参数，读取时先回到出厂默认值，
 再写入文件中出现的参数——缺失的参数保持默认，未知参数只警告不报错，因此新旧版本互相兼容。
 
 ```json

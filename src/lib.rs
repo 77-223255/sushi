@@ -67,6 +67,28 @@ fn saturate_sample(sample: f32, drive: f32, negative_gain: f32) -> f32 {
     }
 }
 
+/// The values of the three macros of the current block. They are the sources
+/// of the modulation matrix.
+#[derive(Debug, Clone, Copy)]
+struct Macros {
+    /// The brightness macro.
+    bright: f32,
+    /// The motion macro.
+    motion: f32,
+    /// The space macro.
+    space: f32,
+}
+
+impl Default for Macros {
+    fn default() -> Self {
+        Self {
+            bright: 0.5,
+            motion: 0.5,
+            space: 0.5,
+        }
+    }
+}
+
 pub struct Sushi {
     params: Arc<SushiParams>,
     voices: [Option<Voice>; NUM_VOICES],
@@ -148,7 +170,7 @@ impl Default for Sushi {
 impl Sushi {
     /// Collects all the settings the voices need. These are rebuilt once per
     /// audio block.
-    fn voice_settings(&self, steps: u32) -> VoiceSettings {
+    fn voice_settings(&self, steps: u32, macros: Macros) -> VoiceSettings {
         let params = &self.params;
         let sample_rate = self.sample_rate.max(1.0);
 
@@ -217,6 +239,12 @@ impl Sushi {
             velocity_amount: params.velocity.smoothed.next_step(steps),
             drift_amount: 0.0,
             character_grit: false,
+            // The slots of the modulation matrix are read once per block.
+            mod_slots: params.mod_slots(),
+            // The macros are the sources of the modulation matrix.
+            macro1: macros.bright,
+            macro2: macros.motion,
+            macro3: macros.space,
         }
     }
 
@@ -756,7 +784,14 @@ impl Plugin for Sushi {
         let space = self.params.macro_space.smoothed.next_step(steps);
         let grit = self.params.character.value() == Character::Grit;
 
-        let mut settings = self.voice_settings(steps);
+        let mut settings = self.voice_settings(
+            steps,
+            Macros {
+                bright,
+                motion,
+                space,
+            },
+        );
         let mut fx_params = self.fx_params();
 
         // The brightness macro scales the cutoff and the resonance.
@@ -1015,6 +1050,7 @@ nice_export_vst3!(Sushi);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{ModDest, ModSource};
     use crate::patch::test_support::setter;
 
     const SAMPLE_RATE: f32 = 48_000.0;
@@ -1145,12 +1181,75 @@ mod tests {
             ..Default::default()
         };
 
-        let settings = sushi.voice_settings(64);
+        let settings = sushi.voice_settings(64, Macros::default());
         assert!(
             (settings.tune_semitones - 12.0).abs() < 0.01,
             "the tune of the voices was {}",
             settings.tune_semitones
         );
+    }
+
+    #[test]
+    fn the_modulation_matrix_reaches_the_voices() {
+        let params = SushiParams::default();
+        let setter = setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Macro1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Pitch);
+        setter.set_parameter(&params.mod1_amount, 0.5);
+        setter.set_parameter(&params.mod3_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod3_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod3_amount, -0.25);
+
+        let sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+
+        let settings = sushi.voice_settings(64, Macros::default());
+
+        assert_eq!(settings.mod_slots[0].source, ModSource::Macro1);
+        assert_eq!(settings.mod_slots[0].dest, ModDest::Pitch);
+        assert!(
+            (settings.mod_slots[0].amount - 0.5).abs() < 0.01,
+            "the amount of the first slot was {}",
+            settings.mod_slots[0].amount
+        );
+
+        assert_eq!(settings.mod_slots[2].source, ModSource::Lfo1);
+        assert_eq!(settings.mod_slots[2].dest, ModDest::Cutoff);
+        assert!(
+            (settings.mod_slots[2].amount + 0.25).abs() < 0.01,
+            "the amount of the third slot was {}",
+            settings.mod_slots[2].amount
+        );
+
+        // The slots that were not touched are still switched off.
+        assert_eq!(settings.mod_slots[1].source, ModSource::Off);
+        assert_eq!(settings.mod_slots[1].dest, ModDest::Off);
+        assert_eq!(settings.mod_slots[1].amount, 0.0);
+    }
+
+    #[test]
+    fn the_macros_reach_the_voices() {
+        let params = SushiParams::default();
+
+        let sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+
+        let settings = sushi.voice_settings(
+            64,
+            Macros {
+                bright: 0.2,
+                motion: 0.4,
+                space: 0.6,
+            },
+        );
+
+        assert!((settings.macro1 - 0.2).abs() < 0.001);
+        assert!((settings.macro2 - 0.4).abs() < 0.001);
+        assert!((settings.macro3 - 0.6).abs() < 0.001);
     }
 
     #[test]

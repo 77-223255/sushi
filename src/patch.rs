@@ -513,6 +513,30 @@ sushi_params! {
     "delay_mix" => delay_mix,
     "reverb_mix" => reverb_mix,
     "reverb_decay" => reverb_decay,
+    "mod1_source" => mod1_source,
+    "mod1_dest" => mod1_dest,
+    "mod1_amount" => mod1_amount,
+    "mod2_source" => mod2_source,
+    "mod2_dest" => mod2_dest,
+    "mod2_amount" => mod2_amount,
+    "mod3_source" => mod3_source,
+    "mod3_dest" => mod3_dest,
+    "mod3_amount" => mod3_amount,
+    "mod4_source" => mod4_source,
+    "mod4_dest" => mod4_dest,
+    "mod4_amount" => mod4_amount,
+    "mod5_source" => mod5_source,
+    "mod5_dest" => mod5_dest,
+    "mod5_amount" => mod5_amount,
+    "mod6_source" => mod6_source,
+    "mod6_dest" => mod6_dest,
+    "mod6_amount" => mod6_amount,
+    "mod7_source" => mod7_source,
+    "mod7_dest" => mod7_dest,
+    "mod7_amount" => mod7_amount,
+    "mod8_source" => mod8_source,
+    "mod8_dest" => mod8_dest,
+    "mod8_amount" => mod8_amount,
     "macro_bright" => macro_bright,
     "macro_motion" => macro_motion,
     "macro_space" => macro_space,
@@ -710,7 +734,9 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{Character, FilterMode, LfoWaveform, NoteDiv, PolyMode, Waveform};
+    use crate::params::{
+        Character, FilterMode, LfoWaveform, ModDest, ModSource, NoteDiv, PolyMode, Waveform,
+    };
     use crate::patch::test_support::{reset_count, set_count, setter};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -779,12 +805,12 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 67);
+        assert_eq!(PARAM_IDS.len(), 91);
 
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 67, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 91, "the ids of the parameters are not unique");
     }
 
     #[test]
@@ -795,8 +821,8 @@ mod tests {
         reset_count();
         apply_defaults(&params, &setter);
 
-        // Every one of the 67 parameters is written.
-        assert_eq!(set_count(), 67);
+        // Every one of the 91 parameters is written.
+        assert_eq!(set_count(), 91);
     }
 
     #[test]
@@ -832,10 +858,18 @@ mod tests {
         setter.set_parameter(&params.arp_on, true);
         setter.set_parameter(&params.unison, 3);
         setter.set_parameter(&params.tone, -0.4);
+        setter.set_parameter(&params.mod1_source, ModSource::Macro1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Pitch);
+        setter.set_parameter(&params.mod1_amount, 0.5);
 
         let document = to_json(&params, "ROUND TRIP");
         let other = SushiParams::default();
         apply_json(&other, &setter, &document).expect("the patch could not be applied");
+
+        // The slots of the modulation matrix are part of the patch.
+        assert_eq!(other.mod1_source.value(), ModSource::Macro1);
+        assert_eq!(other.mod1_dest.value(), ModDest::Pitch);
+        assert!((other.mod1_amount.value() - 0.5).abs() < 0.01);
 
         let restored = to_json(&other, "ROUND TRIP");
         assert_same_patch(&document, &restored, "patch");
@@ -851,7 +885,7 @@ mod tests {
         assert_eq!(document["name"], "TEST");
 
         let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 67);
+        assert_eq!(map.len(), 91);
         for id in PARAM_IDS {
             assert!(map.contains_key(*id), "the parameter {id} is missing");
         }

@@ -5,5 +5,6 @@ pub mod arp;
 pub mod filter;
 pub mod fx;
 pub mod lfo;
+pub mod mod_matrix;
 pub mod osc;
 pub mod voice;
