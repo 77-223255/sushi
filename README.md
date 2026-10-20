@@ -36,7 +36,7 @@
 - **拖动窗口边框连续缩放**整个面板与字体（没有 zoom 菜单或档位）；小于 960×640 时只显示 `:(`
 - 界面字体为 **Silkscreen** 像素字体（SIL Open Font License，见 `assets/fonts/OFL.txt`）
 - 4 行分区（学习 SH-101 蓝图的合理布局）：VCO 1 / VCO 2 / SOURCE MIXER / VCF · PULSE WIDTH / MOD ENV / AMP ENV / LFO / CLK · ARP / VOICE · FX / MACROS / VCA
-- 标题栏的 **PATCHES** 按钮打开补丁浏览器：选择目录、列出补丁、读取与保存（同名文件需连按两次 SAVE 才会覆盖）
+- 标题栏的 **PATCHES** 按钮（或点击 LCD）打开补丁浏览器：可 **搜索**，同时列出 14 个工厂预设和用户补丁，点击读取；支持按名字 LOAD 与保存（同名文件需连按两次 SAVE 才会覆盖）
 - LCD 显示当前声音的名字：用户补丁显示补丁名，工厂预设显示编号与预设名，被改动过时名字后带 `*`
 
 
