@@ -157,7 +157,7 @@ impl DcBlocker {
     fn process(&mut self, input: f32, sample_rate: f32) -> f32 {
         if self.rate != sample_rate {
             self.rate = sample_rate;
-            self.coefficient = 1.0 - (2.0 * PI * DC_BLOCKER_FREQUENCY / sample_rate.max(1.0)).exp();
+            self.coefficient = (-2.0 * PI * DC_BLOCKER_FREQUENCY / sample_rate.max(1.0)).exp();
         }
 
         let output = input - self.input + self.coefficient * self.output;
@@ -893,6 +893,26 @@ mod tests {
         assert!(
             offset.abs() < 0.02,
             "the wave still had an offset of {offset}"
+        );
+    }
+
+    #[test]
+    fn the_dc_blocker_passes_audio() {
+        let mut dc = DcBlocker::default();
+        let mut input = 0.0f64;
+        let mut output = 0.0f64;
+        for i in 0..48_000 {
+            let x = (2.0 * PI * 261.63 * i as f32 / SAMPLE_RATE).sin();
+            let y = dc.process(x, SAMPLE_RATE);
+            if i >= 4_800 {
+                input += (x * x) as f64;
+                output += (y * y) as f64;
+            }
+        }
+        let ratio = (output / input).sqrt();
+        assert!(
+            (ratio - 1.0).abs() < 0.01,
+            "DC blocker passband ratio {ratio}"
         );
     }
 

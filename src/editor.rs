@@ -1,11 +1,13 @@
-//! The Sushi editor: a retro Win95/Pascal-flavoured panel.
+//! The Sushi editor: a flat blueprint panel.
 //!
 //! Every continuous parameter is a vertical slider whose handle is a band that
-//! is fully embedded inside the groove (it never sticks out), every parameter
+//! is fully embedded inside the track (it never sticks out), every parameter
 //! can also be typed into a small numeric field, and every choice parameter
-//! opens a popup menu. The parameters are grouped into labelled boxes below a
-//! header that holds the wordmark, the factory presets and a small
-//! oscilloscope.
+//! opens a popup menu. The parameters are grouped into sections that are named
+//! by a coloured title and a thin rule below a header that holds the wordmark,
+//! the factory presets and a small oscilloscope. Nothing on the panel has a
+//! bevel, a shadow or a rounded corner: every widget is a flat fill with a
+//! single 1 px border.
 
 mod presets;
 
@@ -26,33 +28,46 @@ use crate::params::SushiParams;
 use crate::patch;
 use presets::{PRESETS, Rng};
 
-// --- Win95 / Pascal grey palette -------------------------------------------
+// --- Flat blueprint palette -------------------------------------------------
 
-const BG: Color32 = Color32::from_rgb(0xC0, 0xC0, 0xC0);
-const BUTTON: Color32 = Color32::from_rgb(0xD2, 0xD2, 0xD2);
-const FIELD: Color32 = Color32::from_rgb(0xFB, 0xFB, 0xFB);
-const LIGHT: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-const SHADOW: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
-const DARK: Color32 = Color32::from_rgb(0x40, 0x40, 0x40);
-const TEXT: Color32 = Color32::from_rgb(0x10, 0x10, 0x10);
-const LABEL: Color32 = Color32::from_rgb(0x28, 0x28, 0x28);
-const MUTED: Color32 = Color32::from_rgb(0x60, 0x60, 0x60);
-const TRACE: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-const SELECTION: Color32 = Color32::from_rgb(0x0A, 0x24, 0x6A);
-/// The background of the title strip of a group box.
-const TITLE_BG: Color32 = Color32::from_rgb(0xB8, 0xB8, 0xB8);
+/// The background of the whole panel. The sections have no fill of their own.
+const BG: Color32 = Color32::from_rgb(0xF1, 0xF1, 0xF1);
+/// The 1 px rules: below the section titles, below the header, around fields.
+const RULE: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
+/// The outlines of the widgets.
+const LINE: Color32 = Color32::from_rgb(0x7A, 0x7A, 0x7A);
+const TEXT: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+const MUTED: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
+/// The titles of the oscillators, the mixer, the filter and the arpeggiator.
+const TITLE_BLUE: Color32 = Color32::from_rgb(0x25, 0x4C, 0x9A);
+/// The titles of the envelopes, the low frequency oscillators and the VCA.
+const TITLE_OLIVE: Color32 = Color32::from_rgb(0x6E, 0x6A, 0x24);
+/// The titles of the voice, the effects and the macros.
+const TITLE_GRAY: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3A);
+/// The track of a slider.
+const TRACK: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+/// The handle band of a slider.
+const HANDLE: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
+/// The tick in the middle of the track of a slider.
+const TICK: Color32 = Color32::from_rgb(0xD8, 0xD8, 0xD8);
+/// The background of the numeric fields.
+const FIELD_BG: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const BUTTON_BG: Color32 = Color32::from_rgb(0xE7, 0xE7, 0xE7);
+const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0xCF, 0xCF, 0xCF);
 /// The background of the display of the presets.
-const LCD_BG: Color32 = Color32::from_rgb(0x0B, 0x1A, 0x0B);
+const LCD_BG: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 /// The color of the text in the display of the presets.
-const LCD_FG: Color32 = Color32::from_rgb(0x40, 0xE0, 0x60);
-/// The color of the light of the activity meter.
-const LED_GREEN: Color32 = Color32::from_rgb(0x30, 0xD0, 0x40);
+const LCD_FG: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+/// The color of a light of the activity meter.
+const LED_ON: Color32 = Color32::from_rgb(0x22, 0xA8, 0x4A);
 /// The color of the light of the clip meter.
-const LED_RED: Color32 = Color32::from_rgb(0xE0, 0x30, 0x30);
+const LED_RED: Color32 = Color32::from_rgb(0xC8, 0x32, 0x32);
 /// The color of the lights of the arpeggiator.
-const LED_AMBER: Color32 = Color32::from_rgb(0xE0, 0xA0, 0x20);
+const LED_AMBER: Color32 = Color32::from_rgb(0xD9, 0x9A, 0x20);
 /// The color of a light that is switched off.
-const LED_OFF: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+const LED_OFF: Color32 = Color32::from_rgb(0xB8, 0xB8, 0xB8);
+/// The color of the trace of the oscilloscope.
+const TRACE: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 /// The color of the text of a status line that reports a success.
 const STATUS_OK: Color32 = Color32::from_rgb(0x00, 0x60, 0x00);
 /// The color of the text of a status line that reports a problem.
@@ -67,29 +82,30 @@ pub const WINDOW_HEIGHT: f32 = 640.0;
 const MARGIN: f32 = 8.0;
 /// The height of the header.
 const HEADER_HEIGHT: f32 = 48.0;
-/// The width of a group box.
+/// The width of a section.
 const GROUP_WIDTH: f32 = 230.0;
-/// The width of a group box that holds two columns. The two columns are as
-/// wide as a single group box, so that the rows line up with the content.
+/// The width of a section that holds two columns. The two columns are as
+/// wide as a single section, so that the rows line up with the content.
 const DOUBLE_GROUP_WIDTH: f32 = 2.0 * GROUP_WIDTH + GROUP_GAP;
-/// The width of a group box that holds three columns.
+/// The width of a section that holds three columns.
 const TRIPLE_GROUP_WIDTH: f32 = 3.0 * GROUP_WIDTH + 2.0 * GROUP_GAP;
-/// The gap between two group boxes.
+/// The gap between two sections.
 const GROUP_GAP: f32 = 8.0;
-/// The padding inside a group box.
+/// The padding inside a section.
 const GROUP_PADDING: f32 = 4.0;
-/// The height of the title strip of a group box.
-const TITLE_HEIGHT: f32 = 16.0;
+/// The height of the line that holds the title of a section and the controls
+/// of its header. The rule below the line sits on its bottom edge.
+const TITLE_HEIGHT: f32 = 18.0;
 /// The horizontal gap between two parameter columns.
 const COLUMN_GAP: f32 = 4.0;
 
-/// The height of the first row of group boxes.
-const ROW_A_HEIGHT: f32 = 146.0;
-/// The height of the second row of group boxes.
-const ROW_B_HEIGHT: f32 = 134.0;
-/// The height of the third row of group boxes.
+/// The height of the first row of sections.
+const ROW_A_HEIGHT: f32 = 144.0;
+/// The height of the second row of sections.
+const ROW_B_HEIGHT: f32 = 136.0;
+/// The height of the third row of sections.
 const ROW_C_HEIGHT: f32 = 138.0;
-/// The height of the fourth row of group boxes.
+/// The height of the fourth row of sections.
 const ROW_D_HEIGHT: f32 = 126.0;
 
 // --- Widget metrics ---------------------------------------------------------
@@ -99,9 +115,9 @@ const SLIDER_WIDTH: f32 = 16.0;
 /// The width of the sliders of the macros.
 const MACRO_SLIDER_WIDTH: f32 = 24.0;
 /// The height of the slider handle.
-const HANDLE_HEIGHT: f32 = 10.0;
-/// How far the handle is kept away from the edges of the groove.
-const GROOVE_INSET: f32 = 3.0;
+const HANDLE_HEIGHT: f32 = 6.0;
+/// How far the track and the handle are kept away from the edge of the slider.
+const GROOVE_INSET: f32 = 2.0;
 /// The size of the numeric value fields.
 const FIELD_WIDTH: f32 = 40.0;
 const FIELD_HEIGHT: f32 = 14.0;
@@ -139,7 +155,7 @@ const PATCH_WINDOW_WIDTH: f32 = 430.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
-const CHECK_SIZE: f32 = 12.0;
+const CHECK_SIZE: f32 = 11.0;
 /// The height of the buttons of the radio pair.
 const RADIO_HEIGHT: f32 = 14.0;
 /// The hint that tells the user that the folder has to be applied with SET.
@@ -147,22 +163,24 @@ const FOLDER_HINT: &str = "Press SET to apply the folder";
 /// The caption that is shown when the folder of the patches is still empty.
 const NO_PATCHES: &str = "No patches yet - use SAVE";
 
-/// The height of the sliders of the first row.
-const SLIDER_A: f32 = 80.0;
-/// The height of the sliders of the second row.
-const SLIDER_B: f32 = 72.0;
-/// The height of the sliders of the third row.
-const SLIDER_C: f32 = 76.0;
+/// The wanted height of the sliders of the first row. The sliders only ever
+/// use the height that is actually left in their column, so a row can never
+/// overflow, but these sizes fill their rows completely.
+const SLIDER_A: f32 = 90.0;
+/// The wanted height of the sliders of the envelopes of the second row.
+const SLIDER_B: f32 = 82.0;
+/// The wanted height of the sliders of the third row.
+const SLIDER_C: f32 = 84.0;
 /// The height of the sliders of the effects.
-const SLIDER_FX: f32 = 58.0;
+const SLIDER_FX: f32 = 59.0;
 /// The height of the sliders of the macros.
-const SLIDER_MACRO: f32 = 68.0;
-/// The height of the sliders of the output.
-const SLIDER_OUT: f32 = 70.0;
+const SLIDER_MACRO: f32 = 72.0;
+/// The height of the sliders of the VCA.
+const SLIDER_OUT: f32 = 72.0;
 /// The height of the sliders of the low frequency oscillators.
-const SLIDER_LFO: f32 = 64.0;
+const SLIDER_LFO: f32 = 62.0;
 /// The height of the sliders of the arpeggiator.
-const SLIDER_ARP: f32 = 68.0;
+const SLIDER_ARP: f32 = 84.0;
 
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
@@ -437,7 +455,7 @@ impl SushiEditor {
         let origin = full.min;
         let width = WINDOW_WIDTH - 2.0 * MARGIN;
 
-        // The rows of group boxes.
+        // The rows of sections.
         let mut y = MARGIN + HEADER_HEIGHT + GROUP_GAP;
         let row_a_rect = Rect::from_min_size(
             origin + egui::vec2(MARGIN, y),
@@ -579,6 +597,16 @@ fn truncate_name(name: &str, length: usize) -> String {
 fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let painter = ui.painter_at(rect);
 
+    // The header is flat and only separated from the sections by a rule.
+    let rule_y = rect.bottom() - 0.5;
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), rule_y),
+            egui::pos2(rect.right(), rule_y),
+        ],
+        Stroke::new(1.0, RULE),
+    );
+
     // The wordmark. The second copy makes it look a little bolder.
     let wordmark = FontId::proportional(14.0);
     let wordmark_width = painter
@@ -651,7 +679,7 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     small_scope(&painter, scope, ctx.history);
 
     let activity = egui::pos2(rect.right() - 190.0, rect.top() + 16.0);
-    led(&painter, activity, LED_GREEN, ctx.state.activity > 0.002);
+    led(&painter, activity, LED_ON, ctx.state.activity > 0.002);
     painter.text(
         egui::pos2(activity.x, rect.top() + 28.0),
         Align2::CENTER_CENTER,
@@ -671,14 +699,14 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
 }
 
-// --- The rows of group boxes ------------------------------------------------
+// --- The rows of sections ------------------------------------------------
 
-/// The first row: the two oscillators, the filter and the mixer.
+/// The first row: `VCO 1 | VCO 2 | SOURCE MIXER | VCF`.
 fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     group_row(ui, "row-a", rect, &[GROUP_WIDTH; 4], |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 => group(ui, rect, "OSC 1", |ui, part| match part {
+            0 => group(ui, rect, "VCO 1", |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
                 Part::Body => column_row(ui, "osc1", 5, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
@@ -722,7 +750,7 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            1 => group(ui, rect, "OSC 2", |ui, part| match part {
+            1 => group(ui, rect, "VCO 2", |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0),
                 Part::Body => column_row(ui, "osc2", 5, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
@@ -766,7 +794,38 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            2 => group(ui, rect, "FILTER", |ui, part| match part {
+            2 => group(ui, rect, "SOURCE MIXER", |ui, part| match part {
+                Part::Header => {}
+                Part::Body => column_row(ui, "mix", 4, COLUMN_GAP, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "noise_level",
+                            "Noise",
+                            &p.noise_level,
+                            &Knob::percent(SLIDER_A),
+                        ),
+                        1 => ctx.int(
+                            ui,
+                            "unison",
+                            "Uni",
+                            &p.unison,
+                            &Knob::plain(1.0, 4.0, 0, SLIDER_A),
+                        ),
+                        2 => ctx.float(
+                            ui,
+                            "detune",
+                            "Detune",
+                            &p.detune,
+                            &Knob::plain(0.0, 50.0, 0, SLIDER_A),
+                        ),
+                        3 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent(SLIDER_A)),
+                        _ => {}
+                    }
+                }),
+            }),
+            _ => group(ui, rect, "VCF", |ui, part| match part {
                 Part::Header => ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0),
                 Part::Body => column_row(ui, "filter", 5, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
@@ -810,37 +869,6 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            _ => group(ui, rect, "MIX", |ui, part| match part {
-                Part::Header => {}
-                Part::Body => column_row(ui, "mix", 4, COLUMN_GAP, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "noise_level",
-                            "Noise",
-                            &p.noise_level,
-                            &Knob::percent(SLIDER_A),
-                        ),
-                        1 => ctx.int(
-                            ui,
-                            "unison",
-                            "Uni",
-                            &p.unison,
-                            &Knob::plain(1.0, 4.0, 0, SLIDER_A),
-                        ),
-                        2 => ctx.float(
-                            ui,
-                            "detune",
-                            "Detune",
-                            &p.detune,
-                            &Knob::plain(0.0, 50.0, 0, SLIDER_A),
-                        ),
-                        3 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent(SLIDER_A)),
-                        _ => {}
-                    }
-                }),
-            }),
         }
     });
 }
@@ -854,8 +882,8 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         &[GROUP_WIDTH, GROUP_WIDTH, DOUBLE_GROUP_WIDTH],
         |index, rect, ui| {
             match index {
-                0 => group(ui, rect, "FILTER ENV", |ui, part| match part {
-                    Part::Header => text_label(ui, "ADSR", 9.0, LABEL),
+                0 => group(ui, rect, "MOD ENV", |ui, part| match part {
+                    Part::Header => text_label(ui, "ADSR", 9.0, TEXT),
                     Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, |index, ui| {
                         let p = ctx.params;
                         match index {
@@ -928,7 +956,7 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         }
                     }),
                 }),
-                _ => group(ui, rect, "LFO 1 + LFO 2", |ui, part| match part {
+                _ => group(ui, rect, "LFO / CLK", |ui, part| match part {
                     Part::Header => {}
                     Part::Body => sections(ui, "lfo", 2, GROUP_GAP, |index, _rect, ui| {
                         let p = ctx.params;
@@ -964,7 +992,7 @@ fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                                 .layout(Layout::left_to_right(Align::Center)),
                             |ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-                                text_label(ui, title, 9.0, LABEL);
+                                text_label(ui, title, 9.0, TEXT);
                                 ctx.popup(ui, ids.0, wave, 58.0);
                                 ctx.popup(ui, ids.1, target, 74.0);
                             },
@@ -1005,9 +1033,9 @@ fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     Part::Header => {
                         ctx.check(ui, "arp_on", &p.arp_on, "ON");
                         ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
-                        text_label(ui, "PATTERN", 9.0, LABEL);
+                        text_label(ui, "PATTERN", 9.0, TEXT);
                         ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
-                        text_label(ui, "RATE", 9.0, LABEL);
+                        text_label(ui, "RATE", 9.0, TEXT);
                         ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
@@ -1132,7 +1160,7 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                 Part::Header => {}
                 Part::Body => sections(ui, "fx", 3, GROUP_GAP, |index, _rect, ui| match index {
                     0 => {
-                        caption(ui, "CHORUS", 9.0, LABEL);
+                        caption(ui, "CHORUS", 9.0, TEXT);
                         column_row(ui, "chorus", 3, COLUMN_GAP, |index, ui| {
                             let p = ctx.params;
                             match index {
@@ -1162,7 +1190,7 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         });
                     }
                     1 => {
-                        caption(ui, "DELAY", 9.0, LABEL);
+                        caption(ui, "DELAY", 9.0, TEXT);
                         column_row(ui, "delay", 3, COLUMN_GAP, |index, ui| {
                             let p = ctx.params;
                             match index {
@@ -1192,7 +1220,7 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         });
                     }
                     _ => {
-                        caption(ui, "REVERB", 9.0, LABEL);
+                        caption(ui, "REVERB", 9.0, TEXT);
                         column_row(ui, "reverb", 2, COLUMN_GAP, |index, ui| {
                             let p = ctx.params;
                             match index {
@@ -1229,10 +1257,10 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                     }
                 }),
             }),
-            _ => group(ui, rect, "OUTPUT", |ui, part| match part {
+            _ => group(ui, rect, "VCA", |ui, part| match part {
                 Part::Header => {
                     let p = ctx.params;
-                    text_label(ui, "CHARACTER", 9.0, LABEL);
+                    text_label(ui, "CHARACTER", 9.0, TEXT);
                     ctx.radio_pair(ui, "character", &p.character, 70.0);
                 }
                 Part::Body => column_row(ui, "output", 2, COLUMN_GAP, |index, ui| {
@@ -1404,7 +1432,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
-        caption(ui, label, 9.0, LABEL);
+        caption(ui, label, 9.0, TEXT);
+
+        // The slider only takes the height that is left in its column above
+        // the numeric field, so that a section never overflows its rectangle.
+        let knob = &Knob {
+            height: slider_height(knob.height, ui),
+            ..*knob
+        };
 
         let mut value = param.value();
         let response = v_slider(ui, &mut value, knob);
@@ -1441,7 +1476,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
-        caption(ui, label, 9.0, LABEL);
+        caption(ui, label, 9.0, TEXT);
+
+        // The slider only takes the height that is left in its column above
+        // the numeric field, so that a section never overflows its rectangle.
+        let knob = &Knob {
+            height: slider_height(knob.height, ui),
+            ..*knob
+        };
 
         let mut value = param.value() as f32;
         let response = v_slider(ui, &mut value, knob);
@@ -1601,7 +1643,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
             Sense::click(),
         );
         let painter = ui.painter_at(rect);
-        sunken(&painter, rect, FIELD);
+        // A flat white square with a thin outline and a black check mark.
+        flat_box(&painter, rect, TRACK);
         if param.value() {
             painter.text(
                 rect.center(),
@@ -1623,7 +1666,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.state.dirty = true;
         }
 
-        text_label(ui, label, 9.0, LABEL);
+        text_label(ui, label, 9.0, TEXT);
     }
 
     /// Draws a pair of square buttons of which one is active.
@@ -1653,12 +1696,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
             );
             let painter = ui.painter_at(rect);
 
-            // The active button is sunken.
-            if index == current || response.is_pointer_button_down_on() {
-                sunken(&painter, rect, BUTTON);
+            // The active button of the pair is filled darker.
+            let fill = if index == current || response.is_pointer_button_down_on() {
+                BUTTON_ACTIVE
             } else {
-                raised(&painter, rect, BUTTON);
-            }
+                BUTTON_BG
+            };
+            flat_box(&painter, rect, fill);
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -1710,7 +1754,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             .show(ui.ctx(), |ui| {
                 // The folder in which the patches are stored.
                 ui.horizontal(|ui| {
-                    text_label(ui, "FOLDER", 9.0, LABEL);
+                    text_label(ui, "FOLDER", 9.0, TEXT);
                     let width = ui.available_width() - 44.0;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_dir_text)
@@ -1761,7 +1805,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
                 // The name of the patch and the button that saves it.
                 ui.horizontal(|ui| {
-                    text_label(ui, "NAME", 9.0, LABEL);
+                    text_label(ui, "NAME", 9.0, TEXT);
                     let width = ui.available_width() - 48.0;
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_name)
@@ -1980,14 +2024,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
 // --- The layout -------------------------------------------------------------
 
-/// The two parts of a group box.
+/// The two parts of a section.
 #[derive(Clone, Copy)]
 enum Part {
     Header,
     Body,
 }
 
-/// Lays out a row of group boxes of the given widths.
+/// Lays out a row of sections of the given widths.
 fn group_row(
     ui: &mut egui::Ui,
     name: &str,
@@ -2011,29 +2055,46 @@ fn group_row(
     }
 }
 
-/// Draws a group box and hands its header and body to the given callback.
+/// The colour of the title of a section: blue for the sound sources and the
+/// arpeggiator, olive for the envelopes and the amplifier, gray for the rest.
+fn title_color(title: &str) -> Color32 {
+    match title {
+        "VCO 1" | "VCO 2" | "SOURCE MIXER" | "VCF" | "ARP" => TITLE_BLUE,
+        "MOD ENV" | "AMP ENV" | "LFO / CLK" | "VCA" => TITLE_OLIVE,
+        _ => TITLE_GRAY,
+    }
+}
+
+/// Draws a section and hands its header and body to the given callback.
 fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut egui::Ui, Part)) {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, CornerRadius::ZERO, BG);
-    raised(&painter, rect, BG);
+    let color = title_color(title);
 
-    // The title strip of the group box.
-    let font = FontId::proportional(9.0);
-    let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, TEXT);
+    // The title of the section. It is drawn twice, half a pixel apart, so
+    // that it reads as bold without a second font.
+    let font = FontId::proportional(10.0);
+    let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, color);
     let strip = Rect::from_min_size(
         rect.left_top() + egui::vec2(GROUP_PADDING, 0.0),
         egui::vec2(galley.size().x + 8.0, TITLE_HEIGHT),
     );
-    painter.rect_filled(strip, CornerRadius::ZERO, TITLE_BG);
-    painter.line_segment(
-        [strip.left_top(), strip.right_top()],
-        Stroke::new(1.0, LIGHT),
-    );
-    painter.galley(strip.left_top() + egui::vec2(4.0, 3.0), galley, TEXT);
+    let title_pos = strip.left_top() + egui::vec2(4.0, (TITLE_HEIGHT - galley.size().y) * 0.5);
+    painter.galley(title_pos, galley.clone(), color);
+    painter.galley(title_pos + egui::vec2(0.5, 0.0), galley, color);
 
-    // The header of the group box, next to the title strip.
+    // The rule below the title spans the whole section.
+    let rule_y = rect.top() + TITLE_HEIGHT;
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), rule_y),
+            egui::pos2(rect.right(), rule_y),
+        ],
+        Stroke::new(1.0, RULE),
+    );
+
+    // The header of the section, next to the title.
     let header = Rect::from_min_size(
-        egui::pos2(strip.right() + 4.0, rect.top() + 1.0),
+        egui::pos2(strip.right() + 4.0, rect.top()),
         egui::vec2(
             (rect.right() - GROUP_PADDING - strip.right() - 4.0).max(0.0),
             TITLE_HEIGHT,
@@ -2050,7 +2111,8 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
         },
     );
 
-    // The body of the group box.
+    // The body of the section, below the rule. It has no frame, so its
+    // content can use the full height of the row.
     let body = Rect::from_min_size(
         rect.left_top() + egui::vec2(GROUP_PADDING, TITLE_HEIGHT + 3.0),
         egui::vec2(
@@ -2070,7 +2132,7 @@ fn group(ui: &mut egui::Ui, rect: Rect, title: &str, mut add: impl FnMut(&mut eg
     );
 }
 
-/// Lays out a row of sub sections inside a group box.
+/// Lays out a row of sub sections inside a section.
 fn sections(
     ui: &mut egui::Ui,
     name: &str,
@@ -2109,14 +2171,14 @@ fn sections(
                 egui::pos2(x, start.y + 2.0),
                 egui::pos2(x, start.y + height - 2.0),
             ],
-            Stroke::new(1.0, SHADOW),
+            Stroke::new(1.0, RULE),
         );
     }
 
     ui.advance_cursor_after_rect(Rect::from_min_size(start, egui::vec2(width, height)));
 }
 
-/// Lays out a row of parameter columns inside a group box. All the columns
+/// Lays out a row of parameter columns inside a section. All the columns
 /// have the same width, no matter how much space they actually use.
 fn column_row(
     ui: &mut egui::Ui,
@@ -2176,40 +2238,55 @@ fn text_label(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) {
 
 // --- The widgets -------------------------------------------------------------
 
-/// A vertical slider. The handle is a band that is fully embedded inside the
-/// groove: it never sticks out of it, no matter where the value is.
+/// The smallest height that a slider is ever given. Rows are laid out so that
+/// this is never reached; it only keeps a slider usable in a squeezed layout.
+const MIN_SLIDER_HEIGHT: f32 = 24.0;
+
+/// The height of a slider: the size that its section asks for, but never more
+/// than the height that is actually left in the column above the numeric
+/// field. This fills the rows completely and makes an overflow impossible.
+fn slider_height(wanted: f32, ui: &egui::Ui) -> f32 {
+    // What is left after the caption: the slider, the gap below it and the
+    // numeric field.
+    let room = ui.available_height() - FIELD_HEIGHT - 2.0;
+    wanted.min(room).max(MIN_SLIDER_HEIGHT)
+}
+
+/// A vertical slider: a flat white track with a thin outline, a light tick in
+/// the middle and a black handle band that is fully embedded inside the
+/// track: it never sticks out of it, no matter where the value is.
 fn v_slider(ui: &mut egui::Ui, value: &mut f32, knob: &Knob) -> egui::Response {
     let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(knob.width, knob.height), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    // The groove.
-    sunken(&painter, rect, FIELD);
+    // The track. It has no fill below the handle and no bevel at all.
+    flat_box(&painter, rect, TRACK);
     let track = rect.shrink(GROOVE_INSET);
 
-    // The part of the groove below the handle is filled in.
-    let handle_height = (knob.height * 0.13).clamp(4.0, HANDLE_HEIGHT);
+    // The tick in the middle of the track marks the centre of the range. The
+    // handle covers it while the value sits in the middle.
+    painter.line_segment(
+        [
+            egui::pos2(track.left(), rect.center().y),
+            egui::pos2(track.right(), rect.center().y),
+        ],
+        Stroke::new(1.0, TICK),
+    );
+
+    // The handle itself: a black band that stays fully inside the track.
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
     let handle_center = position.clamp(
-        track.top() + handle_height * 0.5,
-        track.bottom() - handle_height * 0.5,
+        track.top() + HANDLE_HEIGHT * 0.5,
+        track.bottom() - HANDLE_HEIGHT * 0.5,
     );
-    let filled = Rect::from_min_max(
-        egui::pos2(track.left(), handle_center + handle_height * 0.5),
-        egui::pos2(track.right(), track.bottom()),
-    );
-    if filled.height() > 0.0 {
-        painter.rect_filled(filled, CornerRadius::ZERO, BUTTON);
-    }
-
-    // The handle itself: a full width band inside the groove.
     let handle = Rect::from_center_size(
         egui::pos2(rect.center().x, handle_center),
-        egui::vec2(knob.width - 2.0 * GROOVE_INSET, handle_height),
+        egui::vec2(track.width(), HANDLE_HEIGHT),
     );
-    raised(&painter, handle, BUTTON);
+    painter.rect_filled(handle, CornerRadius::ZERO, HANDLE);
 
-    // Dragging anywhere on the groove sets the value.
+    // Dragging anywhere on the track sets the value.
     if (response.is_pointer_button_down_on() || response.dragged())
         && let Some(pointer) = response.interact_pointer_pos()
     {
@@ -2232,7 +2309,8 @@ fn number_field(
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
     let painter = ui.painter_at(rect);
-    sunken(&painter, rect, FIELD);
+    // A flat white field with a thin outline, no bevel.
+    flat_box(&painter, rect, FIELD_BG);
 
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -2321,7 +2399,7 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize) {
     let row_left = (left + label_width + VOICE_METER_GAP).round();
     for index in 0..VOICE_LEDS {
         let x = row_left + index as f32 * (VOICE_LED_WIDTH + VOICE_LED_GAP);
-        let color = if index < voices { LED_GREEN } else { LED_OFF };
+        let color = if index < voices { LED_ON } else { LED_OFF };
         painter.rect_filled(
             Rect::from_min_size(
                 egui::pos2(x, top),
@@ -2343,19 +2421,25 @@ fn position_strip(painter: &egui::Painter, rect: Rect, position: usize) {
         Align2::CENTER_CENTER,
         "POS",
         FontId::proportional(9.0),
-        LABEL,
+        TEXT,
     );
 
     let row_width = POS_LEDS as f32 * POS_LED_WIDTH + (POS_LEDS as f32 - 1.0) * POS_LED_GAP;
     let left = (rect.center().x - row_width * 0.5).round();
     let top = rect.top() + LABEL_HEIGHT + 4.0;
 
-    // The lights sit in a sunken frame.
+    // The lights sit in a flat frame with a single outline.
     let frame = Rect::from_min_size(
         egui::pos2(left - 3.0, top - 3.0),
         egui::vec2(row_width + 6.0, POS_LED_HEIGHT + 6.0),
     );
-    sunken(painter, frame, BG);
+    painter.rect_filled(frame, CornerRadius::ZERO, TRACK);
+    painter.rect_stroke(
+        frame,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
+    );
 
     for index in 0..POS_LEDS {
         let x = left + index as f32 * (POS_LED_WIDTH + POS_LED_GAP);
@@ -2375,17 +2459,22 @@ fn position_strip(painter: &egui::Painter, rect: Rect, position: usize) {
     }
 }
 
-/// A small light with a dark ring around it.
+/// A small light: a flat square that is either lit or switched off.
 fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool) {
-    let radius = LED_SIZE * 0.5;
-    painter.circle_filled(center, radius, if on { color } else { LED_OFF });
-    painter.circle_stroke(center, radius, Stroke::new(1.0, DARK));
+    let rect = Rect::from_center_size(center, egui::vec2(LED_SIZE, LED_SIZE));
+    let fill = if on { color } else { LED_OFF };
+    painter.rect_filled(rect, CornerRadius::ZERO, fill);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
+    );
 }
 
-/// The dark display that shows the name of the preset.
+/// The flat white display that shows the name of the preset.
 fn lcd(painter: &egui::Painter, rect: Rect, text: &str) {
-    painter.rect_filled(rect, CornerRadius::ZERO, LCD_BG);
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, DARK), egui::StrokeKind::Inside);
+    flat_box(painter, rect, LCD_BG);
     painter.text(
         rect.left_top() + egui::vec2(7.0, rect.height() * 0.5),
         Align2::LEFT_CENTER,
@@ -2395,7 +2484,7 @@ fn lcd(painter: &egui::Painter, rect: Rect, text: &str) {
     );
 }
 
-/// A square button that sinks while it is pressed.
+/// A flat square button: it is filled darker while it is pressed.
 fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
     let response = ui.interact(
         rect,
@@ -2404,11 +2493,12 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
     );
     let painter = ui.painter_at(rect);
 
-    if response.is_pointer_button_down_on() {
-        sunken(&painter, rect, BUTTON);
+    let fill = if response.is_pointer_button_down_on() {
+        BUTTON_ACTIVE
     } else {
-        raised(&painter, rect, BUTTON);
-    }
+        BUTTON_BG
+    };
+    flat_box(&painter, rect, fill);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -2423,13 +2513,8 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str) -> egui::Response {
 /// The small oscilloscope of the header. It is just here to give the panel a
 /// bit of life, not to be a measurement tool.
 fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>) {
-    painter.rect_filled(rect, CornerRadius::ZERO, LIGHT);
-    painter.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, SHADOW),
-        egui::StrokeKind::Inside,
-    );
+    // A flat white field with a dark trace, no bevel.
+    flat_box(painter, rect, LCD_BG);
     let inner = rect.shrink(3.0);
 
     let length = history.len();
@@ -2464,7 +2549,7 @@ fn log_bounds(min: f32, max: f32) -> (f32, f32) {
     (min + offset, max + offset)
 }
 
-/// Maps a value to its position in the groove, where 0 is the bottom and 1 is
+/// Maps a value to its position in the track, where 0 is the bottom and 1 is
 /// the top.
 fn value_to_position(value: f32, min: f32, max: f32, log: bool, track: Rect) -> f32 {
     let position = if log {
@@ -2477,7 +2562,7 @@ fn value_to_position(value: f32, min: f32, max: f32, log: bool, track: Rect) -> 
     track.bottom() - position * track.height()
 }
 
-/// Maps a position in the groove back to a value.
+/// Maps a position in the track back to a value.
 fn position_to_value(position: f32, min: f32, max: f32, log: bool) -> f32 {
     let value = if log {
         let (low, high) = log_bounds(min, max);
@@ -2537,50 +2622,60 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.override_text_color = Some(TEXT);
     visuals.panel_fill = BG;
     visuals.window_fill = BG;
-    visuals.window_stroke = Stroke::new(1.0, DARK);
-    visuals.window_corner_radius = egui::CornerRadius::ZERO;
-    visuals.menu_corner_radius = egui::CornerRadius::ZERO;
-    visuals.extreme_bg_color = FIELD;
-    visuals.text_edit_bg_color = Some(FIELD);
-    visuals.faint_bg_color = FIELD;
-    visuals.code_bg_color = FIELD;
+    visuals.window_stroke = Stroke::new(1.0, LINE);
+    visuals.window_corner_radius = CornerRadius::ZERO;
+    visuals.window_shadow = egui::epaint::Shadow::NONE;
+    visuals.menu_corner_radius = CornerRadius::ZERO;
+    visuals.popup_shadow = egui::epaint::Shadow::NONE;
+    visuals.extreme_bg_color = FIELD_BG;
+    visuals.text_edit_bg_color = Some(FIELD_BG);
+    visuals.faint_bg_color = BG;
+    visuals.code_bg_color = FIELD_BG;
     visuals.hyperlink_color = TEXT;
     visuals.slider_trailing_fill = false;
-    visuals.selection.bg_fill = SELECTION;
-    visuals.selection.stroke = Stroke::new(1.0, LIGHT);
+    visuals.button_frame = true;
+    visuals.selection.bg_fill = BUTTON_ACTIVE;
+    visuals.selection.stroke = Stroke::new(1.0, LINE);
 
-    let square = egui::CornerRadius::ZERO;
+    let square = CornerRadius::ZERO;
 
+    // Every widget is a flat fill with a single 1 px outline: no bevel, no
+    // shadow and no expansion.
     visuals.widgets.noninteractive.bg_fill = BG;
     visuals.widgets.noninteractive.weak_bg_fill = BG;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, SHADOW);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, RULE);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
     visuals.widgets.noninteractive.corner_radius = square;
+    visuals.widgets.noninteractive.expansion = 0.0;
 
-    // The slider rail and handle use the `inactive` widget style.
-    visuals.widgets.inactive.bg_fill = LIGHT;
-    visuals.widgets.inactive.weak_bg_fill = BUTTON;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, SHADOW);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, DARK);
+    // The buttons, the popups and the text fields of the panel.
+    visuals.widgets.inactive.bg_fill = BUTTON_BG;
+    visuals.widgets.inactive.weak_bg_fill = BUTTON_BG;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     visuals.widgets.inactive.corner_radius = square;
+    visuals.widgets.inactive.expansion = 0.0;
 
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(0xF0, 0xF0, 0xF0);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0xE8, 0xE8, 0xE8);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, DARK);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, TEXT);
+    visuals.widgets.hovered.bg_fill = BUTTON_BG;
+    visuals.widgets.hovered.weak_bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
     visuals.widgets.hovered.corner_radius = square;
+    visuals.widgets.hovered.expansion = 0.0;
 
-    visuals.widgets.active.bg_fill = Color32::from_rgb(0xE4, 0xE4, 0xE4);
-    visuals.widgets.active.weak_bg_fill = Color32::from_rgb(0xE0, 0xE0, 0xE0);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, DARK);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.5, TEXT);
+    visuals.widgets.active.bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.active.weak_bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
     visuals.widgets.active.corner_radius = square;
+    visuals.widgets.active.expansion = 0.0;
 
-    visuals.widgets.open.bg_fill = FIELD;
-    visuals.widgets.open.weak_bg_fill = BUTTON;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, DARK);
+    visuals.widgets.open.bg_fill = FIELD_BG;
+    visuals.widgets.open.weak_bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0, LINE);
     visuals.widgets.open.fg_stroke = Stroke::new(1.0, TEXT);
     visuals.widgets.open.corner_radius = square;
+    visuals.widgets.open.expansion = 0.0;
 
     ctx.all_styles_mut(|style| {
         style.visuals = visuals.clone();
@@ -2595,7 +2690,7 @@ fn apply_theme(ctx: &egui::Context) {
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+            egui::FontId::new(10.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
@@ -2608,61 +2703,15 @@ fn apply_theme(ctx: &egui::Context) {
     });
 }
 
-/// Draws a Win95-style sunken field: dark top/left, light bottom/right.
-fn sunken(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
-    painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
-
-    painter.line_segment(
-        [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, SHADOW),
-    );
-    painter.line_segment(
-        [rect.left_top(), rect.left_bottom()],
-        Stroke::new(1.0, SHADOW),
-    );
-    painter.line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        Stroke::new(1.0, LIGHT),
-    );
-    painter.line_segment(
-        [rect.right_top(), rect.right_bottom()],
-        Stroke::new(1.0, LIGHT),
-    );
-
-    let inner = rect.shrink(1.0);
-    painter.line_segment(
-        [inner.left_top(), inner.right_top()],
-        Stroke::new(1.0, DARK),
-    );
-    painter.line_segment(
-        [inner.left_top(), inner.left_bottom()],
-        Stroke::new(1.0, DARK),
-    );
-    painter.line_segment(
-        [inner.left_bottom(), inner.right_bottom()],
-        Stroke::new(1.0, BG),
-    );
-    painter.line_segment(
-        [inner.right_top(), inner.right_bottom()],
-        Stroke::new(1.0, BG),
-    );
-}
-
-/// Draws a Win95-style raised box: light top/left, dark bottom/right.
-fn raised(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
-    painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
-    painter.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, LIGHT));
-    painter.line_segment(
-        [rect.left_top(), rect.left_bottom()],
-        Stroke::new(1.0, LIGHT),
-    );
-    painter.line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        Stroke::new(1.0, SHADOW),
-    );
-    painter.line_segment(
-        [rect.right_top(), rect.right_bottom()],
-        Stroke::new(1.0, SHADOW),
+/// Draws a flat box: one fill and a single 1 px border inside of it. There is
+/// no bevel, no shadow and no second edge anywhere on the panel.
+fn flat_box(painter: &egui::Painter, rect: Rect, fill: Color32) {
+    painter.rect_filled(rect, CornerRadius::ZERO, fill);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
     );
 }
 
@@ -2913,9 +2962,9 @@ mod tests {
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
         assert_eq!(sliders.len(), 52, "unexpected number of sliders");
-        // The cutoff slider is the first one of the third group of the first
+        // The cutoff slider is the first one of the fourth group of the first
         // row.
-        let rect = sliders[10];
+        let rect = sliders[14];
         let pos = rect.center();
 
         run_frames(&ctx, &mut editor, click(pos));
@@ -2934,7 +2983,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
         let pos = rect.center();
 
         GESTURES.with(|gestures| gestures.set(0));
@@ -2955,7 +3004,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
         let pos = rect.center();
         let moved = pos + egui::vec2(0.0, -30.0);
 
@@ -3000,7 +3049,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
         // The value field is right below the slider.
         let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
 
@@ -3055,7 +3104,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
         // The value field is right below the slider.
         let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
 
@@ -3195,9 +3244,9 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        // The cutoff slider is the first one of the third group of the first
+        // The cutoff slider is the first one of the fourth group of the first
         // row.
-        let rect = sliders[10];
+        let rect = sliders[14];
 
         // A click at the top of the slider moves it away from its default.
         let top = egui::pos2(rect.center().x, rect.top() + 6.0);
@@ -3219,7 +3268,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
 
         GESTURES.with(|gestures| gestures.set(0));
         SETS.with(|sets| sets.set(0));
@@ -3366,9 +3415,9 @@ mod tests {
 
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        // The cutoff slider is the first one of the third group of the first
+        // The cutoff slider is the first one of the fourth group of the first
         // row.
-        let rect = sliders[10];
+        let rect = sliders[14];
 
         // A click on the slider changes the sound.
         run_frames(&ctx, &mut editor, click(rect.center()));
@@ -3389,7 +3438,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[10];
+        let rect = sliders[14];
 
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(rect.center()));
