@@ -93,6 +93,8 @@ pub struct VoiceSettings {
     pub detune_cents: f32,
     /// `0..1`.
     pub spread: f32,
+    /// The global tuning offset, in semitones.
+    pub tune_semitones: f32,
     /// The per-sample glide coefficient, `0..=1`.
     pub glide_step: f32,
     pub lfo1_amount: f32,
@@ -127,6 +129,7 @@ impl Default for VoiceSettings {
             unison: 1,
             detune_cents: 12.0,
             spread: 0.5,
+            tune_semitones: 0.0,
             glide_step: 1.0,
             lfo1_amount: 0.0,
             lfo1_target: LfoTarget::Off,
@@ -478,8 +481,9 @@ impl Voice {
         // The pitch, with optional glide.
         self.current_pitch += (self.target_pitch - self.current_pitch) * settings.glide_step;
         let drift_pitch = self.drift_value * settings.drift_amount * DRIFT_PITCH;
-        let base_frequency =
-            util::f32_midi_key_to_freq(self.current_pitch + pitch_semitones + drift_pitch);
+        let base_frequency = util::f32_midi_key_to_freq(
+            self.current_pitch + settings.tune_semitones + pitch_semitones + drift_pitch,
+        );
 
         // The filter.
         let key = self.key.number_or_middle_c() as f32;
@@ -680,6 +684,47 @@ mod tests {
         assert!(
             (frequency - 130.8).abs() < 5.0,
             "the oscillator played at {frequency} Hz"
+        );
+    }
+
+    #[test]
+    fn the_tune_shifts_the_pitch_of_the_voice() {
+        // A single sine, so that the measured frequency is the one of the
+        // oscillator.
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            ..VoiceSettings::default()
+        };
+
+        let mut plain = voice(&settings);
+        let plain_frequency = measure_frequency(&mut plain, &settings);
+
+        // A tune of an octave makes the voice an octave higher.
+        let tuned_settings = VoiceSettings {
+            tune_semitones: 12.0,
+            ..settings
+        };
+        let mut tuned = voice(&tuned_settings);
+        let tuned_frequency = measure_frequency(&mut tuned, &tuned_settings);
+
+        let expected = util::f32_midi_key_to_freq(60.0 + 12.0);
+        assert!(
+            (tuned_frequency - expected).abs() < 5.0,
+            "the tuned voice played at {tuned_frequency} Hz instead of {expected} Hz"
+        );
+        assert!(
+            (tuned_frequency - plain_frequency * 2.0).abs() < 5.0,
+            "the tuned voice played at {tuned_frequency} Hz instead of {} Hz",
+            plain_frequency * 2.0
         );
     }
 

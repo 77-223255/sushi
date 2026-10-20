@@ -82,12 +82,11 @@ pub const WINDOW_HEIGHT: f32 = 640.0;
 const MARGIN: f32 = 8.0;
 /// The height of the header.
 const HEADER_HEIGHT: f32 = 48.0;
-/// The width of a section.
+/// The width of the sections of the third and the fourth row.
 const GROUP_WIDTH: f32 = 230.0;
-/// The width of a section that holds two columns. The two columns are as
-/// wide as a single section, so that the rows line up with the content.
+/// The width of the section of the effects in the fourth row.
 const DOUBLE_GROUP_WIDTH: f32 = 2.0 * GROUP_WIDTH + GROUP_GAP;
-/// The width of a section that holds three columns.
+/// The width of the section of the arpeggiator in the third row.
 const TRIPLE_GROUP_WIDTH: f32 = 3.0 * GROUP_WIDTH + 2.0 * GROUP_GAP;
 /// The gap between two sections.
 const GROUP_GAP: f32 = 8.0;
@@ -108,6 +107,17 @@ const ROW_C_HEIGHT: f32 = 138.0;
 /// The height of the fourth row of sections.
 const ROW_D_HEIGHT: f32 = 126.0;
 
+/// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
+/// VCF`.
+const ROW_A_WIDTHS: [f32; 4] = [200.0, 160.0, 280.0, 280.0];
+/// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
+/// ENV | LFO / CLK`.
+const ROW_B_WIDTHS: [f32; 4] = [160.0, 180.0, 180.0, 400.0];
+/// The widths of the sections of the third row: `ARP | VOICE`.
+const ROW_C_WIDTHS: [f32; 2] = [TRIPLE_GROUP_WIDTH, GROUP_WIDTH];
+/// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
+const ROW_D_WIDTHS: [f32; 3] = [DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH];
+
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
@@ -119,7 +129,7 @@ const HANDLE_HEIGHT: f32 = 6.0;
 /// How far the track and the handle are kept away from the edge of the slider.
 const GROOVE_INSET: f32 = 2.0;
 /// The size of the numeric value fields.
-const FIELD_WIDTH: f32 = 40.0;
+const FIELD_WIDTH: f32 = 38.0;
 const FIELD_HEIGHT: f32 = 14.0;
 /// The height of the captions above the controls.
 const LABEL_HEIGHT: f32 = 11.0;
@@ -702,49 +712,46 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 // --- The rows of sections ------------------------------------------------
 
 /// The first row: `VCO 1 | VCO 2 | SOURCE MIXER | VCF`.
+///
+/// The master tune is shown in the first oscillator, the pulse widths live in
+/// their own section of the second row and the levels of the oscillators live
+/// in the mixer.
 fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(ui, "row-a", rect, &[GROUP_WIDTH; 4], |index, rect, ui| {
+    group_row(ui, "row-a", rect, &ROW_A_WIDTHS, |index, rect, ui| {
         let p = ctx.params;
         match index {
             0 => group(ui, rect, "VCO 1", |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
-                Part::Body => column_row(ui, "osc1", 5, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "osc1", 4, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
                     match index {
-                        0 => ctx.int(
+                        0 => ctx.float(
+                            ui,
+                            "tune",
+                            "Tune",
+                            &p.tune,
+                            &Knob::plain(-12.0, 12.0, 2, SLIDER_A),
+                        ),
+                        1 => ctx.int(
                             ui,
                             "osc1_octave",
                             "Oct",
                             &p.osc1_octave,
                             &Knob::plain(-2.0, 2.0, 0, SLIDER_A),
                         ),
-                        1 => ctx.int(
+                        2 => ctx.int(
                             ui,
                             "osc1_semi",
                             "Semi",
                             &p.osc1_semi,
                             &Knob::plain(-12.0, 12.0, 0, SLIDER_A),
                         ),
-                        2 => ctx.float(
+                        3 => ctx.float(
                             ui,
                             "osc1_fine",
                             "Fine",
                             &p.osc1_fine,
                             &Knob::plain(-100.0, 100.0, 0, SLIDER_A),
-                        ),
-                        3 => ctx.float(
-                            ui,
-                            "osc1_pw",
-                            "PW",
-                            &p.osc1_pw,
-                            &Knob::scaled(0.05, 0.95, 0, SLIDER_A),
-                        ),
-                        4 => ctx.float(
-                            ui,
-                            "osc1_level",
-                            "Lvl",
-                            &p.osc1_level,
-                            &Knob::percent(SLIDER_A),
                         ),
                         _ => {}
                     }
@@ -752,7 +759,7 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
             }),
             1 => group(ui, rect, "VCO 2", |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0),
-                Part::Body => column_row(ui, "osc2", 5, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "osc2", 3, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.int(
@@ -776,51 +783,51 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                             &p.osc2_fine,
                             &Knob::plain(-100.0, 100.0, 0, SLIDER_A),
                         ),
-                        3 => ctx.float(
-                            ui,
-                            "osc2_pw",
-                            "PW",
-                            &p.osc2_pw,
-                            &Knob::scaled(0.05, 0.95, 0, SLIDER_A),
-                        ),
-                        4 => ctx.float(
-                            ui,
-                            "osc2_level",
-                            "Lvl",
-                            &p.osc2_level,
-                            &Knob::percent(SLIDER_A),
-                        ),
                         _ => {}
                     }
                 }),
             }),
             2 => group(ui, rect, "SOURCE MIXER", |ui, part| match part {
                 Part::Header => {}
-                Part::Body => column_row(ui, "mix", 4, COLUMN_GAP, |index, ui| {
+                Part::Body => column_row(ui, "mix", 6, COLUMN_GAP, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
+                            ui,
+                            "osc1_level",
+                            "Lvl 1",
+                            &p.osc1_level,
+                            &Knob::percent(SLIDER_A),
+                        ),
+                        1 => ctx.float(
+                            ui,
+                            "osc2_level",
+                            "Lvl 2",
+                            &p.osc2_level,
+                            &Knob::percent(SLIDER_A),
+                        ),
+                        2 => ctx.float(
                             ui,
                             "noise_level",
                             "Noise",
                             &p.noise_level,
                             &Knob::percent(SLIDER_A),
                         ),
-                        1 => ctx.int(
+                        3 => ctx.int(
                             ui,
                             "unison",
                             "Uni",
                             &p.unison,
                             &Knob::plain(1.0, 4.0, 0, SLIDER_A),
                         ),
-                        2 => ctx.float(
+                        4 => ctx.float(
                             ui,
                             "detune",
                             "Detune",
                             &p.detune,
                             &Knob::plain(0.0, 50.0, 0, SLIDER_A),
                         ),
-                        3 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent(SLIDER_A)),
+                        5 => ctx.float(ui, "spread", "Spread", &p.spread, &Knob::percent(SLIDER_A)),
                         _ => {}
                     }
                 }),
@@ -873,279 +880,292 @@ fn row_a(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     });
 }
 
-/// The second row: the two envelopes and the low frequency oscillators.
+/// The second row: the pulse widths, the two envelopes and the low frequency
+/// oscillators.
 fn row_b(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(
-        ui,
-        "row-b",
-        rect,
-        &[GROUP_WIDTH, GROUP_WIDTH, DOUBLE_GROUP_WIDTH],
-        |index, rect, ui| {
-            match index {
-                0 => group(ui, rect, "MOD ENV", |ui, part| match part {
-                    Part::Header => text_label(ui, "ADSR", 9.0, TEXT),
-                    Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.float(
-                                ui,
-                                "fe_attack",
-                                "A",
-                                &p.fe_attack,
-                                &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
-                            ),
-                            1 => ctx.float(
-                                ui,
-                                "fe_decay",
-                                "D",
-                                &p.fe_decay,
-                                &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
-                            ),
-                            2 => ctx.float(
-                                ui,
-                                "fe_sustain",
-                                "S",
-                                &p.fe_sustain,
-                                &Knob::percent(SLIDER_B),
-                            ),
-                            3 => ctx.float(
-                                ui,
-                                "fe_release",
-                                "R",
-                                &p.fe_release,
-                                &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
-                            ),
-                            _ => {}
-                        }
-                    }),
+    group_row(ui, "row-b", rect, &ROW_B_WIDTHS, |index, rect, ui| {
+        match index {
+            0 => group(ui, rect, "PULSE WIDTH", |ui, part| match part {
+                Part::Header => {}
+                Part::Body => column_row(ui, "pw", 2, COLUMN_GAP, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "osc1_pw",
+                            "PW 1",
+                            &p.osc1_pw,
+                            &Knob::scaled(0.05, 0.95, 0, SLIDER_B),
+                        ),
+                        1 => ctx.float(
+                            ui,
+                            "osc2_pw",
+                            "PW 2",
+                            &p.osc2_pw,
+                            &Knob::scaled(0.05, 0.95, 0, SLIDER_B),
+                        ),
+                        _ => {}
+                    }
                 }),
-                1 => group(ui, rect, "AMP ENV", |ui, part| match part {
-                    Part::Header => {}
-                    Part::Body => column_row(ui, "ae", 4, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.float(
-                                ui,
-                                "ae_attack",
-                                "A",
-                                &p.ae_attack,
-                                &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
-                            ),
-                            1 => ctx.float(
-                                ui,
-                                "ae_decay",
-                                "D",
-                                &p.ae_decay,
-                                &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
-                            ),
-                            2 => ctx.float(
-                                ui,
-                                "ae_sustain",
-                                "S",
-                                &p.ae_sustain,
-                                &Knob::percent(SLIDER_B),
-                            ),
-                            3 => ctx.float(
-                                ui,
-                                "ae_release",
-                                "R",
-                                &p.ae_release,
-                                &Knob::logarithmic(0.0, 8_000.0, 1, SLIDER_B),
-                            ),
-                            _ => {}
-                        }
-                    }),
+            }),
+            1 => group(ui, rect, "MOD ENV", |ui, part| match part {
+                Part::Header => text_label(ui, "ADSR", 9.0, TEXT),
+                Part::Body => column_row(ui, "fe", 4, COLUMN_GAP, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "fe_attack",
+                            "A",
+                            &p.fe_attack,
+                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                        ),
+                        1 => ctx.float(
+                            ui,
+                            "fe_decay",
+                            "D",
+                            &p.fe_decay,
+                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                        ),
+                        2 => ctx.float(
+                            ui,
+                            "fe_sustain",
+                            "S",
+                            &p.fe_sustain,
+                            &Knob::percent(SLIDER_B),
+                        ),
+                        3 => ctx.float(
+                            ui,
+                            "fe_release",
+                            "R",
+                            &p.fe_release,
+                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                        ),
+                        _ => {}
+                    }
                 }),
-                _ => group(ui, rect, "LFO / CLK", |ui, part| match part {
-                    Part::Header => {}
-                    Part::Body => sections(ui, "lfo", 2, GROUP_GAP, |index, _rect, ui| {
-                        let p = ctx.params;
-                        let (title, wave, target, rate, amount, ids) = match index {
-                            0 => (
-                                "LFO 1",
-                                &p.lfo1_wave,
-                                &p.lfo1_target,
-                                &p.lfo1_rate,
-                                &p.lfo1_amount,
-                                ("lfo1_wave", "lfo1_target", "lfo1_rate", "lfo1_amount"),
-                            ),
-                            _ => (
-                                "LFO 2",
-                                &p.lfo2_wave,
-                                &p.lfo2_target,
-                                &p.lfo2_rate,
-                                &p.lfo2_amount,
-                                ("lfo2_wave", "lfo2_target", "lfo2_rate", "lfo2_amount"),
-                            ),
-                        };
+            }),
+            2 => group(ui, rect, "AMP ENV", |ui, part| match part {
+                Part::Header => {}
+                Part::Body => column_row(ui, "ae", 4, COLUMN_GAP, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "ae_attack",
+                            "A",
+                            &p.ae_attack,
+                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                        ),
+                        1 => ctx.float(
+                            ui,
+                            "ae_decay",
+                            "D",
+                            &p.ae_decay,
+                            &Knob::logarithmic(0.0, 4_000.0, 1, SLIDER_B),
+                        ),
+                        2 => ctx.float(
+                            ui,
+                            "ae_sustain",
+                            "S",
+                            &p.ae_sustain,
+                            &Knob::percent(SLIDER_B),
+                        ),
+                        3 => ctx.float(
+                            ui,
+                            "ae_release",
+                            "R",
+                            &p.ae_release,
+                            &Knob::logarithmic(0.0, 8_000.0, 1, SLIDER_B),
+                        ),
+                        _ => {}
+                    }
+                }),
+            }),
+            _ => group(ui, rect, "LFO / CLK", |ui, part| match part {
+                Part::Header => {}
+                Part::Body => sections(ui, "lfo", 2, GROUP_GAP, |index, _rect, ui| {
+                    let p = ctx.params;
+                    let (title, wave, target, rate, amount, ids) = match index {
+                        0 => (
+                            "LFO 1",
+                            &p.lfo1_wave,
+                            &p.lfo1_target,
+                            &p.lfo1_rate,
+                            &p.lfo1_amount,
+                            ("lfo1_wave", "lfo1_target", "lfo1_rate", "lfo1_amount"),
+                        ),
+                        _ => (
+                            "LFO 2",
+                            &p.lfo2_wave,
+                            &p.lfo2_target,
+                            &p.lfo2_rate,
+                            &p.lfo2_amount,
+                            ("lfo2_wave", "lfo2_target", "lfo2_rate", "lfo2_amount"),
+                        ),
+                    };
 
-                        // The header of the sub section: its name and the two
-                        // popups of the oscillator.
-                        let header = Rect::from_min_size(
-                            ui.next_widget_position(),
-                            egui::vec2(ui.available_width(), FIELD_HEIGHT),
-                        );
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .id_salt(("sushi-lfo-header", index))
-                                .max_rect(header)
-                                .layout(Layout::left_to_right(Align::Center)),
-                            |ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-                                text_label(ui, title, 9.0, TEXT);
-                                ctx.popup(ui, ids.0, wave, 58.0);
-                                ctx.popup(ui, ids.1, target, 74.0);
-                            },
-                        );
+                    // The header of the sub section: its name and the two
+                    // popups of the oscillator.
+                    let header = Rect::from_min_size(
+                        ui.next_widget_position(),
+                        egui::vec2(ui.available_width(), FIELD_HEIGHT),
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .id_salt(("sushi-lfo-header", index))
+                            .max_rect(header)
+                            .layout(Layout::left_to_right(Align::Center)),
+                        |ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                            text_label(ui, title, 9.0, TEXT);
+                            ctx.popup(ui, ids.0, wave, 58.0);
+                            ctx.popup(ui, ids.1, target, 74.0);
+                        },
+                    );
 
-                        column_row(ui, ids.2, 2, COLUMN_GAP, |index, ui| match index {
-                            0 => ctx.float(
-                                ui,
-                                ids.2,
-                                "Rate",
-                                rate,
-                                &Knob::logarithmic(0.01, 40.0, 2, SLIDER_LFO),
-                            ),
-                            1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent(SLIDER_LFO)),
-                            _ => {}
-                        });
-                    }),
+                    column_row(ui, ids.2, 2, COLUMN_GAP, |index, ui| match index {
+                        0 => ctx.float(
+                            ui,
+                            ids.2,
+                            "Rate",
+                            rate,
+                            &Knob::logarithmic(0.01, 40.0, 2, SLIDER_LFO),
+                        ),
+                        1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent(SLIDER_LFO)),
+                        _ => {}
+                    });
                 }),
-            }
-        },
-    );
+            }),
+        }
+    });
 }
 
 /// The third row: the arpeggiator and the voice.
 ///
-/// The arpeggiator gets three columns, so that all of its parameters and the
+/// The arpeggiator gets a wide section, so that all of its parameters and the
 /// strip of lights fit on one line.
 fn row_c(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
-    group_row(
-        ui,
-        "row-c",
-        rect,
-        &[TRIPLE_GROUP_WIDTH, GROUP_WIDTH],
-        |index, rect, ui| {
-            let p = ctx.params;
-            match index {
-                0 => group(ui, rect, "ARP", |ui, part| match part {
-                    Part::Header => {
-                        ctx.check(ui, "arp_on", &p.arp_on, "ON");
-                        ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
-                        text_label(ui, "PATTERN", 9.0, TEXT);
-                        ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
-                        text_label(ui, "RATE", 9.0, TEXT);
-                        ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
-                        led(
-                            &ui.painter_at(rect),
-                            rect.center(),
-                            LED_AMBER,
-                            ctx.state.arp_light,
-                        );
-                    }
-                    Part::Body => {
-                        // The sliders are on the left, the strip of lights that
-                        // shows the position of the arpeggiator on the right.
-                        let body = ui.max_rect();
-                        let slider_rect = Rect::from_min_max(
-                            body.left_top(),
-                            egui::pos2(
-                                body.right() - POS_STRIP_WIDTH - POS_STRIP_GAP,
-                                body.bottom(),
-                            ),
-                        );
+    group_row(ui, "row-c", rect, &ROW_C_WIDTHS, |index, rect, ui| {
+        let p = ctx.params;
+        match index {
+            0 => group(ui, rect, "ARP", |ui, part| match part {
+                Part::Header => {
+                    ctx.check(ui, "arp_on", &p.arp_on, "ON");
+                    ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
+                    text_label(ui, "PATTERN", 9.0, TEXT);
+                    ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
+                    text_label(ui, "RATE", 9.0, TEXT);
+                    ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE), Sense::hover());
+                    led(
+                        &ui.painter_at(rect),
+                        rect.center(),
+                        LED_AMBER,
+                        ctx.state.arp_light,
+                    );
+                }
+                Part::Body => {
+                    // The sliders are on the left, the strip of lights that
+                    // shows the position of the arpeggiator on the right.
+                    let body = ui.max_rect();
+                    let slider_rect = Rect::from_min_max(
+                        body.left_top(),
+                        egui::pos2(
+                            body.right() - POS_STRIP_WIDTH - POS_STRIP_GAP,
+                            body.bottom(),
+                        ),
+                    );
 
-                        ui.scope_builder(
-                            egui::UiBuilder::new()
-                                .id_salt("sushi-arp-sliders")
-                                .max_rect(slider_rect)
-                                .layout(Layout::top_down(Align::Min)),
-                            |ui| {
-                                let ctx = &mut *ctx;
-                                column_row(ui, "arp", 5, COLUMN_GAP, |index, ui| {
-                                    let p = ctx.params;
-                                    match index {
-                                        0 => ctx.float(
-                                            ui,
-                                            "arp_swing",
-                                            "Swing",
-                                            &p.arp_swing,
-                                            &Knob::plain(0.0, 75.0, 0, SLIDER_ARP),
-                                        ),
-                                        1 => ctx.int(
-                                            ui,
-                                            "arp_octaves",
-                                            "Oct",
-                                            &p.arp_octaves,
-                                            &Knob::plain(1.0, 3.0, 0, SLIDER_ARP),
-                                        ),
-                                        2 => ctx.float(
-                                            ui,
-                                            "arp_gate",
-                                            "Gate",
-                                            &p.arp_gate,
-                                            &Knob::plain(5.0, 100.0, 0, SLIDER_ARP),
-                                        ),
-                                        3 => ctx.int(
-                                            ui,
-                                            "arp_ratchet",
-                                            "Ratchet",
-                                            &p.arp_ratchet,
-                                            &Knob::plain(1.0, 4.0, 0, SLIDER_ARP),
-                                        ),
-                                        4 => ctx.int(
-                                            ui,
-                                            "arp_length",
-                                            "Length",
-                                            &p.arp_length,
-                                            &Knob::plain(1.0, 16.0, 0, SLIDER_ARP),
-                                        ),
-                                        _ => {}
-                                    }
-                                });
-                            },
-                        );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .id_salt("sushi-arp-sliders")
+                            .max_rect(slider_rect)
+                            .layout(Layout::top_down(Align::Min)),
+                        |ui| {
+                            let ctx = &mut *ctx;
+                            column_row(ui, "arp", 5, COLUMN_GAP, |index, ui| {
+                                let p = ctx.params;
+                                match index {
+                                    0 => ctx.float(
+                                        ui,
+                                        "arp_swing",
+                                        "Swing",
+                                        &p.arp_swing,
+                                        &Knob::plain(0.0, 75.0, 0, SLIDER_ARP),
+                                    ),
+                                    1 => ctx.int(
+                                        ui,
+                                        "arp_octaves",
+                                        "Oct",
+                                        &p.arp_octaves,
+                                        &Knob::plain(1.0, 3.0, 0, SLIDER_ARP),
+                                    ),
+                                    2 => ctx.float(
+                                        ui,
+                                        "arp_gate",
+                                        "Gate",
+                                        &p.arp_gate,
+                                        &Knob::plain(5.0, 100.0, 0, SLIDER_ARP),
+                                    ),
+                                    3 => ctx.int(
+                                        ui,
+                                        "arp_ratchet",
+                                        "Ratchet",
+                                        &p.arp_ratchet,
+                                        &Knob::plain(1.0, 4.0, 0, SLIDER_ARP),
+                                    ),
+                                    4 => ctx.int(
+                                        ui,
+                                        "arp_length",
+                                        "Length",
+                                        &p.arp_length,
+                                        &Knob::plain(1.0, 16.0, 0, SLIDER_ARP),
+                                    ),
+                                    _ => {}
+                                }
+                            });
+                        },
+                    );
 
-                        // The strip of lights.
-                        let strip = Rect::from_min_size(
-                            egui::pos2(body.right() - POS_STRIP_WIDTH, body.top()),
-                            egui::vec2(POS_STRIP_WIDTH, body.height()),
-                        );
-                        position_strip(&ui.painter_at(strip), strip, ctx.state.arp_step);
-                    }
-                }),
-                _ => group(ui, rect, "VOICE", |ui, part| match part {
-                    Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
-                    Part::Body => column_row(ui, "voice", 3, COLUMN_GAP, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.float(
-                                ui,
-                                "glide",
-                                "Glide",
-                                &p.glide,
-                                &Knob::logarithmic(0.0, 2_000.0, 1, SLIDER_C),
-                            ),
-                            1 => {
-                                ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent(SLIDER_C))
-                            }
-                            2 => ctx.float(
-                                ui,
-                                "velocity",
-                                "Vel",
-                                &p.velocity,
-                                &Knob::percent(SLIDER_C),
-                            ),
-                            _ => {}
+                    // The strip of lights.
+                    let strip = Rect::from_min_size(
+                        egui::pos2(body.right() - POS_STRIP_WIDTH, body.top()),
+                        egui::vec2(POS_STRIP_WIDTH, body.height()),
+                    );
+                    position_strip(&ui.painter_at(strip), strip, ctx.state.arp_step);
+                }
+            }),
+            _ => group(ui, rect, "VOICE", |ui, part| match part {
+                Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
+                Part::Body => column_row(ui, "voice", 4, COLUMN_GAP, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "glide",
+                            "Glide",
+                            &p.glide,
+                            &Knob::logarithmic(0.0, 2_000.0, 1, SLIDER_C),
+                        ),
+                        1 => ctx.float(ui, "drift", "Drift", &p.drift, &Knob::percent(SLIDER_C)),
+                        2 => {
+                            ctx.float(ui, "velocity", "Vel", &p.velocity, &Knob::percent(SLIDER_C))
                         }
-                    }),
+                        3 => ctx.int(
+                            ui,
+                            "voices",
+                            "Voices",
+                            &p.voices,
+                            &Knob::plain(1.0, 16.0, 0, SLIDER_C),
+                        ),
+                        _ => {}
+                    }
                 }),
-            }
-        },
-    );
+            }),
+        }
+    });
 }
 
 /// The fourth row: the effects, the macros and the output.
@@ -1154,7 +1174,7 @@ fn row_d(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         ui,
         "row-d",
         rect,
-        &[DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH],
+        &ROW_D_WIDTHS,
         |index, rect, ui| match index {
             0 => group(ui, rect, "FX", |ui, part| match part {
                 Part::Header => {}
@@ -2055,11 +2075,12 @@ fn group_row(
     }
 }
 
-/// The colour of the title of a section: blue for the sound sources and the
-/// arpeggiator, olive for the envelopes and the amplifier, gray for the rest.
+/// The colour of the title of a section: blue for the sound sources, the
+/// pulse widths and the arpeggiator, olive for the envelopes and the
+/// amplifier, gray for the rest.
 fn title_color(title: &str) -> Color32 {
     match title {
-        "VCO 1" | "VCO 2" | "SOURCE MIXER" | "VCF" | "ARP" => TITLE_BLUE,
+        "VCO 1" | "VCO 2" | "SOURCE MIXER" | "VCF" | "PULSE WIDTH" | "ARP" => TITLE_BLUE,
         "MOD ENV" | "AMP ENV" | "LFO / CLK" | "VCA" => TITLE_OLIVE,
         _ => TITLE_GRAY,
     }
@@ -2867,6 +2888,24 @@ mod tests {
             .collect()
     }
 
+    /// The rects of all the numeric value fields, in the order they are
+    /// drawn.
+    fn field_rects(ctx: &egui::Context, output: &egui::FullOutput) -> Vec<egui::Rect> {
+        let mut rects: Vec<egui::Rect> = Vec::new();
+        for clipped in ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point()) {
+            if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
+                let rect = clipped.clip_rect;
+                let is_field = (rect.width() - FIELD_WIDTH).abs() < 0.5
+                    && (rect.height() - FIELD_HEIGHT).abs() < 0.5;
+                // Every field is drawn twice: once filled and once stroked.
+                if is_field && !rects.contains(&rect) {
+                    rects.push(rect);
+                }
+            }
+        }
+        rects
+    }
+
     /// All the texts of a frame, with their positions and their sizes.
     fn text_shapes(output: &egui::FullOutput) -> Vec<(String, egui::Pos2, egui::Vec2)> {
         output
@@ -2927,13 +2966,24 @@ mod tests {
         vec![input(vec![]); 25]
     }
 
+    /// The index of the slider of the cutoff in the list of the sliders of a
+    /// frame. It is the first slider of the filter, the fourth group of the
+    /// first row.
+    const CUTOFF_SLIDER: usize = 13;
+    /// The index of the slider of the master tune. It is the first slider of
+    /// the panel.
+    const TUNE_SLIDER: usize = 0;
+    /// The index of the slider of the number of voices. It is the last slider
+    /// of the voice section.
+    const VOICES_SLIDER: usize = 40;
+
     #[test]
     fn the_panel_has_the_expected_number_of_widgets() {
         let (ctx, mut editor, _params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 52, "unexpected number of sliders");
+        assert_eq!(counts.sliders, 54, "unexpected number of sliders");
         assert_eq!(counts.popups, 10, "unexpected number of popups");
         assert_eq!(counts.checks, 2, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
@@ -2945,14 +2995,14 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The synthesizer has 65 parameters: 52 of them are on the panel as
+        // The synthesizer has 67 parameters: 54 of them are on the panel as
         // sliders, 10 are choices, 2 are switches and one is a pair of
         // buttons. Every one of them can be reached.
         let continuous = counts.sliders;
-        assert_eq!(continuous, 52);
+        assert_eq!(continuous, 54);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            65
+            67
         );
     }
 
@@ -2961,10 +3011,10 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 52, "unexpected number of sliders");
-        // The cutoff slider is the first one of the fourth group of the first
-        // row.
-        let rect = sliders[14];
+        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
+        // The cutoff slider is the first one of the fourth group of the
+        // first row.
+        let rect = sliders[CUTOFF_SLIDER];
         let pos = rect.center();
 
         run_frames(&ctx, &mut editor, click(pos));
@@ -2983,7 +3033,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
         let pos = rect.center();
 
         GESTURES.with(|gestures| gestures.set(0));
@@ -3004,7 +3054,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
         let pos = rect.center();
         let moved = pos + egui::vec2(0.0, -30.0);
 
@@ -3049,7 +3099,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
         // The value field is right below the slider.
         let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
 
@@ -3104,7 +3154,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
         // The value field is right below the slider.
         let field = egui::pos2(rect.center().x, rect.bottom() + 2.0 + 7.0);
 
@@ -3246,7 +3296,7 @@ mod tests {
         let sliders = slider_rects(&ctx, &output);
         // The cutoff slider is the first one of the fourth group of the first
         // row.
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
 
         // A click at the top of the slider moves it away from its default.
         let top = egui::pos2(rect.center().x, rect.top() + 6.0);
@@ -3268,7 +3318,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
 
         GESTURES.with(|gestures| gestures.set(0));
         SETS.with(|sets| sets.set(0));
@@ -3417,7 +3467,7 @@ mod tests {
         let sliders = slider_rects(&ctx, &output);
         // The cutoff slider is the first one of the fourth group of the first
         // row.
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
 
         // A click on the slider changes the sound.
         run_frames(&ctx, &mut editor, click(rect.center()));
@@ -3438,7 +3488,7 @@ mod tests {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[14];
+        let rect = sliders[CUTOFF_SLIDER];
 
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(rect.center()));
@@ -3937,5 +3987,147 @@ mod tests {
             .collect();
 
         assert_eq!(lights.len(), 1, "the strip does not have one lit light");
+    }
+
+    #[test]
+    fn the_sections_of_the_panel_have_the_blueprint_layout() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The title of every section and the place where it has to be: the
+        // left edge of its section and the top of its row.
+        let expected = [
+            ("VCO 1", 16.0, 64.0),
+            ("VCO 2", 224.0, 64.0),
+            ("SOURCE MIXER", 392.0, 64.0),
+            ("VCF", 680.0, 64.0),
+            ("PULSE WIDTH", 16.0, 216.0),
+            ("MOD ENV", 184.0, 216.0),
+            ("AMP ENV", 372.0, 216.0),
+            ("LFO / CLK", 560.0, 216.0),
+            ("ARP", 16.0, 360.0),
+            ("VOICE", 730.0, 360.0),
+            ("FX", 16.0, 506.0),
+            ("MACROS", 492.0, 506.0),
+            ("VCA", 730.0, 506.0),
+        ];
+
+        let titles: Vec<(String, egui::Pos2)> = texts(&output)
+            .into_iter()
+            .filter(|(text, _)| {
+                text.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '/')
+            })
+            .collect();
+
+        for (title, x, row) in expected {
+            let found = titles
+                .iter()
+                .find(|(text, _)| text == title)
+                .unwrap_or_else(|| panic!("the panel has no {title}"));
+            let (_, pos) = found;
+            assert!(
+                (pos.x - x).abs() < 1.0,
+                "the title {title} is at {pos:?} instead of {x}"
+            );
+            assert!(
+                pos.y >= row && pos.y <= row + TITLE_HEIGHT,
+                "the title {title} is at {pos:?} instead of in the row of {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_widgets_of_the_panel_fit_into_the_window() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let panel = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        );
+
+        // Every slider is inside of the panel and touches no other slider.
+        let sliders = slider_rects(&ctx, &output);
+        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
+        for (index, rect) in sliders.iter().enumerate() {
+            assert!(
+                panel.contains_rect(*rect),
+                "a slider is outside of the panel: {rect:?}"
+            );
+            for other in &sliders[index + 1..] {
+                assert!(
+                    !rect.intersects(*other),
+                    "two sliders touch each other: {rect:?} {other:?}"
+                );
+            }
+        }
+
+        // The same goes for the fields of the values.
+        let fields = field_rects(&ctx, &output);
+        assert_eq!(fields.len(), 54, "unexpected number of value fields");
+        for (index, rect) in fields.iter().enumerate() {
+            assert!(
+                panel.contains_rect(*rect),
+                "a value field is outside of the panel: {rect:?}"
+            );
+            for other in &fields[index + 1..] {
+                assert!(
+                    !rect.intersects(*other),
+                    "two value fields touch each other: {rect:?} {other:?}"
+                );
+            }
+        }
+
+        // And no text sticks out of the panel.
+        for shape in &output.shapes {
+            if let egui::epaint::Shape::Text(text) = &shape.shape {
+                let rect = Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    panel.contains_rect(rect),
+                    "the text {:?} is outside of the panel: {rect:?}",
+                    text.galley.job.text
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_new_parameters_can_be_edited_and_reset() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+
+        // The tune is the first slider of the panel, the number of voices is
+        // the last one of the voice section.
+        let tune = sliders[TUNE_SLIDER];
+        let voices = sliders[VOICES_SLIDER];
+
+        // A click at the top of the tune slider raises it by an octave.
+        let top = egui::pos2(tune.center().x, tune.top() + 2.0);
+        run_frames(&ctx, &mut editor, click(top));
+        assert!(
+            params.tune.value() > 11.0,
+            "the tune was not changed: {}",
+            params.tune.value()
+        );
+
+        // The double click puts it back to its default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(tune.center()));
+        assert!(
+            params.tune.value().abs() < 0.001,
+            "the tune was not reset: {}",
+            params.tune.value()
+        );
+
+        // A click at the bottom of the voice slider leaves a single voice.
+        let bottom = egui::pos2(voices.center().x, voices.bottom() - 3.0);
+        run_frames(&ctx, &mut editor, click(bottom));
+        assert_eq!(params.voices.value(), 1);
+
+        // The double click puts the number of voices back to its default.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(voices.center()));
+        assert_eq!(params.voices.value(), 16);
     }
 }

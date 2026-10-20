@@ -3,7 +3,9 @@
 //! A preset is a patch in the same JSON format that the patch files use, so
 //! that a preset is read with exactly the same code as a patch that the user
 //! saved. The factory defaults are written first, so that a preset always
-//! sounds the same, no matter what was played before it.
+//! sounds the same, no matter what was played before it. The tune and the
+//! number of voices are part of those defaults, so that every preset starts
+//! at the same pitch and with the same polyphony.
 
 use nice_plug::prelude::*;
 use nice_plug::tracing::warn;
@@ -566,6 +568,31 @@ mod tests {
             assert!(
                 params.unison.value() >= 1 && params.unison.value() <= 4,
                 "the unison of {} is out of range",
+                preset.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_presets_use_the_default_tune_and_voices() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        // Move the two parameters away from their default.
+        setter.set_parameter(&params.tune, 5.0);
+        setter.set_parameter(&params.voices, 2);
+
+        for (index, preset) in PRESETS.iter().enumerate() {
+            apply(&params, &setter, index);
+
+            // The factory defaults are written first, so every preset starts
+            // at the same pitch and with the same number of voices.
+            let tune = params.tune.value();
+            assert!(tune.abs() < 0.001, "the tune of {} is {tune}", preset.name);
+            assert_eq!(
+                params.voices.value(),
+                16,
+                "the number of voices of {} is wrong",
                 preset.name
             );
         }

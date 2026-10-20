@@ -480,6 +480,8 @@ sushi_params! {
     "spread" => spread,
     "poly_mode" => poly_mode,
     "glide" => glide,
+    "tune" => tune,
+    "voices" => voices,
     "volume" => volume,
     "filter_mode" => filter_mode,
     "cutoff" => cutoff,
@@ -673,6 +675,9 @@ pub(crate) mod test_support {
             SETS.with(|sets| sets.set(sets.get() + 1));
             unsafe {
                 param._internal_set_normalized_value(normalized);
+                // The real host updates the smoother of the parameter as well,
+                // so that a value that was just set is used right away.
+                param._internal_update_smoother(48_000.0, true);
             }
         }
         unsafe fn raw_end_set_parameter(&self, _param: ParamPtr) {}
@@ -774,12 +779,12 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 65);
+        assert_eq!(PARAM_IDS.len(), 67);
 
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 65, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 67, "the ids of the parameters are not unique");
     }
 
     #[test]
@@ -790,8 +795,8 @@ mod tests {
         reset_count();
         apply_defaults(&params, &setter);
 
-        // Every one of the 65 parameters is written.
-        assert_eq!(set_count(), 65);
+        // Every one of the 67 parameters is written.
+        assert_eq!(set_count(), 67);
     }
 
     #[test]
@@ -846,7 +851,7 @@ mod tests {
         assert_eq!(document["name"], "TEST");
 
         let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 65);
+        assert_eq!(map.len(), 67);
         for id in PARAM_IDS {
             assert!(map.contains_key(*id), "the parameter {id} is missing");
         }

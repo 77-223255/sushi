@@ -228,6 +228,12 @@ pub struct SushiParams {
     #[id = "glide"]
     pub glide: FloatParam,
 
+    #[id = "tune"]
+    pub tune: FloatParam,
+
+    #[id = "voices"]
+    pub voices: IntParam,
+
     // --- Output -----------------------------------------------------------
     #[id = "volume"]
     pub volume: FloatParam,
@@ -456,6 +462,26 @@ impl Default for SushiParams {
             // --- Voice allocation ---------------------------------------------
             poly_mode: EnumParam::new("Poly Mode", PolyMode::Poly),
             glide: time_param("Glide", 0.0, 2_000.0),
+            tune: FloatParam::new(
+                "Tune",
+                0.0,
+                FloatRange::Linear {
+                    min: -12.0,
+                    max: 12.0,
+                },
+            )
+            .with_step_size(0.01)
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(2))
+            .with_string_to_value(Arc::new(|text: &str| {
+                text.trim()
+                    .trim_end_matches("st")
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+            }))
+            .with_unit(" st"),
+            voices: IntParam::new("Voices", 16, IntRange::Linear { min: 1, max: 16 }),
 
             // --- Output -------------------------------------------------------
             volume: FloatParam::new(
@@ -647,6 +673,8 @@ mod tests {
         assert_eq!(params.spread.value(), 0.5);
         assert_eq!(params.poly_mode.value(), PolyMode::Poly);
         assert_eq!(params.glide.value(), 0.0);
+        assert_eq!(params.tune.value(), 0.0);
+        assert_eq!(params.voices.value(), 16);
         assert_eq!(params.filter_mode.value(), FilterMode::Lowpass);
         assert_eq!(params.cutoff.value(), 3_000.0);
         assert_eq!(params.resonance.value(), 0.2);
@@ -693,6 +721,22 @@ mod tests {
         assert_eq!(params.arp_swing.value(), 0.0);
         assert_eq!(params.arp_length.value(), 16);
         assert_eq!(params.arp_ratchet.value(), 1);
+    }
+
+    #[test]
+    fn the_tune_is_shown_in_semitones() {
+        let params = SushiParams::default();
+
+        // The tune is shown with two decimals and the unit of the semitone.
+        assert_eq!(params.tune.to_string(), "0.00 st");
+
+        // A value that was typed is read back.
+        let normalized = params
+            .tune
+            .string_to_normalized_value("-1.5 st")
+            .expect("the tune could not be read");
+        let value = params.tune.range().unnormalize(normalized);
+        assert!((value + 1.5).abs() < 0.01, "the tune was {value}");
     }
 
     #[test]

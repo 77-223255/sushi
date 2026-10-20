@@ -72,6 +72,9 @@ pub struct Sushi {
     voices: [Option<Voice>; NUM_VOICES],
     next_internal_voice_id: u64,
     sample_rate: f32,
+    /// The number of voices that may play at the same time. It is read once
+    /// per block.
+    voice_limit: usize,
 
     /// The two global LFOs. Their values are shared by every voice.
     lfo1: Lfo,
@@ -115,6 +118,7 @@ impl Default for Sushi {
             voices: std::array::from_fn(|_| None),
             next_internal_voice_id: 0,
             sample_rate: 48_000.0,
+            voice_limit: NUM_VOICES,
 
             lfo1: Lfo::new(LFO1_SEED),
             lfo2: Lfo::new(LFO2_SEED),
@@ -204,6 +208,7 @@ impl Sushi {
                 .clamp(1, dsp::voice::MAX_UNISON as i32) as usize,
             detune_cents: params.detune.value(),
             spread: params.spread.value(),
+            tune_semitones: params.tune.smoothed.next_step(steps),
             glide_step,
             lfo1_amount: params.lfo1_amount.value(),
             lfo1_target: params.lfo1_target.value(),
@@ -282,7 +287,9 @@ impl Sushi {
         self.release_arp_voice();
         self.free_finished_voices(context, sample_offset);
 
-        let voice_idx = self.voice_slot_to_use();
+        // The voice of the arpeggiator is not part of the limit of the voices,
+        // so it always uses a free slot.
+        let voice_idx = self.voice_slot_to_use(NUM_VOICES);
         if let Some(stolen) = self.voices[voice_idx].take() {
             terminate_voice(context, sample_offset, &stolen);
         }
@@ -349,6 +356,14 @@ impl Sushi {
         )
     }
 
+    /// Reads the limit of the voices from the parameters.
+    ///
+    /// This is done once per block, so that the audio thread never has to
+    /// allocate.
+    fn update_voice_limit(&mut self) {
+        self.voice_limit = self.params.voices.value().clamp(1, NUM_VOICES as i32) as usize;
+    }
+
     /// The index of the most recently started voice.
     fn newest_voice_index(&self) -> Option<usize> {
         self.voices
@@ -380,12 +395,13 @@ impl Sushi {
 
         match self.params.poly_mode.value() {
             params::PolyMode::Poly => {
-                // Use a free voice, or steal the oldest one.
-                let voice_idx = self.voice_slot_to_use();
+                // Use a free voice, or steal the oldest one when the limit of
+                // the voices is reached.
+                let (voice_idx, stolen) = self.reserve_voice_slot();
 
                 // Tell the host about the stolen voice so it can recycle the
                 // voice's modulation resources.
-                if let Some(stolen) = self.voices[voice_idx].take() {
+                if let Some(stolen) = stolen {
                     terminate_voice(context, sample_offset, &stolen);
                 }
 
@@ -443,24 +459,49 @@ impl Sushi {
         }
     }
 
+    /// Reserves the slot of a new voice.
+    ///
+    /// As long as the limit of the voices is not reached, a free slot is used.
+    /// When the limit is reached, the oldest voice is stolen, so that the
+    /// number of voices never grows beyond the limit. The stolen voice is
+    /// returned, so that the host can be told about it.
+    fn reserve_voice_slot(&mut self) -> (usize, Option<Voice>) {
+        let voice_idx = self.voice_slot_to_use(self.voice_limit);
+        let stolen = self.voices[voice_idx].take();
+        (voice_idx, stolen)
+    }
+
     /// The slot a new voice should use: a free one, or the oldest voice when
     /// all of them are in use.
-    fn voice_slot_to_use(&self) -> usize {
+    ///
+    /// The limit is the number of voices that may play at the same time. When
+    /// it is reached, the oldest voice is stolen, so that the limit is never
+    /// exceeded.
+    fn voice_slot_to_use(&self, limit: usize) -> usize {
+        let active = self.voices.iter().flatten().count();
+        if active >= limit {
+            return self.oldest_voice_index();
+        }
+
         match self.voices.iter().position(|voice| voice.is_none()) {
             Some(free_idx) => free_idx,
-            None => self
-                .voices
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, voice)| {
-                    voice
-                        .as_ref()
-                        .map(|voice| voice.internal_voice_id())
-                        .unwrap_or(u64::MAX)
-                })
-                .map(|(index, _)| index)
-                .unwrap_or(0),
+            None => self.oldest_voice_index(),
         }
+    }
+
+    /// The index of the oldest voice, which is the one that gets stolen.
+    fn oldest_voice_index(&self) -> usize {
+        self.voices
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, voice)| {
+                voice
+                    .as_ref()
+                    .map(|voice| voice.internal_voice_id())
+                    .unwrap_or(u64::MAX)
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0)
     }
 
     /// Frees the voices that have already died, so that they don't take up a
@@ -495,11 +536,11 @@ impl Sushi {
         velocity: f32,
         settings: &VoiceSettings,
     ) {
-        let voice_idx = self.voice_slot_to_use();
+        let (voice_idx, stolen) = self.reserve_voice_slot();
 
         // Tell the host about the stolen voice so it can recycle the voice's
         // modulation resources.
-        if let Some(stolen) = self.voices[voice_idx].take() {
+        if let Some(stolen) = stolen {
             terminate_voice(context, sample_offset, &stolen);
         }
 
@@ -660,6 +701,7 @@ impl Plugin for Sushi {
         // audio thread never has to allocate.
         self.fx = Fx::new(self.sample_rate);
         self.arp.reset();
+        self.update_voice_limit();
         true
     }
 
@@ -696,6 +738,9 @@ impl Plugin for Sushi {
         // forever, so it is clamped to a sane value.
         let sample_rate = self.sample_rate.max(1.0);
         let steps = num_samples as u32;
+
+        // The limit of the voices is read once per block.
+        self.update_voice_limit();
 
         // The transport of the host, which runs the arpeggiator.
         let bpm = context.transport().tempo.unwrap_or(120.0);
@@ -966,6 +1011,7 @@ nice_export_vst3!(Sushi);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patch::test_support::setter;
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -1082,5 +1128,73 @@ mod tests {
             (low - high).abs() < low * 0.1,
             "the tone tilt changed the balance ({low} vs {high})"
         );
+    }
+
+    #[test]
+    fn the_tune_reaches_the_voices() {
+        let params = SushiParams::default();
+        let setter = setter();
+        setter.set_parameter(&params.tune, 12.0);
+
+        let sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+
+        let settings = sushi.voice_settings(64);
+        assert!(
+            (settings.tune_semitones - 12.0).abs() < 0.01,
+            "the tune of the voices was {}",
+            settings.tune_semitones
+        );
+    }
+
+    #[test]
+    fn the_limit_of_the_voices_is_enforced() {
+        let params = SushiParams::default();
+        let setter = setter();
+        setter.set_parameter(&params.voices, 2);
+
+        let mut sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+        let settings = VoiceSettings::default();
+
+        // The limit is read once per block.
+        sushi.update_voice_limit();
+
+        // Four notes, but only two voices may play at the same time.
+        for key in 0..4u8 {
+            let (slot, stolen) = sushi.reserve_voice_slot();
+
+            // The oldest voice is the one that makes room for the new one.
+            if let Some(stolen) = stolen {
+                assert!(
+                    stolen.internal_voice_id() < key as u64,
+                    "the voice {} was stolen",
+                    stolen.internal_voice_id()
+                );
+            }
+
+            sushi.fill_voice_slot(
+                slot,
+                VoiceID::ID(key as i32),
+                Channel::Number(0),
+                Key::Number(60 + key),
+                1.0,
+                &settings,
+            );
+        }
+
+        // Only the two newest voices are still playing.
+        assert_eq!(sushi.voices.iter().flatten().count(), 2);
+        let ids: Vec<u64> = sushi
+            .voices
+            .iter()
+            .flatten()
+            .map(|voice| voice.internal_voice_id())
+            .collect();
+        assert_eq!(ids, [2, 3]);
     }
 }
