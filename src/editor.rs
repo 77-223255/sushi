@@ -43,12 +43,9 @@ const RULE: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const LINE: Color32 = Color32::from_rgb(0x7A, 0x7A, 0x7A);
 const TEXT: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 const MUTED: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
-/// The titles of the oscillators, the mixer, the filter and the arpeggiator.
-const TITLE_BLUE: Color32 = Color32::from_rgb(0x25, 0x4C, 0x9A);
-/// The titles of the envelopes, the low frequency oscillators and the VCA.
-const TITLE_OLIVE: Color32 = Color32::from_rgb(0x6E, 0x6A, 0x24);
-/// The titles of the voice, the effects and the macros.
-const TITLE_GRAY: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3A);
+/// The accent of the panel: the section titles and the oscilloscope use the
+/// same green as the lights of the voice meter.
+const TITLE_GREEN: Color32 = Color32::from_rgb(0x1E, 0x6B, 0x38);
 /// The track of a slider.
 const TRACK: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 /// The handle band of a slider.
@@ -67,12 +64,10 @@ const LCD_FG: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 const LED_ON: Color32 = Color32::from_rgb(0x22, 0xA8, 0x4A);
 /// The color of the light of the clip meter.
 const LED_RED: Color32 = Color32::from_rgb(0xC8, 0x32, 0x32);
-/// The color of the lights of the arpeggiator.
-const LED_AMBER: Color32 = Color32::from_rgb(0xD9, 0x9A, 0x20);
 /// The color of a light that is switched off.
 const LED_OFF: Color32 = Color32::from_rgb(0xB8, 0xB8, 0xB8);
 /// The color of the trace of the oscilloscope.
-const TRACE: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+const TRACE: Color32 = Color32::from_rgb(0x1E, 0x5C, 0x33);
 /// The color of the text of a status line that reports a success.
 const STATUS_OK: Color32 = Color32::from_rgb(0x00, 0x60, 0x00);
 /// The color of the text of a status line that reports a problem.
@@ -131,7 +126,7 @@ fn bold() -> egui::FontFamily {
 // --- Layout -----------------------------------------------------------------
 
 pub const WINDOW_WIDTH: f32 = 960.0;
-pub const WINDOW_HEIGHT: f32 = 640.0;
+pub const WINDOW_HEIGHT: f32 = 600.0;
 
 /// The margin around the whole panel.
 const MARGIN: f32 = 8.0;
@@ -141,8 +136,6 @@ const HEADER_HEIGHT: f32 = 48.0;
 const GROUP_WIDTH: f32 = 230.0;
 /// The width of the section of the effects in the fourth row.
 const DOUBLE_GROUP_WIDTH: f32 = 2.0 * GROUP_WIDTH + GROUP_GAP;
-/// The width of the section of the arpeggiator in the third row.
-const TRIPLE_GROUP_WIDTH: f32 = 3.0 * GROUP_WIDTH + 2.0 * GROUP_GAP;
 /// The gap between two sections.
 const GROUP_GAP: f32 = 8.0;
 /// The padding inside a section.
@@ -155,7 +148,7 @@ const COLUMN_GAP: f32 = 4.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
-const ROW_HEIGHTS: [f32; 4] = [144.0, 136.0, 138.0, 126.0];
+const ROW_HEIGHTS: [f32; 4] = [134.0, 126.0, 128.0, 116.0];
 
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
 /// VCF`. They are the proportions of the sections and are scaled with the
@@ -165,7 +158,7 @@ const ROW_A_WIDTHS: [f32; 4] = [200.0, 160.0, 280.0, 280.0];
 /// ENV | LFO / CLK`.
 const ROW_B_WIDTHS: [f32; 4] = [160.0, 180.0, 180.0, 400.0];
 /// The widths of the sections of the third row: `ARP | VOICE`.
-const ROW_C_WIDTHS: [f32; 2] = [TRIPLE_GROUP_WIDTH, GROUP_WIDTH];
+const ROW_C_WIDTHS: [f32; 2] = [DOUBLE_GROUP_WIDTH, DOUBLE_GROUP_WIDTH];
 /// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
 const ROW_D_WIDTHS: [f32; 3] = [DOUBLE_GROUP_WIDTH, GROUP_WIDTH, GROUP_WIDTH];
 
@@ -175,11 +168,11 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
-const SLIDER_WIDTH: f32 = 16.0;
+const SLIDER_WIDTH: f32 = 18.0;
 /// The width of the sliders of the macros.
-const MACRO_SLIDER_WIDTH: f32 = 24.0;
+const MACRO_SLIDER_WIDTH: f32 = 26.0;
 /// The height of the slider handle.
-const HANDLE_HEIGHT: f32 = 6.0;
+const HANDLE_HEIGHT: f32 = 8.0;
 /// How far the track and the handle are kept away from the edge of the slider.
 const GROOVE_INSET: f32 = 2.0;
 /// The smallest height of the buttons and of the text fields of the panel.
@@ -200,19 +193,16 @@ const VOICE_LED_HEIGHT: f32 = 8.0;
 const VOICE_LED_GAP: f32 = 2.0;
 /// The gap between the caption of the voice meter and its lights.
 const VOICE_METER_GAP: f32 = 8.0;
-/// The number of the sectors of the ring of the arpeggiator.
-const POS_SECTORS: usize = 16;
-/// The width of the area that holds the ring of the arpeggiator.
-const POS_RING_AREA: f32 = 110.0;
-/// The gap between the sliders and the ring of the arpeggiator.
-const POS_RING_GAP: f32 = 12.0;
 /// The width of the button of the patch browser in the header.
 const PATCHES_BUTTON_WIDTH: f32 = 62.0;
+/// The fixed height of the list of the patch browser, so that the window does
+/// not jump around while the search filters the list.
+const PATCH_LIST_HEIGHT: f32 = 260.0;
 /// The width of the window of the patch browser.
 const PATCH_WINDOW_WIDTH: f32 = 430.0;
 /// The height of the window of the patch browser. It is only used to place
 /// the window in the middle of the panel.
-const PATCH_WINDOW_HEIGHT: f32 = 470.0;
+const PATCH_WINDOW_HEIGHT: f32 = 520.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
@@ -230,7 +220,7 @@ const NO_MATCHES: &str = "No matches";
 const HISTORY_LEN: usize = 4096;
 
 /// How long the light of the arpeggiator stays on.
-const ARP_LIGHT_TIME: Duration = Duration::from_millis(120);
+const ARP_LIGHT_TIME: Duration = Duration::from_millis(300);
 
 // --- The layout of the panel ------------------------------------------------
 
@@ -583,11 +573,8 @@ impl SushiEditor {
             self.state.arp_light = false;
         }
 
-        // The position of the arpeggiator, for the ring of the sectors.
-        self.state.arp_step = self
-            .arp_position
-            .load(Ordering::Relaxed)
-            .min(POS_SECTORS - 1);
+        // The position of the arpeggiator, for the small step readout.
+        self.state.arp_step = self.arp_position.load(Ordering::Relaxed);
     }
 }
 
@@ -673,9 +660,28 @@ impl SushiEditor {
         row_b(ui, &layout, &mut ctx);
         row_c(ui, &layout, &mut ctx);
         row_d(ui, &layout, &mut ctx);
+        draw_row_rules(ui, &layout);
 
         // The window of the patch browser floats above the panel.
         ctx.patch_window(ui);
+    }
+}
+
+/// Thin vertical rules between the sections of a row. They are drawn in the
+/// gap, so they never cover a control, and they make the column structure of
+/// the panel easier to read.
+fn draw_row_rules(ui: &egui::Ui, layout: &Layout) {
+    let painter = ui.painter();
+    for (row, widths) in BASE_ROW_WIDTHS.iter().enumerate() {
+        for index in 0..widths.len().saturating_sub(1) {
+            let left = layout.group(row, index);
+            let right = layout.group(row, index + 1);
+            let x = (left.right() + right.left()) * 0.5;
+            painter.line_segment(
+                [egui::pos2(x, left.top()), egui::pos2(x, left.bottom())],
+                Stroke::new(1.0, RULE),
+            );
+        }
     }
 }
 
@@ -693,7 +699,7 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
     // The line below the face tells the user how big the window has to be.
     // It gets a bit smaller when the window is too narrow for it.
-    let hint = "MINIMUM 960 x 640";
+    let hint = format!("MINIMUM {} x {}", WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
     let width = (rect.width() - 8.0).max(8.0);
     let galley = painter.layout_no_wrap(hint.to_string(), FontId::proportional(10.0), MUTED);
     let hint = if galley.size().x > width {
@@ -843,33 +849,28 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
 
     // The hint that tells the user that a double click resets a parameter. It
-    // sits next to the wordmark, where there is still enough room.
-    painter.text(
+    // sits next to the wordmark and is clipped before the preset block, so it
+    // can never be covered by the display when the panel is scaled up.
+    let rects = header_rects(rect, zoom);
+    let hint_clip = Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rects.display.left() - 4.0 * zoom, rect.bottom()),
+    );
+    painter.with_clip_rect(hint_clip).text(
         egui::pos2(
             rect.left() + 6.0 * zoom + wordmark_width + 12.0 * zoom,
             rect.top() + 16.0 * zoom,
         ),
         Align2::LEFT_CENTER,
         "DBL-CLICK = RESET",
-        FontId::proportional(font_size(9.0, zoom)),
+        FontId::proportional(font_size(8.0, zoom)),
         MUTED,
     );
 
     // The presets.
-    let rects = header_rects(rect, zoom);
 
     let index = ctx.state.preset_index;
     lcd(&painter, rects.display, &display_text(ctx.state), zoom);
-
-    // The display of the presets opens the patch browser as well.
-    let display = ui.interact(
-        rects.display,
-        ui.scope_id().with("sushi-display"),
-        Sense::click(),
-    );
-    if display.clicked() {
-        ctx.toggle_patch_browser();
-    }
 
     if button(ui, rects.previous, "<", zoom).clicked() {
         ctx.load_preset(index + PRESETS.len() - 1);
@@ -1211,100 +1212,63 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 Part::Header => {
                     ctx.check(ui, "arp_on", &p.arp_on, "ON");
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
-                    text_label(ui, "PATTERN", 9.0, zoom, TEXT);
-                    ctx.popup(ui, "arp_pattern", &p.arp_pattern, 120.0);
-                    text_label(ui, "RATE", 9.0, zoom, TEXT);
-                    ctx.popup(ui, "arp_rate", &p.arp_rate, 70.0);
+                    ctx.popup(ui, "arp_pattern", &p.arp_pattern, 118.0);
+                    ctx.popup(ui, "arp_rate", &p.arp_rate, 66.0);
                     let (rect, _) = ui
                         .allocate_exact_size(egui::vec2(LED_SIZE, LED_SIZE) * zoom, Sense::hover());
                     led(
                         &ui.painter_at(rect),
                         rect.center(),
-                        LED_AMBER,
-                        ctx.state.arp_light,
+                        LED_ON,
+                        p.arp_on.value() && ctx.state.arp_light,
                         zoom,
                     );
+                    let length = p.arp_length.value().clamp(1, 16) as usize;
+                    let step = (ctx.state.arp_step % length) + 1;
+                    text_label(ui, &format!("{:02}/{:02}", step, length), 9.0, zoom, MUTED);
                 }
                 Part::Body => {
-                    // The sliders are on the left, the ring of the sectors
-                    // that shows the position of the arpeggiator on the
-                    // right.
-                    let body = ui.max_rect();
-                    let slider_rect = Rect::from_min_max(
-                        body.left_top(),
-                        egui::pos2(
-                            body.right() - POS_RING_AREA * zoom - POS_RING_GAP * zoom,
-                            body.bottom(),
-                        ),
-                    );
-
-                    ui.scope_builder(
-                        egui::UiBuilder::new()
-                            .id_salt("sushi-arp-sliders")
-                            .max_rect(slider_rect)
-                            .layout(EguiLayout::top_down(Align::Min)),
-                        |ui| {
-                            let ctx = &mut *ctx;
-                            column_row(ui, "arp", 5, COLUMN_GAP, zoom, |index, ui| {
-                                let p = ctx.params;
-                                match index {
-                                    0 => ctx.float(
-                                        ui,
-                                        "arp_swing",
-                                        "Swing",
-                                        &p.arp_swing,
-                                        &Knob::plain(0.0, 75.0, 0),
-                                    ),
-                                    1 => ctx.int(
-                                        ui,
-                                        "arp_octaves",
-                                        "Oct",
-                                        &p.arp_octaves,
-                                        &Knob::plain(1.0, 3.0, 0),
-                                    ),
-                                    2 => ctx.float(
-                                        ui,
-                                        "arp_gate",
-                                        "Gate",
-                                        &p.arp_gate,
-                                        &Knob::plain(5.0, 100.0, 0),
-                                    ),
-                                    3 => ctx.int(
-                                        ui,
-                                        "arp_ratchet",
-                                        "Ratchet",
-                                        &p.arp_ratchet,
-                                        &Knob::plain(1.0, 4.0, 0),
-                                    ),
-                                    4 => ctx.int(
-                                        ui,
-                                        "arp_length",
-                                        "Length",
-                                        &p.arp_length,
-                                        &Knob::plain(1.0, 16.0, 0),
-                                    ),
-                                    _ => {}
-                                }
-                            });
-                        },
-                    );
-
-                    // The ring of the sectors.
-                    let area = Rect::from_min_size(
-                        egui::pos2(body.right() - POS_RING_AREA * zoom, body.top()),
-                        egui::vec2(POS_RING_AREA * zoom, body.height()),
-                    );
-                    let sectors =
-                        ctx.params.arp_length.value().clamp(1, POS_SECTORS as i32) as usize;
-                    let position = ctx.state.arp_step.min(sectors - 1);
-                    position_ring(
-                        &ui.painter_at(area),
-                        area,
-                        position,
-                        sectors,
-                        ctx.params.arp_on.value(),
-                        zoom,
-                    );
+                    column_row(ui, "arp", 5, COLUMN_GAP, zoom, |index, ui| {
+                        let p = ctx.params;
+                        match index {
+                            0 => ctx.float(
+                                ui,
+                                "arp_swing",
+                                "Swing",
+                                &p.arp_swing,
+                                &Knob::plain(0.0, 75.0, 0),
+                            ),
+                            1 => ctx.int(
+                                ui,
+                                "arp_octaves",
+                                "Oct",
+                                &p.arp_octaves,
+                                &Knob::plain(1.0, 3.0, 0),
+                            ),
+                            2 => ctx.float(
+                                ui,
+                                "arp_gate",
+                                "Gate",
+                                &p.arp_gate,
+                                &Knob::plain(5.0, 100.0, 0),
+                            ),
+                            3 => ctx.int(
+                                ui,
+                                "arp_ratchet",
+                                "Ratchet",
+                                &p.arp_ratchet,
+                                &Knob::plain(1.0, 4.0, 0),
+                            ),
+                            4 => ctx.int(
+                                ui,
+                                "arp_length",
+                                "Length",
+                                &p.arp_length,
+                                &Knob::plain(1.0, 16.0, 0),
+                            ),
+                            _ => {}
+                        }
+                    });
                 }
             }),
             _ => group(ui, rect, "VOICE", zoom, |ui, part| match part {
@@ -2012,7 +1976,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(PATCH_WINDOW_WIDTH * zoom)
+            .fixed_size(egui::vec2(PATCH_WINDOW_WIDTH, PATCH_WINDOW_HEIGHT) * zoom)
             .default_pos(position)
             .show(ui.ctx(), |ui| {
                 // The folder in which the patches are stored.
@@ -2021,6 +1985,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     let width = ui.available_width() - 44.0 * zoom;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_dir_text)
+                            .id(egui::Id::unique("sushi-patch-folder"))
                             .desired_width(width.max(80.0 * zoom)),
                     );
                     if ui.button("SET").clicked() {
@@ -2055,57 +2020,81 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     ui.label(format!("{count} patches"));
                 });
 
-                egui::ScrollArea::vertical()
-                    .max_height(320.0 * zoom)
-                    .show(ui, |ui| {
-                        // The search is not case sensitive and it looks at
-                        // every name of the list.
-                        let search = self.state.patch_search.trim().to_lowercase();
-                        let matches =
-                            |name: &str| search.is_empty() || name.to_lowercase().contains(&search);
+                let list_height = PATCH_LIST_HEIGHT * zoom;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), list_height),
+                    EguiLayout::top_down(Align::Min),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(list_height)
+                            .show(ui, |ui| {
+                                // The search is not case sensitive and it looks at
+                                // every name of the list.
+                                let search = self.state.patch_search.trim().to_lowercase();
+                                let matches = |name: &str| {
+                                    search.is_empty() || name.to_lowercase().contains(&search)
+                                };
 
-                        // The presets of the factory.
-                        text_label(ui, "FACTORY", 9.0, zoom, MUTED);
-                        let mut found = 0;
-                        for (index, preset) in PRESETS.iter().enumerate() {
-                            if !matches(preset.name) {
-                                continue;
-                            }
-                            found += 1;
-                            if ui.selectable_label(false, preset.name).clicked() {
-                                // A factory preset replaces the patch of the
-                                // user, and the browser stays open.
-                                self.load_preset(index);
-                            }
-                        }
+                                // The patches of the user come first, so that the
+                                // sounds that were just saved are visible without
+                                // scrolling past the whole factory list.
+                                text_label(ui, "USER", 9.0, zoom, MUTED);
+                                let files = self.state.patch_files.clone();
+                                if files.is_empty() {
+                                    // An empty folder would leave a blank panel
+                                    // behind, so it gets a caption.
+                                    ui.colored_label(MUTED, NO_PATCHES);
+                                }
+                                let mut found = 0;
+                                for path in files {
+                                    let Some(stem) = path.file_stem() else {
+                                        continue;
+                                    };
+                                    let name = stem.to_string_lossy().into_owned();
+                                    if !matches(&name) {
+                                        continue;
+                                    }
+                                    found += 1;
+                                    let selected =
+                                        self.state.patch_active.as_deref() == Some(name.as_str());
+                                    let clicked = ui
+                                        .push_id(("user", &name), |ui| {
+                                            ui.selectable_label(selected, &name).clicked()
+                                        })
+                                        .inner;
+                                    if clicked {
+                                        self.load_patch_file(&path);
+                                    }
+                                }
 
-                        // The patches of the user.
-                        let files = self.state.patch_files.clone();
-                        text_label(ui, "USER", 9.0, zoom, MUTED);
-                        if files.is_empty() {
-                            // An empty folder would leave a blank panel
-                            // behind, so it gets a caption.
-                            ui.colored_label(MUTED, NO_PATCHES);
-                        }
-                        for path in files {
-                            let Some(stem) = path.file_stem() else {
-                                continue;
-                            };
-                            let name = stem.to_string_lossy().into_owned();
-                            if !matches(&name) {
-                                continue;
-                            }
-                            found += 1;
-                            if ui.selectable_label(false, name).clicked() {
-                                self.load_patch_file(&path);
-                            }
-                        }
+                                // The presets of the factory.
+                                text_label(ui, "FACTORY", 9.0, zoom, MUTED);
+                                for (index, preset) in PRESETS.iter().enumerate() {
+                                    if !matches(preset.name) {
+                                        continue;
+                                    }
+                                    found += 1;
+                                    let selected = self.state.patch_active.is_none()
+                                        && self.state.preset_index == index;
+                                    let clicked = ui
+                                        .push_id(("factory", index), |ui| {
+                                            ui.selectable_label(selected, preset.name).clicked()
+                                        })
+                                        .inner;
+                                    if clicked {
+                                        // A factory preset replaces the patch of the
+                                        // user, and the browser stays open.
+                                        self.load_preset(index);
+                                    }
+                                }
 
-                        if found == 0 {
-                            // The search did not find anything at all.
-                            ui.colored_label(MUTED, NO_MATCHES);
-                        }
-                    });
+                                if found == 0 {
+                                    // The search did not find anything at all.
+                                    ui.colored_label(MUTED, NO_MATCHES);
+                                }
+                            });
+                    },
+                );
 
                 ui.separator();
 
@@ -2116,6 +2105,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     let width = ui.available_width() - 96.0 * zoom;
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_name)
+                            .id(egui::Id::unique("sushi-patch-name"))
                             .desired_width(width.max(80.0 * zoom)),
                     );
                     if response.changed() {
@@ -2393,12 +2383,8 @@ fn group_row(
 /// The colour of the title of a section: blue for the sound sources, the
 /// pulse widths and the arpeggiator, olive for the envelopes and the
 /// amplifier, gray for the rest.
-fn title_color(title: &str) -> Color32 {
-    match title {
-        "VCO 1" | "VCO 2" | "SOURCE MIXER" | "VCF" | "PULSE WIDTH" | "ARP" => TITLE_BLUE,
-        "MOD ENV" | "AMP ENV" | "LFO / CLK" | "VCA" => TITLE_OLIVE,
-        _ => TITLE_GRAY,
-    }
+fn title_color(_title: &str) -> Color32 {
+    TITLE_GREEN
 }
 
 /// Draws a section and hands its header and body to the given callback.
@@ -2780,123 +2766,6 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
     }
 }
 
-/// The ring of sectors that shows the position of the arpeggiator.
-///
-/// The ring is divided into as many sectors as the pattern of the
-/// arpeggiator has steps. The sector of the step that is currently playing
-/// shines amber, the other ones are dark. The number of the step is shown in
-/// the middle of the ring.
-fn position_ring(
-    painter: &egui::Painter,
-    area: Rect,
-    position: usize,
-    sectors: usize,
-    active: bool,
-    zoom: f32,
-) {
-    // The label of the ring sits above it.
-    let label_height = LABEL_HEIGHT * zoom;
-    painter.text(
-        egui::pos2(area.center().x, area.top() + label_height * 0.5),
-        Align2::CENTER_CENTER,
-        "POS",
-        FontId::proportional(font_size(9.0, zoom)),
-        TEXT,
-    );
-
-    // The ring is a square that fits into the room that is left.
-    let room = Rect::from_min_size(
-        egui::pos2(area.left(), area.top() + label_height),
-        egui::vec2(area.width(), (area.height() - label_height).max(0.0)),
-    );
-    let side = room.width().min(room.height()).max(0.0);
-    let center = Rect::from_center_size(room.center(), egui::vec2(side, side)).center();
-    let outer = side * 0.5;
-    let inner = outer * 0.58;
-
-    // The base of the ring: the whole disc.
-    painter.circle_filled(center, outer, LED_OFF);
-
-    // The sector of the step that is playing.
-    if active {
-        if sectors <= 1 {
-            // A single sector is the whole ring.
-            painter.circle_filled(center, outer, LED_AMBER);
-        } else {
-            let points = sector_points(center, outer, sectors, position);
-            painter.add(egui::Shape::convex_polygon(points, LED_AMBER, Stroke::NONE));
-        }
-    }
-
-    // The hole of the ring. It is drawn over the sector, so that the sector
-    // is a piece of the ring and not a piece of the disc.
-    painter.circle_filled(center, inner, BG);
-
-    // The hairlines between the sectors. They are painted over the ring and
-    // the wedge, so that the sectors stay visible even when none of them is
-    // lit. They are not gaps: the ring is still a single piece.
-    if sectors > 1 {
-        for index in 0..sectors {
-            let angle = -std::f32::consts::FRAC_PI_2
-                + index as f32 * std::f32::consts::TAU / sectors as f32;
-            let direction = egui::vec2(angle.cos(), angle.sin());
-            painter.line_segment(
-                [
-                    center + direction * (inner + 1.0 * zoom),
-                    center + direction * (outer - 1.0 * zoom),
-                ],
-                Stroke::new(1.0, BG),
-            );
-        }
-    }
-
-    // The outlines of the ring and of its hole.
-    painter.circle_stroke(center, outer, Stroke::new(1.0, LINE));
-    painter.circle_stroke(center, inner, Stroke::new(1.0, LINE));
-
-    // The number of the step in the middle of the ring.
-    let text = if active {
-        format!("{}", position + 1)
-    } else {
-        "-".to_string()
-    };
-    painter.text(
-        center,
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(font_size(10.0, zoom)),
-        TEXT,
-    );
-}
-
-/// The points of the wedge of a step of the ring of the arpeggiator.
-///
-/// The wedge is a piece of the disc between the centre and the outer circle.
-/// The hole of the ring is drawn over it, so that only the piece of the ring
-/// itself stays visible. The wedge is a little bigger than its own sector,
-/// so that no seam shows between the sectors.
-fn sector_points(center: Pos2, outer: f32, sectors: usize, step: usize) -> Vec<Pos2> {
-    /// The number of the pieces of the arc of the wedge.
-    const SEGMENTS: usize = 12;
-    /// The angle that the wedge is bigger than its sector.
-    const SLACK: f32 = 0.003;
-
-    let span = std::f32::consts::TAU / sectors as f32;
-    let start = -std::f32::consts::FRAC_PI_2 + step as f32 * span - SLACK;
-    let end = start + span + 2.0 * SLACK;
-
-    let mut points = Vec::with_capacity(SEGMENTS + 2);
-
-    // The centre of the ring, and then the arc of the sector.
-    points.push(center);
-    for index in 0..=SEGMENTS {
-        let angle = start + (end - start) * index as f32 / SEGMENTS as f32;
-        points.push(center + egui::vec2(angle.cos(), angle.sin()) * outer);
-    }
-
-    points
-}
-
 /// A small light: a flat square that is either lit or switched off.
 fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool, zoom: f32) {
     let rect = Rect::from_center_size(center, egui::vec2(LED_SIZE, LED_SIZE) * zoom);
@@ -2913,11 +2782,26 @@ fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool, zoom: f3
 /// The flat white display that shows the name of the preset.
 fn lcd(painter: &egui::Painter, rect: Rect, text: &str, zoom: f32) {
     flat_box(painter, rect, LCD_BG);
+
+    let font = FontId::monospace(font_size(14.0, zoom));
+    let max_width = (rect.width() - 14.0 * zoom).max(1.0);
+    let mut fitted = text.to_string();
+    while !fitted.is_empty()
+        && painter
+            .layout_no_wrap(fitted.clone(), font.clone(), LCD_FG)
+            .size()
+            .x
+            > max_width
+    {
+        fitted.pop();
+    }
+
+    let painter = painter.with_clip_rect(rect.shrink(2.0 * zoom));
     painter.text(
         rect.left_top() + egui::vec2(7.0, rect.height() * 0.5),
         Align2::LEFT_CENTER,
-        text,
-        FontId::monospace(font_size(14.0, zoom)),
+        fitted,
+        font,
         LCD_FG,
     );
 }
@@ -3358,35 +3242,6 @@ mod tests {
 
     /// The centre of the ring of the arpeggiator and the number of its lit
     /// sectors.
-    fn ring(output: &egui::FullOutput) -> Option<(egui::Pos2, usize)> {
-        let mut center = None;
-        let mut sectors = 0;
-
-        for shape in &output.shapes {
-            match &shape.shape {
-                egui::epaint::Shape::Path(path) if path.fill == LED_AMBER => {
-                    sectors += 1;
-                    center = path.points.first().copied();
-                }
-                egui::epaint::Shape::Circle(circle) if circle.fill == LED_AMBER => {
-                    sectors += 1;
-                    center = Some(circle.center);
-                }
-                _ => {}
-            }
-        }
-
-        center.map(|center| (center, sectors))
-    }
-
-    /// The text that is drawn at the given place.
-    fn text_at(output: &egui::FullOutput, pos: egui::Pos2) -> Option<String> {
-        text_shapes(output)
-            .into_iter()
-            .find(|(_, text_pos, size)| (*text_pos + *size / 2.0 - pos).length() < 4.0)
-            .map(|(text, _, _)| text)
-    }
-
     /// Runs a few frames, so that the animations of the panel can settle.
     fn settle(ctx: &egui::Context, editor: &mut SushiEditor) -> egui::FullOutput {
         let mut last = None;
@@ -4097,31 +3952,6 @@ mod tests {
     }
 
     #[test]
-    fn clicking_the_display_opens_the_patch_browser() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "01 INIT PAD")
-            .expect("the header has no display");
-        let display = pos + egui::vec2(2.0, 2.0);
-
-        assert!(!editor.state.patch_open);
-        run_frames(&ctx, &mut editor, click(display));
-        assert!(
-            editor.state.patch_open,
-            "the display did not open the browser"
-        );
-
-        // And it closes it again.
-        run_frames(&ctx, &mut editor, click(display));
-        assert!(
-            !editor.state.patch_open,
-            "the display did not close the browser"
-        );
-    }
-
-    #[test]
     fn the_list_of_the_browser_is_refreshed_when_it_opens() {
         let (ctx, mut editor, _params) = make_editor();
         let dir = TempDir::new("refresh-on-open");
@@ -4763,135 +4593,6 @@ mod tests {
     }
 
     #[test]
-    fn the_position_ring_lights_the_current_step() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.arp_length, 8);
-        setter.set_parameter(&params.arp_on, true);
-        editor.arp_position.store(5, Ordering::Relaxed);
-
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        // Only the sector of the sixth step shines.
-        let (center, sectors) = ring(&output).expect("the panel has no ring");
-        assert_eq!(sectors, 1, "the ring does not have one lit sector");
-
-        // The number of the step is shown in the middle of the ring, and the
-        // ring has its label.
-        assert_eq!(
-            text_at(&output, center).as_deref(),
-            Some("6"),
-            "the ring does not show the step"
-        );
-
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.contains(&"POS".to_string()),
-            "the ring has no label: {names:?}"
-        );
-    }
-
-    #[test]
-    fn the_position_of_the_ring_is_clamped_to_the_length() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.arp_length, 2);
-        setter.set_parameter(&params.arp_on, true);
-        // The arpeggiator is far beyond the end of its pattern.
-        editor.arp_position.store(9, Ordering::Relaxed);
-
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        // The ring shows the last step of the pattern, and it has exactly one
-        // lit sector.
-        let (center, sectors) = ring(&output).expect("the panel has no ring");
-        assert_eq!(sectors, 1, "the ring does not have one lit sector");
-        assert_eq!(
-            text_at(&output, center).as_deref(),
-            Some("2"),
-            "the ring does not show the step"
-        );
-    }
-
-    #[test]
-    fn the_ring_is_drawn_for_every_length_of_the_pattern() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.arp_on, true);
-
-        for length in 1..=16 {
-            setter.set_parameter(&params.arp_length, length);
-            editor
-                .arp_position
-                .store(length as usize - 1, Ordering::Relaxed);
-
-            let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-            // Every length has a ring with exactly one lit sector that shows
-            // the number of its step.
-            let (center, sectors) = ring(&output).expect("the panel has no ring");
-            assert_eq!(sectors, 1, "the ring of the length {length} is wrong");
-            assert_eq!(
-                text_at(&output, center).as_deref(),
-                Some(length.to_string().as_str()),
-                "the ring of the length {length} does not show its step"
-            );
-
-            // And the label of the ring is there.
-            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-            assert!(
-                names.contains(&"POS".to_string()),
-                "the ring of the length {length} has no label: {names:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_sectors_of_the_ring_have_the_right_geometry() {
-        let center = egui::pos2(30.0, 40.0);
-        let outer = 50.0;
-
-        for sectors in 1..=16 {
-            for step in 0..sectors {
-                let points = sector_points(center, outer, sectors, step);
-
-                // The wedge starts in the middle of the ring and ends on its
-                // outer circle.
-                assert_eq!(points.first(), Some(&center));
-                for point in &points[1..] {
-                    assert!(
-                        (point.distance(center) - outer).abs() < 0.001,
-                        "a point of the wedge is not on the outer circle: {point:?}"
-                    );
-                }
-
-                // The wedge covers its own sector and a little more, so that
-                // no seam shows between the sectors.
-                let span = std::f32::consts::TAU / sectors as f32;
-                let middle = points.len() / 2;
-                let angle = (points[middle] - center)
-                    .y
-                    .atan2((points[middle] - center).x);
-                let expected = -std::f32::consts::FRAC_PI_2 + step as f32 * span + span * 0.5;
-                let mut difference = angle - expected;
-                while difference > std::f32::consts::PI {
-                    difference -= std::f32::consts::TAU;
-                }
-                while difference < -std::f32::consts::PI {
-                    difference += std::f32::consts::TAU;
-                }
-                assert!(
-                    difference.abs() < 0.01,
-                    "the wedge of the step {step} is at the wrong angle: {difference}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn the_sections_of_the_panel_have_the_blueprint_layout() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -4903,15 +4604,15 @@ mod tests {
             ("VCO 2", 224.0, 64.0),
             ("SOURCE MIXER", 392.0, 64.0),
             ("VCF", 680.0, 64.0),
-            ("PULSE WIDTH", 16.0, 216.0),
-            ("MOD ENV", 184.0, 216.0),
-            ("AMP ENV", 372.0, 216.0),
-            ("LFO / CLK", 560.0, 216.0),
-            ("ARP", 16.0, 360.0),
-            ("VOICE", 730.0, 360.0),
-            ("FX", 16.0, 506.0),
-            ("MACROS", 492.0, 506.0),
-            ("VCA", 730.0, 506.0),
+            ("PULSE WIDTH", 16.0, 206.0),
+            ("MOD ENV", 184.0, 206.0),
+            ("AMP ENV", 372.0, 206.0),
+            ("LFO / CLK", 560.0, 206.0),
+            ("ARP", 16.0, 340.0),
+            ("VOICE", 492.0, 340.0),
+            ("FX", 16.0, 476.0),
+            ("MACROS", 492.0, 476.0),
+            ("VCA", 730.0, 476.0),
         ];
 
         let titles: Vec<(String, egui::Pos2)> = texts(&output)
@@ -5062,12 +4763,12 @@ mod tests {
         // The size of the window, the zoom of the panel and the size of the
         // panel that goes with it.
         let cases = [
-            (960.0, 640.0, 1.0, 960.0, 640.0),
-            (1280.0, 800.0, 1.25, 1200.0, 800.0),
-            (1600.0, 900.0, 1.40625, 1350.0, 900.0),
-            (2000.0, 1000.0, 1.5625, 1500.0, 1000.0),
-            (1024.0, 1122.0, 1024.0 / 960.0, 1024.0, 682.6667),
-            (1280.0, 701.0, 701.0 / 640.0, 1051.5, 701.0),
+            (960.0, 640.0, 1.0, 960.0, 600.0),
+            (1280.0, 800.0, 1280.0 / 960.0, 1280.0, 800.0),
+            (1600.0, 900.0, 900.0 / 600.0, 1440.0, 900.0),
+            (2000.0, 1000.0, 1000.0 / 600.0, 1600.0, 1000.0),
+            (1024.0, 1122.0, 1024.0 / 960.0, 1024.0, 640.0),
+            (1280.0, 701.0, 701.0 / 600.0, 1121.6, 701.0),
         ];
 
         for (width, height, zoom, panel_width, panel_height) in cases {
@@ -5097,12 +4798,11 @@ mod tests {
             assert!((ratio - WINDOW_WIDTH / WINDOW_HEIGHT).abs() < 0.001);
         }
 
-        // The panel of a window of 1280 x 800 has a width of 1200, so it
-        // starts 40 px from the left edge.
-        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0));
+        // A taller window of the same width leaves room above and below.
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 1000.0));
         let layout = Layout::for_rect(rect).expect("the window is big enough");
-        assert!((layout.panel.left() - 40.0).abs() < 0.01);
-        assert!((layout.panel.top() - 0.0).abs() < 0.01);
+        assert!((layout.panel.left() - 0.0).abs() < 0.01);
+        assert!((layout.panel.top() - 100.0).abs() < 0.01);
     }
 
     #[test]
@@ -5245,7 +4945,7 @@ mod tests {
             "the panel has no sad face: {names:?}"
         );
         assert!(
-            names.contains(&"MINIMUM 960 x 640".to_string()),
+            names.contains(&"MINIMUM 960 x 600".to_string()),
             "the panel has no hint: {names:?}"
         );
 
@@ -5333,7 +5033,7 @@ mod tests {
         .expect("the window is big enough")
         .panel;
         assert!((panel.width() - 3840.0).abs() < 0.01);
-        assert!((panel.height() - 2560.0).abs() < 0.01);
+        assert!((panel.height() - 2400.0).abs() < 0.01);
         assert_the_widgets_fit(&ctx, &output, panel);
     }
 
