@@ -201,7 +201,7 @@ const ARP_LED_SIZE: f32 = 10.0;
 /// The number of the lights of the voice meter.
 const VOICE_LEDS: usize = 16;
 /// The width of a light of the voice meter.
-const VOICE_LED_WIDTH: f32 = 6.0;
+const VOICE_LED_WIDTH: f32 = 5.0;
 /// The height of a light of the voice meter.
 const VOICE_LED_HEIGHT: f32 = 8.0;
 /// The gap between two lights of the voice meter.
@@ -855,7 +855,7 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     // space between the page switch and the lights of the activity meter.
     let meter = Rect::from_min_max(
         egui::pos2(mod_page.right() + 8.0 * zoom, rect.top()),
-        egui::pos2(rect.right() - 194.0 * zoom, rect.bottom()),
+        egui::pos2(rect.right() - 220.0 * zoom, rect.bottom()),
     );
 
     HeaderRects {
@@ -971,7 +971,7 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
     small_scope(&painter, scope, ctx.history, zoom);
 
-    let activity = egui::pos2(rect.right() - 198.0 * zoom, rect.top() + 16.0 * zoom);
+    let activity = egui::pos2(rect.right() - 202.0 * zoom, rect.top() + 16.0 * zoom);
     led(&painter, activity, LED_ON, ctx.state.activity > 0.002, zoom);
     painter.text(
         egui::pos2(activity.x, rect.top() + 28.0 * zoom),
@@ -981,7 +981,7 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         MUTED,
     );
 
-    let clipping = egui::pos2(rect.right() - 170.0 * zoom, rect.top() + 16.0 * zoom);
+    let clipping = egui::pos2(rect.right() - 172.0 * zoom, rect.top() + 16.0 * zoom);
     led(&painter, clipping, LED_RED, ctx.state.clipping > 0.5, zoom);
     painter.text(
         egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
