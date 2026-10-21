@@ -1949,11 +1949,18 @@ impl<'a, 'b> Ctx<'a, 'b> {
             if response.secondary_clicked() {
                 *text = format_number(knob.display(param.value()), knob.decimals);
             }
+            let normalized = normalize_number_input(text);
+            if normalized != *text {
+                *text = normalized;
+            }
 
             ui.label(format!("{}: {}", label, param.name()));
             let edit = ui.add(
                 egui::TextEdit::singleline(text)
-                    .font(egui::TextStyle::Monospace)
+                    .font(FontId::new(
+                        font_size(12.0, zoom),
+                        egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                    ))
                     .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
             );
             if !edit.has_focus() {
@@ -2019,11 +2026,18 @@ impl<'a, 'b> Ctx<'a, 'b> {
             if response.secondary_clicked() {
                 *text = format_number(knob.display(param.value() as f32), knob.decimals);
             }
+            let normalized = normalize_number_input(text);
+            if normalized != *text {
+                *text = normalized;
+            }
 
             ui.label(format!("{}: {}", label, param.name()));
             let edit = ui.add(
                 egui::TextEdit::singleline(text)
-                    .font(egui::TextStyle::Monospace)
+                    .font(FontId::new(
+                        font_size(12.0, zoom),
+                        egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                    ))
                     .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
             );
             if !edit.has_focus() {
@@ -3028,9 +3042,15 @@ const FINE_TRIM_RANGE: f32 = 0.1;
 
 /// The drag state of the fine lane: the value it started from and where the
 /// pointer started. A full-height drag gives exactly ±10% of the range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragMode {
+    Coarse,
+    Fine,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
-struct FineDrag {
-    active: bool,
+struct SliderDrag {
+    mode: Option<DragMode>,
     base: f32,
     start_y: f32,
 }
@@ -3129,7 +3149,7 @@ fn v_slider(
     );
 
     let id = ui.scope_id().with("sushi-fine-drag");
-    let mut fine_drag: FineDrag = ui
+    let mut drag: SliderDrag = ui
         .memory(|memory| memory.data.get_temp(id))
         .unwrap_or_default();
     // `interact_pointer_pos()` is None while merely hovering. Use the real
@@ -3138,22 +3158,32 @@ fn v_slider(
     let hover_pos = ui.input(|input| input.pointer.hover_pos());
     let pointer = response.interact_pointer_pos();
     let over_fine = hover_pos.is_some_and(|pos| pos.x > geometry.divider);
-    let pressed = ui.input(|input| input.pointer.primary_pressed());
-
-    if (response.drag_started() || pressed) && over_fine && !fine_drag.active {
+    let (pressed, primary_down) = ui.input(|input| {
+        (
+            input.pointer.primary_pressed(),
+            input.pointer.primary_down(),
+        )
+    });
+    // `pressed` is global: only this slider may claim the press. A click
+    // without a drag must also clear the mode on release, otherwise the next
+    // gesture on the other lane inherits the old mode.
+    let on_slider = response.hovered() || response.is_pointer_button_down_on();
+    if (response.drag_started() || pressed) && on_slider && drag.mode.is_none() {
         let start = pointer.or(hover_pos);
-        fine_drag = FineDrag {
-            active: true,
+        drag = SliderDrag {
+            mode: Some(if over_fine {
+                DragMode::Fine
+            } else {
+                DragMode::Coarse
+            }),
             base: value_to_normalized(*value, knob.min, knob.max, knob.log),
             start_y: start.map_or(0.0, |pos| pos.y),
         };
-        ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
-    } else if (response.drag_started() || pressed) && !over_fine && !fine_drag.active {
-        ui.memory_mut(|memory| memory.data.insert_temp(id, FineDrag::default()));
+        ui.memory_mut(|memory| memory.data.insert_temp(id, drag));
     }
-    if response.drag_stopped() {
-        fine_drag = FineDrag::default();
-        ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
+    if response.drag_stopped() || (!primary_down && drag.mode.is_some()) {
+        drag = SliderDrag::default();
+        ui.memory_mut(|memory| memory.data.insert_temp(id, drag));
     }
 
     let position = value_to_position(*value, knob.min, knob.max, knob.log, geometry.track);
@@ -3161,9 +3191,10 @@ fn v_slider(
     let coarse_thumb = geometry.coarse_thumb(thumb_y);
     let fine_thumb = geometry.fine_thumb(thumb_y);
 
-    let coarse_live =
-        (response.hovered() && !over_fine) || (response.dragged() && !fine_drag.active);
-    let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag.active);
+    let coarse_live = (response.hovered() && !over_fine)
+        || (response.dragged() && drag.mode == Some(DragMode::Coarse));
+    let fine_live = (response.hovered() && over_fine)
+        || (response.dragged() && drag.mode == Some(DragMode::Fine));
     painter.rect_filled(
         coarse_thumb,
         CornerRadius::ZERO,
@@ -3176,28 +3207,35 @@ fn v_slider(
     );
 
     let primary = egui::PointerButton::Primary;
-    if response.dragged_by(primary) && fine_drag.active {
-        // Fine lane: a bounded trim around the value at the start of the
-        // gesture; full-height travel is ±10% of the parameter range.
-        let pointer_y = pointer.map_or(fine_drag.start_y, |pos| pos.y);
-        let travel = (fine_drag.start_y - pointer_y) / geometry.track.height();
-        let trim = (travel * FINE_TRIM_RANGE).clamp(-FINE_TRIM_RANGE, FINE_TRIM_RANGE);
-        let moved = (fine_drag.base + trim).clamp(0.0, 1.0);
-        let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
-        if new_value != *value {
-            *value = new_value;
-            response.mark_changed();
+    match drag.mode {
+        Some(DragMode::Fine) if response.dragged_by(primary) => {
+            // Fine lane: a bounded trim around the value at the start of the
+            // gesture; full-height travel is ±10% of the parameter range.
+            let pointer_y = pointer.map_or(drag.start_y, |pos| pos.y);
+            let travel = (drag.start_y - pointer_y) / geometry.track.height();
+            let trim = (travel * FINE_TRIM_RANGE).clamp(-FINE_TRIM_RANGE, FINE_TRIM_RANGE);
+            let moved = (drag.base + trim).clamp(0.0, 1.0);
+            let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
+            if new_value != *value {
+                *value = new_value;
+                response.mark_changed();
+            }
         }
-    } else if (response.dragged_by(primary)
-        || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
-        && let Some(pointer) = pointer
-        && pointer.x <= geometry.divider
-    {
-        // Coarse lane: absolute, as in the old slider.
-        let position =
-            ((geometry.track.bottom() - pointer.y) / geometry.track.height()).clamp(0.0, 1.0);
-        *value = position_to_value(position, knob.min, knob.max, knob.log);
-        response.mark_changed();
+        Some(DragMode::Coarse)
+            if response.dragged_by(primary)
+                || (response.is_pointer_button_down_on()
+                    && ui.input(|input| input.pointer.primary_down())) =>
+        {
+            // Once the gesture starts in the coarse lane it stays coarse,
+            // even if the pointer crosses the divider; no mid-drag jump.
+            if let Some(pointer) = pointer.or(hover_pos) {
+                let position = ((geometry.track.bottom() - pointer.y) / geometry.track.height())
+                    .clamp(0.0, 1.0);
+                *value = position_to_value(position, knob.min, knob.max, knob.log);
+                response.mark_changed();
+            }
+        }
+        _ => {}
     }
 
     if response.hovered() && !response.dragged() && !response.is_pointer_button_down_on() {
@@ -3223,6 +3261,48 @@ fn v_slider(
         response = response.on_hover_text("Fine adjustment: drag slowly");
     }
     response.on_hover_cursor(egui::CursorIcon::ResizeVertical)
+}
+
+/// Normalizes typed numeric input. Full-width digits, decimal commas and the
+/// symbols produced by a stuck Shift key on the number row all become usable
+/// ASCII digits. A numeric field has no use for any other character.
+fn normalize_number_input(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    for character in text.chars() {
+        let character = match character {
+            '０'..='９' => char::from_u32(character as u32 - 0xFEE0).unwrap_or(character),
+            '．' => '.',
+            '，' => '.',
+            '－' => '-',
+            '！' => '1',
+            '＠' => '2',
+            '＃' => '3',
+            '＄' => '4',
+            '％' => '5',
+            '＾' => '6',
+            '＆' => '7',
+            '＊' => '8',
+            '（' => '9',
+            '）' => '0',
+            '!' => '1',
+            '@' => '2',
+            '#' => '3',
+            '$' => '4',
+            '%' => '5',
+            '^' => '6',
+            '&' => '7',
+            '*' => '8',
+            '(' => '9',
+            ')' => '0',
+            ',' => '.',
+            ' ' => continue,
+            other => other,
+        };
+        if character.is_ascii_digit() || matches!(character, '+' | '-' | '.') {
+            normalized.push(character);
+        }
+    }
+    normalized
 }
 
 /// Formats a number for the tiny value fields. Trailing zeros are dropped so
@@ -3973,6 +4053,14 @@ mod tests {
             .expect("the bottom bar has no readout");
         assert_eq!(label, "TUNE");
         assert!(value.ends_with("st"), "the readout lost its unit: {value}");
+    }
+
+    #[test]
+    fn numeric_input_accepts_fullwidth_and_shifted_digits() {
+        assert_eq!(normalize_number_input("１２３．４"), "123.4");
+        assert_eq!(normalize_number_input("!@#"), "123");
+        assert_eq!(normalize_number_input("1,5"), "1.5");
+        assert_eq!(normalize_number_input("-2.50"), "-2.50");
     }
 
     #[test]
