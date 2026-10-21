@@ -3011,10 +3011,68 @@ struct FineDrag {
     start_y: f32,
 }
 
-/// A vertical slider in the style of the SH-101 reference: one white framed
-/// track, one vertical divider, a black coarse bar in the left lane and a
-/// small black fine square in the right lane. The two lanes are separate drag
-/// targets, but visually they are one piece of hardware.
+/// The geometry of one two-lane fader. All horizontal and vertical paddings
+/// are derived here, so the coarse thumb always has equal margins on both
+/// sides and the fine thumb is centered in its own lane.
+#[derive(Clone, Copy)]
+struct FaderGeometry {
+    track: Rect,
+    coarse: Rect,
+    fine: Rect,
+    divider: f32,
+    handle_height: f32,
+    inset: f32,
+}
+
+impl FaderGeometry {
+    fn new(rect: Rect, zoom: f32) -> Self {
+        let track = rect.shrink(GROOVE_INSET * zoom);
+        let fine_width = 8.0 * zoom;
+        let divider = track.right() - fine_width;
+        let coarse = Rect::from_min_max(track.min, egui::pos2(divider, track.bottom()));
+        let fine = Rect::from_min_max(egui::pos2(divider + zoom, track.top()), track.max);
+        Self {
+            track,
+            coarse,
+            fine,
+            divider,
+            handle_height: HANDLE_HEIGHT * zoom,
+            inset: HANDLE_INSET * zoom,
+        }
+    }
+
+    /// The vertical centre of both thumbs for a parameter position.
+    fn thumb_y(&self, position: f32) -> f32 {
+        position.clamp(
+            self.track.top() + self.handle_height * 0.5 + self.inset,
+            self.track.bottom() - self.handle_height * 0.5 - self.inset,
+        )
+    }
+
+    /// The coarse thumb, with the same blank margin on its left and right.
+    fn coarse_thumb(&self, y: f32) -> Rect {
+        let width = (self.coarse.width() - 2.0 * self.inset).max(2.0);
+        Rect::from_center_size(
+            egui::pos2(self.coarse.center().x, y),
+            egui::vec2(width, self.handle_height),
+        )
+    }
+
+    /// The fine thumb, with the same blank margin on both sides of its lane.
+    fn fine_thumb(&self, y: f32) -> Rect {
+        // The fine square needs a little more width than the coarse bar, so
+        // its side margins are half the coarse inset.
+        let width = (self.fine.width() - self.inset).max(2.0);
+        Rect::from_center_size(
+            egui::pos2(self.fine.center().x, y),
+            egui::vec2(width, self.handle_height),
+        )
+    }
+}
+
+/// A vertical slider with a coarse lane and a fine lane, following the
+/// reference: one white framed track, one divider, a black bar and a smaller
+/// black square. The two lanes are separate drag targets.
 fn v_slider(
     ui: &mut egui::Ui,
     value: &mut f32,
@@ -3025,23 +3083,13 @@ fn v_slider(
     let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(knob.width, height), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
+    let geometry = FaderGeometry::new(rect, zoom);
 
-    let track = rect.shrink(GROOVE_INSET * zoom);
-    let fine_width = 8.0 * zoom;
-    let divider = track.right() - fine_width;
-    let coarse = Rect::from_min_max(track.min, egui::pos2(divider - zoom, track.bottom()));
-    let fine = Rect::from_min_max(
-        egui::pos2(divider + zoom, track.top()),
-        egui::pos2(track.right() - zoom, track.bottom()),
-    );
-
-    // One frame and one divider. Nothing is painted over the frame after the
-    // fill, so the border cannot disappear.
-    flat_box(&painter, track, TRACK);
+    flat_box(&painter, geometry.track, TRACK);
     painter.line_segment(
         [
-            egui::pos2(divider, track.top()),
-            egui::pos2(divider, track.bottom()),
+            egui::pos2(geometry.divider, geometry.track.top()),
+            egui::pos2(geometry.divider, geometry.track.bottom()),
         ],
         Stroke::new(1.0, LINE),
     );
@@ -3051,7 +3099,7 @@ fn v_slider(
         .memory(|memory| memory.data.get_temp(id))
         .unwrap_or_default();
     let pointer = response.interact_pointer_pos();
-    let over_fine = pointer.is_some_and(|pos| pos.x > divider);
+    let over_fine = pointer.is_some_and(|pos| pos.x > geometry.divider);
     let pressed = ui.input(|input| input.pointer.primary_pressed());
 
     if (response.drag_started() || pressed) && over_fine && !fine_drag.active {
@@ -3069,45 +3117,31 @@ fn v_slider(
         ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
     }
 
-    let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
-    let handle_height = HANDLE_HEIGHT * zoom;
-    let handle_inset = HANDLE_INSET * zoom;
-    let handle_center = position.clamp(
-        track.top() + handle_height * 0.5 + handle_inset,
-        track.bottom() - handle_height * 0.5 - handle_inset,
-    );
-    let coarse_handle = Rect::from_center_size(
-        egui::pos2(coarse.center().x, handle_center),
-        egui::vec2(
-            (coarse.width() - 2.0 * handle_inset).max(2.0),
-            handle_height,
-        ),
-    );
-    let fine_handle = Rect::from_center_size(
-        egui::pos2(fine.center().x, handle_center),
-        egui::vec2((fine.width() - handle_inset).max(2.0), handle_height),
-    );
+    let position = value_to_position(*value, knob.min, knob.max, knob.log, geometry.track);
+    let thumb_y = geometry.thumb_y(position);
+    let coarse_thumb = geometry.coarse_thumb(thumb_y);
+    let fine_thumb = geometry.fine_thumb(thumb_y);
 
     let coarse_live =
         (response.hovered() && !over_fine) || (response.dragged() && !fine_drag.active);
     let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag.active);
     painter.rect_filled(
-        coarse_handle,
+        coarse_thumb,
         CornerRadius::ZERO,
         if coarse_live { TITLE_BLUE } else { HANDLE },
     );
     painter.rect_filled(
-        fine_handle,
+        fine_thumb,
         CornerRadius::ZERO,
         if fine_live { TITLE_BLUE } else { HANDLE },
     );
 
     let primary = egui::PointerButton::Primary;
     if response.dragged_by(primary) && fine_drag.active {
-        // The fine lane is a bounded trim gesture: full-height travel is
-        // ±10% of the parameter range, with no jump at the press.
+        // Fine lane: a bounded trim around the value at the start of the
+        // gesture; full-height travel is ±10% of the parameter range.
         let pointer_y = pointer.map_or(fine_drag.start_y, |pos| pos.y);
-        let travel = (fine_drag.start_y - pointer_y) / track.height();
+        let travel = (fine_drag.start_y - pointer_y) / geometry.track.height();
         let trim = (travel * FINE_TRIM_RANGE).clamp(-FINE_TRIM_RANGE, FINE_TRIM_RANGE);
         let moved = (fine_drag.base + trim).clamp(0.0, 1.0);
         let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
@@ -3118,10 +3152,11 @@ fn v_slider(
     } else if (response.dragged_by(primary)
         || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
         && let Some(pointer) = pointer
-        && pointer.x <= divider
+        && pointer.x <= geometry.divider
     {
-        // The coarse lane is absolute, as in the old design.
-        let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
+        // Coarse lane: absolute, as in the old slider.
+        let position =
+            ((geometry.track.bottom() - pointer.y) / geometry.track.height()).clamp(0.0, 1.0);
         *value = position_to_value(position, knob.min, knob.max, knob.log);
         response.mark_changed();
     }
