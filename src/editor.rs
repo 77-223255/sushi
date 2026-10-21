@@ -2377,7 +2377,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
                         },
                     );
 
-                    ui.separator();
+                    // No separator here: in a horizontal_top it can extend
+                    // to the parent page height and cut through the pinned
+                    // bottom action bar. The gap alone separates the columns.
+                    ui.add_space(10.0 * zoom);
 
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), body_height),
@@ -2429,9 +2432,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
                         .max_rect(bottom_rect)
                         .layout(EguiLayout::top_down(Align::Min)),
                     |ui| {
+                        ui.add_space(8.0 * zoom);
                         ui.horizontal(|ui| {
                             text_label(ui, "NAME", 9.0, zoom, TEXT);
-                            let width = (ui.available_width() - 110.0 * zoom).max(100.0 * zoom);
+                            // A short field, not a nearly full-width box whose
+                            // top border reads as a separator across the bar.
+                            let width =
+                                (ui.available_width() * 0.32).clamp(160.0 * zoom, 300.0 * zoom);
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut self.state.patch_name)
                                     .id(egui::Id::unique("sushi-patch-name"))
