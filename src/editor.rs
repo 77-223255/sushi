@@ -210,14 +210,6 @@ const VOICE_LED_GAP: f32 = 2.0;
 const VOICE_METER_GAP: f32 = 8.0;
 /// The width of the button of the patch browser in the header.
 const PATCHES_BUTTON_WIDTH: f32 = 62.0;
-/// The fixed height of the list of the patch browser, so that the window does
-/// not jump around while the search filters the list.
-const PATCH_LIST_HEIGHT: f32 = 300.0;
-/// The width of the window of the patch browser.
-const PATCH_WINDOW_WIDTH: f32 = 760.0;
-/// The height of the window of the patch browser. It is only used to place
-/// the window in the middle of the panel.
-const PATCH_WINDOW_HEIGHT: f32 = 540.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
@@ -675,6 +667,11 @@ impl SushiEditor {
             zoom: layout.zoom,
         };
 
+        if ctx.state.patch_open {
+            ctx.patch_page(ui);
+            return;
+        }
+
         let header_rect = layout.header();
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -695,9 +692,6 @@ impl SushiEditor {
         row_c(ui, &layout, &mut ctx);
         row_d(ui, &layout, &mut ctx);
         draw_footer(ui, &layout, ctx.state);
-
-        // The window of the patch browser floats above the panel.
-        ctx.patch_window(ui);
     }
 }
 
@@ -2242,74 +2236,89 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.refresh_patch_preview();
     }
 
-    /// Draws the window of the patch browser.
-    fn patch_window(&mut self, ui: &egui::Ui) {
+    /// Draws the patch browser as a full page. It replaces the synth panel
+    /// instantly instead of opening a floating, resizable window.
+    fn patch_page(&mut self, ui: &mut egui::Ui) {
         let zoom = self.zoom;
-        let mut open = self.state.patch_open;
+        let page = ui.max_rect();
+        ui.painter().rect_filled(page, CornerRadius::ZERO, BG);
         let mut close = false;
+        let inner = page.shrink(12.0 * zoom);
 
-        // The window opens in the middle of the panel.
-        let center = ui.ctx().content_rect().center();
-        let position = center - egui::vec2(PATCH_WINDOW_WIDTH, PATCH_WINDOW_HEIGHT) * 0.5 * zoom;
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt("sushi-patch-page")
+                .max_rect(inner)
+                .layout(EguiLayout::top_down(Align::Min)),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("PATCHES")
+                            .font(FontId::new(font_size(16.0, zoom), bold()))
+                            .color(TITLE_BLUE),
+                    ));
+                    ui.with_layout(EguiLayout::right_to_left(Align::Center), |ui| {
+                        if ui.button("CLOSE").clicked() {
+                            close = true;
+                        }
+                    });
+                });
 
-        egui::Window::new("PATCHES")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(egui::vec2(PATCH_WINDOW_WIDTH, PATCH_WINDOW_HEIGHT) * zoom)
-            .default_pos(position)
-            .show(ui.ctx(), |ui| {
-                // The folder in which the patches are stored.
+                // FOLDER: the button follows a field that absorbs the row.
                 ui.horizontal(|ui| {
                     text_label(ui, "FOLDER", 9.0, zoom, TEXT);
-                    let width = ui.available_width() - 44.0 * zoom;
+                    let width = (ui.available_width() - 52.0 * zoom).max(120.0 * zoom);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_dir_text)
                             .id(egui::Id::unique("sushi-patch-folder"))
-                            .desired_width(width.max(80.0 * zoom)),
+                            .desired_width(width),
                     );
                     if ui.button("SET").clicked() {
                         self.set_patch_folder();
                     }
                 });
-
-                // The hint that the folder of the text field is not the
-                // folder that is in use yet.
                 if !self.folder_is_applied() {
                     ui.colored_label(MUTED, FOLDER_HINT);
                 }
 
-                // The search field. It filters the presets of the factory
-                // and the patches of the user.
+                // SEARCH + REFRESH + count in one row.
                 ui.horizontal(|ui| {
                     text_label(ui, "SEARCH", 9.0, zoom, TEXT);
-                    let width = ui.available_width() - 52.0 * zoom;
+                    let width = (ui.available_width() - 150.0 * zoom).max(120.0 * zoom);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_search)
                             .id(egui::Id::unique("sushi-patch-search"))
-                            .desired_width(width.max(80.0 * zoom)),
+                            .desired_width(width),
                     );
-                });
-
-                // The list of the patches of the folder.
-                ui.horizontal(|ui| {
                     if ui.button("REFRESH").clicked() {
                         self.refresh_patch_list();
                     }
-                    let count = self.state.patch_files.len();
-                    ui.label(format!("{count} patches"));
+                    ui.label(format!("{} patches", self.state.patch_files.len()));
                 });
 
-                let list_height = PATCH_LIST_HEIGHT * zoom;
+                // Pin the action area to the page bottom, then give the
+                // remaining height to the lists and JSON.
+                let bottom_height = 64.0 * zoom;
+                let bottom_rect = Rect::from_min_max(
+                    egui::pos2(inner.left(), inner.bottom() - bottom_height),
+                    inner.max,
+                );
+                let body_height = (bottom_rect.top() - ui.next_widget_position().y - 8.0 * zoom)
+                    .max(120.0 * zoom);
+                let body_width = ui.available_width();
+                let left_width = (body_width * 0.32)
+                    .clamp(240.0 * zoom, 340.0 * zoom)
+                    .min((body_width - 240.0 * zoom).max(200.0 * zoom));
+
                 ui.horizontal_top(|ui| {
-                    // The left column: the actual browser list.
                     ui.allocate_ui_with_layout(
-                        egui::vec2(300.0 * zoom, list_height),
+                        egui::vec2(left_width, body_height),
                         EguiLayout::top_down(Align::Min),
                         |ui| {
                             egui::ScrollArea::vertical()
                                 .id_salt("sushi-patch-list")
-                                .max_height(list_height)
+                                .max_height(body_height)
+                                .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     let search = self.state.patch_search.trim().to_lowercase();
                                     let matches = |name: &str| {
@@ -2370,24 +2379,32 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
                     ui.separator();
 
-                    // The right column: the raw JSON of the selected patch.
                     ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), list_height),
+                        egui::vec2(ui.available_width(), body_height),
                         EguiLayout::top_down(Align::Min),
                         |ui| {
                             ui.horizontal(|ui| {
                                 text_label(ui, "JSON", 9.0, zoom, TITLE_BLUE);
-                                text_label(ui, &self.state.patch_preview_title, 9.0, zoom, MUTED);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&self.state.patch_preview_title)
+                                            .size(font_size(9.0, zoom))
+                                            .color(MUTED),
+                                    )
+                                    .truncate(),
+                                );
                             });
-                            let preview_height = (list_height - 18.0 * zoom).max(40.0 * zoom);
+                            let preview_height = (body_height - 24.0 * zoom).max(40.0 * zoom);
                             egui::Frame::NONE
                                 .fill(FIELD_BG)
                                 .stroke(Stroke::new(1.0, LINE))
                                 .inner_margin(Margin::same(3))
                                 .show(ui, |ui| {
-                                    egui::ScrollArea::both()
+                                    ui.set_min_height(preview_height);
+                                    egui::ScrollArea::vertical()
                                         .id_salt("sushi-patch-json")
                                         .max_height(preview_height)
+                                        .auto_shrink([false, false])
                                         .show(ui, |ui| {
                                             ui.add(
                                                 egui::TextEdit::multiline(
@@ -2398,7 +2415,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                                     egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
                                                 ))
                                                 .desired_width(ui.available_width())
-                                                .desired_rows(1)
                                                 .interactive(false),
                                             );
                                         });
@@ -2407,48 +2423,49 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     );
                 });
 
-                ui.separator();
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt("sushi-patch-actions")
+                        .max_rect(bottom_rect)
+                        .layout(EguiLayout::top_down(Align::Min)),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            text_label(ui, "NAME", 9.0, zoom, TEXT);
+                            let width = (ui.available_width() - 110.0 * zoom).max(100.0 * zoom);
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.state.patch_name)
+                                    .id(egui::Id::unique("sushi-patch-name"))
+                                    .desired_width(width),
+                            );
+                            if response.changed() {
+                                self.state.patch_confirm_overwrite = false;
+                            }
+                            if ui.button("LOAD").clicked() {
+                                self.load_patch_by_name();
+                            }
+                            if ui.button("SAVE").clicked() {
+                                self.save_patch();
+                            }
+                        });
 
-                // The name of the patch and the buttons that save and load
-                // it.
-                ui.horizontal(|ui| {
-                    text_label(ui, "NAME", 9.0, zoom, TEXT);
-                    let width = ui.available_width() - 96.0 * zoom;
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.state.patch_name)
-                            .id(egui::Id::unique("sushi-patch-name"))
-                            .desired_width(width.max(80.0 * zoom)),
-                    );
-                    if response.changed() {
-                        // A new name is a new file, so the file does not have
-                        // to be confirmed again.
-                        self.state.patch_confirm_overwrite = false;
-                    }
-                    if ui.button("LOAD").clicked() {
-                        self.load_patch_by_name();
-                    }
-                    if ui.button("SAVE").clicked() {
-                        self.save_patch();
-                    }
-                });
-
-                // The message of the last action.
-                let color = if self.state.patch_status_error {
-                    STATUS_ERROR
-                } else {
-                    STATUS_OK
-                };
-                ui.colored_label(color, &self.state.patch_status);
-
-                if ui.button("CLOSE").clicked() {
-                    close = true;
-                }
-            });
+                        let color = if self.state.patch_status_error {
+                            STATUS_ERROR
+                        } else {
+                            STATUS_OK
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&self.state.patch_status).color(color),
+                            )
+                            .truncate(),
+                        );
+                    },
+                );
+            },
+        );
 
         if close {
             self.state.patch_open = false;
-        } else {
-            self.state.patch_open = open;
         }
     }
 
