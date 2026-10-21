@@ -156,8 +156,11 @@ impl Default for Sushi {
             tone_left: 0.0,
             tone_right: 0.0,
 
+            // Open the editor a little larger than the 960x600 design so
+            // the panel is comfortable on a normal DAW screen. The design
+            // still scales continuously from its 960x600 minimum.
             editor_state: EguiEditorState::from_size(
-                LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+                LogicalSize::new(WINDOW_WIDTH * 4.0 / 3.0, WINDOW_HEIGHT * 4.0 / 3.0),
                 1.0,
             ),
             repaint_notifier: RepaintNotifier::new(),

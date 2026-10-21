@@ -80,6 +80,9 @@ const SILKSCREEN_REGULAR: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Reg
 const SILKSCREEN_BOLD: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Bold.ttf");
 /// The name of the font family that holds the bold pixel font.
 const BOLD_FAMILY: &str = "sushi-bold";
+/// A normal monospace family for JSON and code previews. Silkscreen is kept
+/// for the faceplate only, because it has no true lowercase.
+const CODE_FAMILY: &str = "sushi-code";
 
 /// Installs the pixel fonts of the panel. The regular weight becomes the
 /// default of the proportional and of the monospaced families; the bold
@@ -87,6 +90,11 @@ const BOLD_FAMILY: &str = "sushi-bold";
 /// the list as a fallback for glyphs that Silkscreen does not have.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    let code_fonts = fonts
+        .families
+        .get(&egui::FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
     fonts.font_data.insert(
         "silkscreen".to_owned(),
         Arc::new(egui::FontData::from_static(SILKSCREEN_REGULAR)),
@@ -113,6 +121,9 @@ fn install_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(egui::FontFamily::Name(Arc::from(BOLD_FAMILY)), bold_list);
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(Arc::from(CODE_FAMILY)), code_fonts);
 
     ctx.set_fonts(fonts);
 }
@@ -169,7 +180,7 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 /// The width of a vertical slider.
 const SLIDER_WIDTH: f32 = 24.0;
 /// The width of the sliders of the macros.
-const MACRO_SLIDER_WIDTH: f32 = 30.0;
+const MACRO_SLIDER_WIDTH: f32 = SLIDER_WIDTH;
 /// The height of the slider handle.
 const HANDLE_HEIGHT: f32 = 5.0;
 /// How far the track and the handle are kept away from the edge of the slider.
@@ -199,12 +210,12 @@ const VOICE_METER_GAP: f32 = 8.0;
 const PATCHES_BUTTON_WIDTH: f32 = 62.0;
 /// The fixed height of the list of the patch browser, so that the window does
 /// not jump around while the search filters the list.
-const PATCH_LIST_HEIGHT: f32 = 260.0;
+const PATCH_LIST_HEIGHT: f32 = 300.0;
 /// The width of the window of the patch browser.
-const PATCH_WINDOW_WIDTH: f32 = 430.0;
+const PATCH_WINDOW_WIDTH: f32 = 760.0;
 /// The height of the window of the patch browser. It is only used to place
 /// the window in the middle of the panel.
-const PATCH_WINDOW_HEIGHT: f32 = 520.0;
+const PATCH_WINDOW_HEIGHT: f32 = 540.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The size of a check box.
@@ -427,6 +438,10 @@ struct EditorState {
     patch_confirm_overwrite: bool,
     /// The name of the patch of the user that is loaded.
     patch_active: Option<String>,
+    /// The raw JSON shown in the right pane of the browser.
+    patch_preview: String,
+    /// The name that belongs to the preview.
+    patch_preview_title: String,
 }
 
 impl EditorState {
@@ -504,6 +519,8 @@ impl SushiEditor {
                 patch_status_error: false,
                 patch_confirm_overwrite: false,
                 patch_active: None,
+                patch_preview: String::new(),
+                patch_preview_title: String::new(),
             },
             arp_led,
             arp_position,
@@ -530,6 +547,16 @@ impl SushiEditor {
         self.state.patch_status_error = false;
         self.state.patch_confirm_overwrite = false;
         self.state.patch_active = None;
+        self.state.patch_preview_title = format!(
+            "{:02} {}",
+            self.state.preset_index + 1,
+            PRESETS[self.state.preset_index].name
+        );
+        self.state.patch_preview = serde_json::to_string_pretty(&patch::to_json(
+            &self.params,
+            &self.state.patch_preview_title,
+        ))
+        .unwrap_or_default();
     }
 
     /// Takes the samples of the scope out of the ring buffer.
@@ -2210,6 +2237,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_active = None;
         self.state.patch_name = PRESETS[index].name.to_string();
         presets::apply(self.params, self.setter, index);
+        self.refresh_patch_preview();
     }
 
     /// Draws the window of the patch browser.
@@ -2271,80 +2299,111 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 });
 
                 let list_height = PATCH_LIST_HEIGHT * zoom;
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), list_height),
-                    EguiLayout::top_down(Align::Min),
-                    |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(list_height)
-                            .show(ui, |ui| {
-                                // The search is not case sensitive and it looks at
-                                // every name of the list.
-                                let search = self.state.patch_search.trim().to_lowercase();
-                                let matches = |name: &str| {
-                                    search.is_empty() || name.to_lowercase().contains(&search)
-                                };
-
-                                // The patches of the user come first, so that the
-                                // sounds that were just saved are visible without
-                                // scrolling past the whole factory list.
-                                text_label(ui, "USER", 9.0, zoom, MUTED);
-                                let files = self.state.patch_files.clone();
-                                if files.is_empty() {
-                                    // An empty folder would leave a blank panel
-                                    // behind, so it gets a caption.
-                                    ui.colored_label(MUTED, NO_PATCHES);
-                                }
-                                let mut found = 0;
-                                for path in files {
-                                    let Some(stem) = path.file_stem() else {
-                                        continue;
+                ui.horizontal_top(|ui| {
+                    // The left column: the actual browser list.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(300.0 * zoom, list_height),
+                        EguiLayout::top_down(Align::Min),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("sushi-patch-list")
+                                .max_height(list_height)
+                                .show(ui, |ui| {
+                                    let search = self.state.patch_search.trim().to_lowercase();
+                                    let matches = |name: &str| {
+                                        search.is_empty() || name.to_lowercase().contains(&search)
                                     };
-                                    let name = stem.to_string_lossy().into_owned();
-                                    if !matches(&name) {
-                                        continue;
-                                    }
-                                    found += 1;
-                                    let selected =
-                                        self.state.patch_active.as_deref() == Some(name.as_str());
-                                    let clicked = ui
-                                        .push_id(("user", &name), |ui| {
-                                            ui.selectable_label(selected, &name).clicked()
-                                        })
-                                        .inner;
-                                    if clicked {
-                                        self.load_patch_file(&path);
-                                    }
-                                }
 
-                                // The presets of the factory.
-                                text_label(ui, "FACTORY", 9.0, zoom, MUTED);
-                                for (index, preset) in PRESETS.iter().enumerate() {
-                                    if !matches(preset.name) {
-                                        continue;
+                                    text_label(ui, "USER", 9.0, zoom, MUTED);
+                                    let files = self.state.patch_files.clone();
+                                    if files.is_empty() {
+                                        ui.colored_label(MUTED, NO_PATCHES);
                                     }
-                                    found += 1;
-                                    let selected = self.state.patch_active.is_none()
-                                        && self.state.preset_index == index;
-                                    let clicked = ui
-                                        .push_id(("factory", index), |ui| {
-                                            ui.selectable_label(selected, preset.name).clicked()
-                                        })
-                                        .inner;
-                                    if clicked {
-                                        // A factory preset replaces the patch of the
-                                        // user, and the browser stays open.
-                                        self.load_preset(index);
+                                    let mut found = 0;
+                                    for path in files {
+                                        let Some(stem) = path.file_stem() else {
+                                            continue;
+                                        };
+                                        let name = stem.to_string_lossy().into_owned();
+                                        if !matches(&name) {
+                                            continue;
+                                        }
+                                        found += 1;
+                                        let selected = self.state.patch_active.as_deref()
+                                            == Some(name.as_str());
+                                        let clicked = ui
+                                            .push_id(("user", &name), |ui| {
+                                                ui.selectable_label(selected, &name).clicked()
+                                            })
+                                            .inner;
+                                        if clicked {
+                                            self.load_patch_file(&path);
+                                        }
                                     }
-                                }
 
-                                if found == 0 {
-                                    // The search did not find anything at all.
-                                    ui.colored_label(MUTED, NO_MATCHES);
-                                }
+                                    text_label(ui, "FACTORY", 9.0, zoom, MUTED);
+                                    for (index, preset) in PRESETS.iter().enumerate() {
+                                        if !matches(preset.name) {
+                                            continue;
+                                        }
+                                        found += 1;
+                                        let selected = self.state.patch_active.is_none()
+                                            && self.state.preset_index == index;
+                                        let clicked = ui
+                                            .push_id(("factory", index), |ui| {
+                                                ui.selectable_label(selected, preset.name).clicked()
+                                            })
+                                            .inner;
+                                        if clicked {
+                                            self.load_preset(index);
+                                        }
+                                    }
+
+                                    if found == 0 {
+                                        ui.colored_label(MUTED, NO_MATCHES);
+                                    }
+                                });
+                        },
+                    );
+
+                    ui.separator();
+
+                    // The right column: the raw JSON of the selected patch.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), list_height),
+                        EguiLayout::top_down(Align::Min),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                text_label(ui, "JSON", 9.0, zoom, TITLE_BLUE);
+                                text_label(ui, &self.state.patch_preview_title, 9.0, zoom, MUTED);
                             });
-                    },
-                );
+                            let preview_height = (list_height - 18.0 * zoom).max(40.0 * zoom);
+                            egui::Frame::NONE
+                                .fill(FIELD_BG)
+                                .stroke(Stroke::new(1.0, LINE))
+                                .inner_margin(Margin::same(3))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::both()
+                                        .id_salt("sushi-patch-json")
+                                        .max_height(preview_height)
+                                        .show(ui, |ui| {
+                                            ui.add(
+                                                egui::TextEdit::multiline(
+                                                    &mut self.state.patch_preview,
+                                                )
+                                                .font(FontId::new(
+                                                    font_size(10.0, zoom),
+                                                    egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                                                ))
+                                                .desired_width(ui.available_width())
+                                                .desired_rows(1)
+                                                .interactive(false),
+                                            );
+                                        });
+                                });
+                        },
+                    );
+                });
 
                 ui.separator();
 
@@ -2402,6 +2461,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.refresh_patch_list();
+        self.refresh_patch_preview();
         self.state.patch_open = true;
     }
 
@@ -2446,6 +2506,37 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_confirm_overwrite = false;
     }
 
+    /// Rebuilds the JSON preview from the selected user patch, or from the
+    /// current sound when a factory preset is selected. This is a read-only
+    /// view of the actual document, not a second copy of the sound.
+    fn refresh_patch_preview(&mut self) {
+        let title = if let Some(active) = &self.state.patch_active {
+            active.clone()
+        } else {
+            format!(
+                "{:02} {}",
+                self.state.preset_index + 1,
+                PRESETS[self.state.preset_index].name
+            )
+        };
+
+        if let Some(active) = &self.state.patch_active {
+            let path = self
+                .patch_dir()
+                .join(format!("{}.json", patch::sanitize_file_name(active)));
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                self.state.patch_preview = text;
+                self.state.patch_preview_title = title;
+                return;
+            }
+        }
+
+        self.state.patch_preview =
+            serde_json::to_string_pretty(&patch::to_json(self.params, &title))
+                .unwrap_or_else(|_| "{\n  \"error\": \"preview unavailable\"\n}".to_string());
+        self.state.patch_preview_title = title;
+    }
+
     /// Loads a patch of the folder into the synthesizer.
     fn load_patch_file(&mut self, path: &Path) {
         match patch::load_patch(path, self.params, self.setter) {
@@ -2456,6 +2547,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 self.state.patch_active = Some(name.clone());
                 self.state.patch_name = name.clone();
                 self.state.dirty = false;
+                self.refresh_patch_preview();
                 self.set_status(format!("Loaded {name}"), false);
             }
             Err(error) => {
@@ -2490,6 +2582,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 self.state.patch_active = Some(name);
                 self.state.dirty = false;
                 self.refresh_patch_list();
+                self.refresh_patch_preview();
                 self.set_status("Saved".to_string(), false);
             }
             Err(error) => {
@@ -2521,6 +2614,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_dir_text = path.to_string_lossy().into_owned();
         self.state.patch_confirm_overwrite = false;
         self.refresh_patch_list();
+        self.refresh_patch_preview();
         self.set_status("Folder set".to_string(), false);
     }
 
@@ -2901,8 +2995,19 @@ fn wheel_scroll(ui: &egui::Ui) -> (f32, bool) {
     if fresh { (smooth, fine) } else { (0.0, fine) }
 }
 
-/// The fraction of the range that the fine rail moves per full-height drag.
-const FINE_DRAG_RANGE: f32 = 0.08;
+/// The maximum trim of the fine rail, as a fraction of the full range. The
+/// narrow lane is a relative trim around the coarse value, not a second
+/// absolute control.
+const FINE_TRIM_RANGE: f32 = 0.1;
+
+/// The drag state of the fine lane: the value it started from and where the
+/// pointer started. A full-height drag gives exactly ±10% of the range.
+#[derive(Debug, Clone, Copy, Default)]
+struct FineDrag {
+    active: bool,
+    base: f32,
+    start_y: f32,
+}
 
 /// A vertical slider in the style of the SH-101 reference: a white outlined
 /// track split into a wide coarse lane and a narrow fine lane. The coarse
@@ -2921,11 +3026,19 @@ fn v_slider(
 
     let track = rect.shrink(GROOVE_INSET * zoom);
     let fine_width = 6.0 * zoom;
-    let divider = track.right() - fine_width - zoom;
+    // One track, one outer frame. The right lane is separated by a hairline
+    // and a small white gap, but it is not a second framed control.
+    let gap = 2.0 * zoom;
+    let divider = track.right() - fine_width - gap;
     let coarse = Rect::from_min_max(track.min, egui::pos2(divider, track.bottom()));
-    let fine = Rect::from_min_max(egui::pos2(divider + zoom, track.top()), track.max);
+    let fine = Rect::from_min_max(egui::pos2(divider + gap, track.top()), track.max);
 
     flat_box(&painter, track, TRACK);
+    painter.rect_filled(
+        fine,
+        CornerRadius::ZERO,
+        Color32::from_rgb(0xF1, 0xF4, 0xF8),
+    );
     painter.line_segment(
         [
             egui::pos2(divider, track.top()),
@@ -2933,20 +3046,49 @@ fn v_slider(
         ],
         Stroke::new(1.0, LINE),
     );
+    // The lane fill covers the inside of the 1 px frame; redraw all four
+    // edges afterwards so the fine strip keeps the old single border.
+    for (from, to) in [
+        (track.left_top(), track.right_top()),
+        (track.right_top(), track.right_bottom()),
+        (track.right_bottom(), track.left_bottom()),
+        (track.left_bottom(), track.left_top()),
+    ] {
+        painter.line_segment([from, to], Stroke::new(1.0, LINE));
+    }
+    // The module cross-line must not show in the white gap either.
+    painter.rect_filled(
+        Rect::from_min_max(
+            egui::pos2(divider, track.top()),
+            egui::pos2(fine.left(), track.bottom()),
+        ),
+        CornerRadius::ZERO,
+        TRACK,
+    );
+
     let id = ui.scope_id().with("sushi-fine-drag");
-    let mut fine_drag: bool = ui
+    let mut fine_drag: FineDrag = ui
         .memory(|memory| memory.data.get_temp(id))
-        .unwrap_or(false);
+        .unwrap_or_default();
 
     let pointer = response.interact_pointer_pos();
     let over_fine = pointer.is_some_and(|pos| pos.x > divider);
-    if response.drag_started() {
-        fine_drag = over_fine;
+    let pressed = ui.input(|input| input.pointer.primary_pressed());
+    if (response.drag_started() || pressed) && over_fine && !fine_drag.active {
+        // Capture the value and the pointer position at the press, not when
+        // egui reports the drag a frame later.
+        fine_drag = FineDrag {
+            active: true,
+            base: value_to_normalized(*value, knob.min, knob.max, knob.log),
+            start_y: pointer.map_or(0.0, |pos| pos.y),
+        };
         ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
+    } else if (response.drag_started() || pressed) && !over_fine && !fine_drag.active {
+        ui.memory_mut(|memory| memory.data.insert_temp(id, FineDrag::default()));
     }
     if response.drag_stopped() {
-        fine_drag = false;
-        ui.memory_mut(|memory| memory.data.insert_temp(id, false));
+        fine_drag = FineDrag::default();
+        ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
     }
 
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
@@ -2966,8 +3108,8 @@ fn v_slider(
         egui::pos2(fine.center().x, handle_center),
         egui::vec2(fine.width(), handle_height),
     );
-    let coarse_live = response.hovered() && !over_fine || (response.dragged() && !fine_drag);
-    let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag);
+    let coarse_live = response.hovered() && !over_fine || (response.dragged() && !fine_drag.active);
+    let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag.active);
     painter.rect_filled(
         coarse_handle,
         CornerRadius::ZERO,
@@ -2980,11 +3122,13 @@ fn v_slider(
     );
 
     let primary = egui::PointerButton::Primary;
-    if response.dragged_by(primary) && fine_drag {
-        // Fine dragging is relative: it never jumps to the pointer.
-        let normalized = value_to_normalized(*value, knob.min, knob.max, knob.log);
-        let move_by = -response.drag_delta().y / track.height() * FINE_DRAG_RANGE;
-        let moved = (normalized + move_by).clamp(0.0, 1.0);
+    if response.dragged_by(primary) && fine_drag.active {
+        // Fine dragging is a bounded trim around the value at the start of
+        // the gesture: full rail travel is ±10% of the parameter range.
+        let pointer_y = pointer.map_or(fine_drag.start_y, |pos| pos.y);
+        let travel = (fine_drag.start_y - pointer_y) / track.height();
+        let trim = (travel * FINE_TRIM_RANGE).clamp(-FINE_TRIM_RANGE, FINE_TRIM_RANGE);
+        let moved = (fine_drag.base + trim).clamp(0.0, 1.0);
         let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
         if new_value != *value {
             *value = new_value;
@@ -2994,8 +3138,7 @@ fn v_slider(
         || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
         && let Some(pointer) = pointer
     {
-        // The coarse lane is absolute: clicking anywhere in it jumps there,
-        // as before. The fine lane is deliberately excluded above.
+        // The coarse lane is absolute: clicking anywhere in it jumps there.
         if pointer.x <= divider {
             let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
             *value = position_to_value(position, knob.min, knob.max, knob.log);
@@ -3022,6 +3165,9 @@ fn v_slider(
         }
     }
 
+    if response.hovered() && over_fine {
+        response = response.on_hover_text("Fine adjustment: drag slowly");
+    }
     response.on_hover_cursor(egui::CursorIcon::ResizeVertical)
 }
 
@@ -4551,7 +4697,11 @@ mod tests {
         // case of the letters.
         editor.state.patch_search = "GlAsS".to_string();
         let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        let names: Vec<String> = texts(&output)
+            .into_iter()
+            .filter(|(_, pos)| pos.x < 200.0 && pos.y < 400.0)
+            .map(|(text, _)| text)
+            .collect();
         assert!(
             names.contains(&"GLASS KEYS".to_string()),
             "the search hid the preset: {names:?}"
@@ -4568,7 +4718,11 @@ mod tests {
         // The search for a patch of the user.
         editor.state.patch_search = "my".to_string();
         let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        let names: Vec<String> = texts(&output)
+            .into_iter()
+            .filter(|(_, pos)| pos.x < 200.0 && pos.y < 400.0)
+            .map(|(text, _)| text)
+            .collect();
         assert!(
             names.contains(&"MY PATCH".to_string()),
             "the search hid the patch: {names:?}"
@@ -4581,7 +4735,11 @@ mod tests {
         // A search that finds nothing at all.
         editor.state.patch_search = "nothing at all".to_string();
         let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        let names: Vec<String> = texts(&output)
+            .into_iter()
+            .filter(|(_, pos)| pos.x < 200.0 && pos.y < 400.0)
+            .map(|(text, _)| text)
+            .collect();
         assert!(
             names.contains(&NO_MATCHES.to_string()),
             "the browser has no caption: {names:?}"
@@ -4757,6 +4915,33 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_previews_the_current_sound_as_json() {
+        let (_ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.toggle_patch_browser();
+        }
+
+        assert!(editor.state.patch_open);
+        assert!(
+            editor
+                .state
+                .patch_preview
+                .contains("\"format\": \"sushi-patch\""),
+            "the preview is not a patch document: {}",
+            editor.state.patch_preview
+        );
+        assert!(
+            editor.state.patch_preview.contains("\"cutoff\""),
+            "the preview has no parameters: {}",
+            editor.state.patch_preview
+        );
+        assert_eq!(editor.state.patch_preview_title, "01 INIT PAD");
+    }
+
+    #[test]
     fn a_patch_can_be_loaded_from_the_list_of_the_browser() {
         let (ctx, mut editor, params) = make_editor();
         let dir = TempDir::new("list");
@@ -4781,7 +4966,7 @@ mod tests {
 
         let positions: Vec<egui::Pos2> = texts(&output)
             .into_iter()
-            .filter(|(text, _)| text == "MY PATCH")
+            .filter(|(text, pos)| text == "MY PATCH" && pos.x < 200.0 && pos.y < 400.0)
             .map(|(_, pos)| pos)
             .collect();
         assert_eq!(positions.len(), 1, "the patch is not in the list");
