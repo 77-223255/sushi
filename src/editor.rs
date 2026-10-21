@@ -178,11 +178,11 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
-const SLIDER_WIDTH: f32 = 26.0;
+const SLIDER_WIDTH: f32 = 32.0;
 /// The width of the sliders of the macros.
 const MACRO_SLIDER_WIDTH: f32 = SLIDER_WIDTH;
 /// The height of the slider handle.
-const HANDLE_HEIGHT: f32 = 5.0;
+const HANDLE_HEIGHT: f32 = 6.0;
 /// The empty margin around a handle inside its lane.
 const HANDLE_INSET: f32 = 2.0;
 /// How far the track and the handle are kept away from the edge of the slider.
@@ -3027,7 +3027,7 @@ fn v_slider(
     let painter = ui.painter_at(rect);
 
     let track = rect.shrink(GROOVE_INSET * zoom);
-    let fine_width = 6.0 * zoom;
+    let fine_width = 8.0 * zoom;
     let divider = track.right() - fine_width;
     let coarse = Rect::from_min_max(track.min, egui::pos2(divider - zoom, track.bottom()));
     let fine = Rect::from_min_max(
