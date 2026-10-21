@@ -178,11 +178,13 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
-const SLIDER_WIDTH: f32 = 24.0;
+const SLIDER_WIDTH: f32 = 26.0;
 /// The width of the sliders of the macros.
 const MACRO_SLIDER_WIDTH: f32 = SLIDER_WIDTH;
 /// The height of the slider handle.
 const HANDLE_HEIGHT: f32 = 5.0;
+/// The empty margin around a handle inside its lane.
+const HANDLE_INSET: f32 = 2.0;
 /// How far the track and the handle are kept away from the edge of the slider.
 const GROOVE_INSET: f32 = 3.0;
 /// The smallest height of the buttons and of the text fields of the panel.
@@ -2768,13 +2770,13 @@ fn group(
     let body_bottom = rect.bottom() - GROUP_PADDING * zoom;
     let bank_center =
         body_top + LABEL_HEIGHT * zoom + (body_bottom - body_top - LABEL_HEIGHT * zoom) * 0.5;
-    painter.line_segment(
-        [
-            egui::pos2(rect.left(), bank_center),
-            egui::pos2(rect.right(), bank_center),
-        ],
-        Stroke::new(2.0, TICK),
-    );
+    for offset in [-2.0, 2.0] {
+        let y = bank_center + offset * zoom;
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            Stroke::new(1.0, TICK),
+        );
+    }
 
     // The header of the section, next to the title.
     let header = Rect::from_min_size(
@@ -3009,10 +3011,10 @@ struct FineDrag {
     start_y: f32,
 }
 
-/// A vertical slider in the style of the SH-101 reference: a white outlined
-/// track split into a wide coarse lane and a narrow fine lane. The coarse
-/// handle is a black bar; the fine lane carries the small black square. The
-/// right lane only changes the value by dragging, so it never jumps.
+/// A vertical slider in the style of the SH-101 reference: one white framed
+/// track, one vertical divider, a black coarse bar in the left lane and a
+/// small black fine square in the right lane. The two lanes are separate drag
+/// targets, but visually they are one piece of hardware.
 fn v_slider(
     ui: &mut egui::Ui,
     value: &mut f32,
@@ -3026,19 +3028,16 @@ fn v_slider(
 
     let track = rect.shrink(GROOVE_INSET * zoom);
     let fine_width = 6.0 * zoom;
-    // One track, one outer frame. The right lane is separated by a hairline
-    // and a small white gap, but it is not a second framed control.
-    let gap = 2.0 * zoom;
-    let divider = track.right() - fine_width - gap;
-    let coarse = Rect::from_min_max(track.min, egui::pos2(divider, track.bottom()));
-    let fine = Rect::from_min_max(egui::pos2(divider + gap, track.top()), track.max);
-
-    flat_box(&painter, track, TRACK);
-    painter.rect_filled(
-        fine,
-        CornerRadius::ZERO,
-        Color32::from_rgb(0xF1, 0xF4, 0xF8),
+    let divider = track.right() - fine_width;
+    let coarse = Rect::from_min_max(track.min, egui::pos2(divider - zoom, track.bottom()));
+    let fine = Rect::from_min_max(
+        egui::pos2(divider + zoom, track.top()),
+        egui::pos2(track.right() - zoom, track.bottom()),
     );
+
+    // One frame and one divider. Nothing is painted over the frame after the
+    // fill, so the border cannot disappear.
+    flat_box(&painter, track, TRACK);
     painter.line_segment(
         [
             egui::pos2(divider, track.top()),
@@ -3046,37 +3045,16 @@ fn v_slider(
         ],
         Stroke::new(1.0, LINE),
     );
-    // The lane fill covers the inside of the 1 px frame; redraw all four
-    // edges afterwards so the fine strip keeps the old single border.
-    for (from, to) in [
-        (track.left_top(), track.right_top()),
-        (track.right_top(), track.right_bottom()),
-        (track.right_bottom(), track.left_bottom()),
-        (track.left_bottom(), track.left_top()),
-    ] {
-        painter.line_segment([from, to], Stroke::new(1.0, LINE));
-    }
-    // The module cross-line must not show in the white gap either.
-    painter.rect_filled(
-        Rect::from_min_max(
-            egui::pos2(divider, track.top()),
-            egui::pos2(fine.left(), track.bottom()),
-        ),
-        CornerRadius::ZERO,
-        TRACK,
-    );
 
     let id = ui.scope_id().with("sushi-fine-drag");
     let mut fine_drag: FineDrag = ui
         .memory(|memory| memory.data.get_temp(id))
         .unwrap_or_default();
-
     let pointer = response.interact_pointer_pos();
     let over_fine = pointer.is_some_and(|pos| pos.x > divider);
     let pressed = ui.input(|input| input.pointer.primary_pressed());
+
     if (response.drag_started() || pressed) && over_fine && !fine_drag.active {
-        // Capture the value and the pointer position at the press, not when
-        // egui reports the drag a frame later.
         fine_drag = FineDrag {
             active: true,
             base: value_to_normalized(*value, knob.min, knob.max, knob.log),
@@ -3093,22 +3071,25 @@ fn v_slider(
 
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
     let handle_height = HANDLE_HEIGHT * zoom;
+    let handle_inset = HANDLE_INSET * zoom;
     let handle_center = position.clamp(
-        track.top() + handle_height * 0.5,
-        track.bottom() - handle_height * 0.5,
+        track.top() + handle_height * 0.5 + handle_inset,
+        track.bottom() - handle_height * 0.5 - handle_inset,
     );
-
-    // The coarse bar covers the wide lane, and the fine square sits in the
-    // narrow right lane at the same value.
     let coarse_handle = Rect::from_center_size(
         egui::pos2(coarse.center().x, handle_center),
-        egui::vec2(coarse.width(), handle_height),
+        egui::vec2(
+            (coarse.width() - 2.0 * handle_inset).max(2.0),
+            handle_height,
+        ),
     );
     let fine_handle = Rect::from_center_size(
         egui::pos2(fine.center().x, handle_center),
-        egui::vec2(fine.width(), handle_height),
+        egui::vec2((fine.width() - handle_inset).max(2.0), handle_height),
     );
-    let coarse_live = response.hovered() && !over_fine || (response.dragged() && !fine_drag.active);
+
+    let coarse_live =
+        (response.hovered() && !over_fine) || (response.dragged() && !fine_drag.active);
     let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag.active);
     painter.rect_filled(
         coarse_handle,
@@ -3123,8 +3104,8 @@ fn v_slider(
 
     let primary = egui::PointerButton::Primary;
     if response.dragged_by(primary) && fine_drag.active {
-        // Fine dragging is a bounded trim around the value at the start of
-        // the gesture: full rail travel is ±10% of the parameter range.
+        // The fine lane is a bounded trim gesture: full-height travel is
+        // ±10% of the parameter range, with no jump at the press.
         let pointer_y = pointer.map_or(fine_drag.start_y, |pos| pos.y);
         let travel = (fine_drag.start_y - pointer_y) / track.height();
         let trim = (travel * FINE_TRIM_RANGE).clamp(-FINE_TRIM_RANGE, FINE_TRIM_RANGE);
@@ -3137,13 +3118,12 @@ fn v_slider(
     } else if (response.dragged_by(primary)
         || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
         && let Some(pointer) = pointer
+        && pointer.x <= divider
     {
-        // The coarse lane is absolute: clicking anywhere in it jumps there.
-        if pointer.x <= divider {
-            let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
-            *value = position_to_value(position, knob.min, knob.max, knob.log);
-            response.mark_changed();
-        }
+        // The coarse lane is absolute, as in the old design.
+        let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
+        *value = position_to_value(position, knob.min, knob.max, knob.log);
+        response.mark_changed();
     }
 
     if response.hovered() && !response.dragged() && !response.is_pointer_button_down_on() {
