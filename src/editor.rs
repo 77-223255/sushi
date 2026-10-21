@@ -33,57 +33,44 @@ use crate::params::SushiParams;
 use crate::patch;
 use presets::{PRESETS, Rng};
 
-// --- Flat blueprint palette -------------------------------------------------
+// --- Light SH-101-inspired palette ------------------------------------------
 
-/// The background of the whole panel. The sections have no fill of their own.
-const BG: Color32 = Color32::from_rgb(0x15, 0x17, 0x13);
-/// The header sits on a slightly deeper plate than the faceplate.
-const HEADER_BG: Color32 = Color32::from_rgb(0x0C, 0x0E, 0x0B);
-/// The 1 px rules: below the section titles, below the header, around fields.
-const RULE: Color32 = Color32::from_rgb(0x3E, 0x42, 0x38);
-/// The outlines of the widgets.
-const LINE: Color32 = Color32::from_rgb(0x6F, 0x73, 0x64);
-const TEXT: Color32 = Color32::from_rgb(0xE8, 0xE1, 0xCF);
-const MUTED: Color32 = Color32::from_rgb(0x9C, 0x9A, 0x8B);
-/// The warm paper of the silkscreen and of the fader handles.
-const PAPER: Color32 = Color32::from_rgb(0xE3, 0xDA, 0xC6);
-/// The accent of the section titles. It is paper, so the colour of a domain
-/// comes from its small tab and its rule, not from the type.
-const TITLE_GREEN: Color32 = Color32::from_rgb(0xF4, 0xEE, 0xDF);
-/// The track of a slider: a dark milled slot, not a white groove.
-const TRACK: Color32 = Color32::from_rgb(0x0C, 0x0E, 0x0B);
-/// The handle band of a slider.
-const HANDLE: Color32 = Color32::from_rgb(0xCF, 0xC6, 0xB2);
-/// The tick marks of a slider.
-const TICK: Color32 = Color32::from_rgb(0x7E, 0x82, 0x71);
-/// The background of the numeric fields.
-const FIELD_BG: Color32 = Color32::from_rgb(0x1E, 0x21, 0x1B);
-const BUTTON_BG: Color32 = Color32::from_rgb(0x23, 0x26, 0x1F);
-const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0x3B, 0x42, 0x33);
-/// The background of the display of the presets and of the scope.
-const LCD_BG: Color32 = Color32::from_rgb(0x0A, 0x12, 0x0A);
-/// The color of the text in the display of the presets.
-const LCD_FG: Color32 = Color32::from_rgb(0x9B, 0xE0, 0x8C);
-/// The color of a light of the activity meter.
-const LED_ON: Color32 = Color32::from_rgb(0x72, 0xD6, 0x6E);
-/// The color of the light of the clip meter.
-const LED_RED: Color32 = Color32::from_rgb(0xE0, 0x5A, 0x48);
-/// The color of a light that is switched off.
-const LED_OFF: Color32 = Color32::from_rgb(0x4A, 0x4E, 0x40);
-/// The color of the trace of the oscilloscope.
-const TRACE: Color32 = Color32::from_rgb(0x7F, 0xE0, 0x8A);
-/// The color of the text of a status line that reports a success.
-const STATUS_OK: Color32 = Color32::from_rgb(0x9B, 0xE0, 0x8C);
-/// The color of the text of a status line that reports a problem.
-const STATUS_ERROR: Color32 = Color32::from_rgb(0xE0, 0x7A, 0x6A);
-
-/// The one structural accent: warm amber, used for the band numbers, the
-/// section tabs and the short head of a rule. Green is reserved for live
-/// state: the display, the scope, the voice meter and the ARP step light.
-const ACCENT: Color32 = Color32::from_rgb(0xD9, 0xA4, 0x41);
-/// The parameter captions are deliberately dimmer than the titles and the
-/// field values, so that the hierarchy survives at 1x.
-const LABEL: Color32 = Color32::from_rgb(0xC6, 0xC2, 0xB1);
+/// The warm paper background of the panel, close to the reference.
+const BG: Color32 = Color32::from_rgb(0xF1, 0xF0, 0xEB);
+/// The slightly darker strip behind the header.
+const HEADER_BG: Color32 = Color32::from_rgb(0xE6, 0xE5, 0xDF);
+/// Fine structural rules between sections.
+const RULE: Color32 = Color32::from_rgb(0xBC, 0xBB, 0xB4);
+/// The dark outline of fields, tracks and the panel.
+const LINE: Color32 = Color32::from_rgb(0x55, 0x55, 0x51);
+const TEXT: Color32 = Color32::from_rgb(0x1D, 0x1D, 0x1B);
+const MUTED: Color32 = Color32::from_rgb(0x75, 0x73, 0x6B);
+/// The near-white paper of buttons and fader tracks.
+const PAPER: Color32 = Color32::from_rgb(0xFB, 0xFA, 0xF6);
+/// The blue of the section titles, taken from the SH-101 reference.
+const TITLE_BLUE: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
+/// Parameter captions use a slightly quieter blue-grey.
+const LABEL: Color32 = Color32::from_rgb(0x35, 0x5D, 0x88);
+/// The one interactive accent: the MOD page underline and focus states.
+const ACCENT: Color32 = TITLE_BLUE;
+/// The track of a slider: white, outlined in dark ink.
+const TRACK: Color32 = Color32::from_rgb(0xFB, 0xFA, 0xF6);
+/// The handle band of a slider: black, like the reference.
+const HANDLE: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1A);
+/// The centre/scale marks of a slider.
+const TICK: Color32 = Color32::from_rgb(0x8A, 0x89, 0x81);
+const FIELD_BG: Color32 = Color32::from_rgb(0xFC, 0xFB, 0xF7);
+const BUTTON_BG: Color32 = Color32::from_rgb(0xE3, 0xE2, 0xDC);
+const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0xD4, 0xDC, 0xE8);
+/// The light preset display and scope screen.
+const LCD_BG: Color32 = Color32::from_rgb(0xF6, 0xF6, 0xF1);
+const LCD_FG: Color32 = Color32::from_rgb(0x23, 0x4F, 0x82);
+const LED_ON: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
+const LED_RED: Color32 = Color32::from_rgb(0xB2, 0x3A, 0x32);
+const LED_OFF: Color32 = Color32::from_rgb(0xC9, 0xC8, 0xC1);
+const TRACE: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
+const STATUS_OK: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
+const STATUS_ERROR: Color32 = Color32::from_rgb(0xA3, 0x3A, 0x30);
 
 // --- The fonts ---------------------------------------------------------------
 
@@ -147,9 +134,9 @@ const HEADER_HEIGHT: f32 = 48.0;
 /// The gap between two sections.
 const GROUP_GAP: f32 = 12.0;
 /// The gap between two bands. It holds the legend of the band.
-const BAND_GAP: f32 = 16.0;
+const BAND_GAP: f32 = 8.0;
 /// The footer strip under the last band.
-const FOOTER_HEIGHT: f32 = 12.0;
+const FOOTER_HEIGHT: f32 = 20.0;
 /// The padding inside a section.
 const GROUP_PADDING: f32 = 4.0;
 /// The height of the line that holds the title of a section and the controls
@@ -160,7 +147,7 @@ const COLUMN_GAP: f32 = 4.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
-const ROW_HEIGHTS: [f32; 4] = [117.0, 117.0, 117.0, 117.0];
+const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
 
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
 /// VCF`. They are the proportions of the sections and are scaled with the
@@ -170,7 +157,7 @@ const ROW_A_WIDTHS: [f32; 4] = [240.0, 192.0, 124.0, 352.0];
 /// ENV | LFO / CLK`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
 /// The widths of the sections of the third row: `ARP | VOICE`.
-const ROW_C_WIDTHS: [f32; 4] = [190.0, 190.0, 320.0, 208.0];
+const ROW_C_WIDTHS: [f32; 4] = [210.0, 210.0, 300.0, 188.0];
 /// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
 const ROW_D_WIDTHS: [f32; 3] = [552.0, 216.0, 152.0];
 
@@ -180,11 +167,11 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 // --- Widget metrics ---------------------------------------------------------
 
 /// The width of a vertical slider.
-const SLIDER_WIDTH: f32 = 20.0;
+const SLIDER_WIDTH: f32 = 24.0;
 /// The width of the sliders of the macros.
-const MACRO_SLIDER_WIDTH: f32 = 26.0;
+const MACRO_SLIDER_WIDTH: f32 = 30.0;
 /// The height of the slider handle.
-const HANDLE_HEIGHT: f32 = 9.0;
+const HANDLE_HEIGHT: f32 = 5.0;
 /// How far the track and the handle are kept away from the edge of the slider.
 const GROOVE_INSET: f32 = 3.0;
 /// The smallest height of the buttons and of the text fields of the panel.
@@ -401,6 +388,8 @@ struct EditorState {
     arp_step: usize,
     /// Whether the modulation matrix page is shown in the two upper bands.
     mod_page: bool,
+    /// The parameter and value under the pointer, or the last one seen.
+    readout: Option<(String, String)>,
     /// The peak level of the samples of the last frame.
     activity: f32,
     /// Whether the samples of the last frame were clipping.
@@ -494,6 +483,7 @@ impl SushiEditor {
                 arp_counter: 0,
                 arp_step: 0,
                 mod_page: false,
+                readout: None,
                 activity: 0.0,
                 clipping: 0.0,
                 #[cfg(test)]
@@ -666,7 +656,6 @@ impl SushiEditor {
         );
 
         let mod_page = ctx.state.mod_page;
-        draw_band_legends(ui, &layout, mod_page);
         if mod_page {
             row_mod(ui, &layout, 0, 0, &mut ctx);
             row_mod(ui, &layout, 1, 4, &mut ctx);
@@ -676,83 +665,67 @@ impl SushiEditor {
         }
         row_c(ui, &layout, &mut ctx);
         row_d(ui, &layout, &mut ctx);
-        draw_footer(ui, &layout);
+        draw_footer(ui, &layout, ctx.state);
 
         // The window of the patch browser floats above the panel.
         ctx.patch_window(ui);
     }
 }
 
-/// The names of the four signal bands. They sit in the gap above each band and
-/// give the panel the structure of a rack instead of four anonymous strips.
-const BAND_LEGENDS: [&str; 4] = ["GENERATORS", "SHAPING", "MODULATION", "OUTPUT"];
-const BAND_NUMBERS: [&str; 4] = ["01", "02", "03", "04"];
-const BAND_ACCENTS: [Color32; 4] = [ACCENT; 4];
-
-/// Draws the band legends in the gaps between the rows: a number in the
-/// domain colour, the name in muted paper, and a fine rule that spans the
-/// panel. The rule is the only full-width horizontal besides the header.
-fn draw_band_legends(ui: &egui::Ui, layout: &Layout, mod_page: bool) {
-    let painter = ui.painter();
-    let zoom = layout.zoom;
-    for (index, row) in layout.base_rows.iter().enumerate() {
-        let row = layout.scale(*row);
-        let number_pos = egui::pos2(row.left(), row.top() - 13.0 * zoom);
-        painter.text(
-            number_pos,
-            Align2::LEFT_TOP,
-            BAND_NUMBERS[index],
-            FontId::new(font_size(9.0, zoom), bold()),
-            BAND_ACCENTS[index],
-        );
-        let legend = if mod_page && index < 2 {
-            ["MOD ROUTES A", "MOD ROUTES B"][index]
-        } else {
-            BAND_LEGENDS[index]
-        };
-        painter.text(
-            number_pos + egui::vec2(23.0, 0.0) * zoom,
-            Align2::LEFT_TOP,
-            legend,
-            FontId::new(font_size(9.0, zoom), bold()),
-            MUTED,
-        );
-        let y = row.top() - 2.0 * zoom;
-        painter.line_segment(
-            [egui::pos2(row.left(), y), egui::pos2(row.right(), y)],
-            Stroke::new(1.0, RULE),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(row.left(), y),
-                egui::pos2(row.left() + 24.0 * zoom, y),
-            ],
-            Stroke::new(1.0, BAND_ACCENTS[index]),
-        );
-    }
-}
-
 /// The footer silkscreen: the model name and the two shortcuts that are not
 /// visible on the faceplate.
-fn draw_footer(ui: &egui::Ui, layout: &Layout) {
-    let painter = ui.painter();
+fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
+    let painter = ui.painter_at(layout.panel);
     let zoom = layout.zoom;
-    let y = layout.panel.bottom() - (FOOTER_HEIGHT - 0.5) * zoom;
-    let left = layout.scale(layout.base_rows[3]).left();
-    let right = layout.scale(layout.base_rows[3]).right();
+    let panel = layout.panel;
+    let y = panel.bottom() - (FOOTER_HEIGHT - 4.0) * zoom;
+    painter.line_segment(
+        [
+            egui::pos2(panel.left(), panel.bottom() - FOOTER_HEIGHT * zoom),
+            egui::pos2(panel.right(), panel.bottom() - FOOTER_HEIGHT * zoom),
+        ],
+        Stroke::new(1.0, RULE),
+    );
+
     painter.text(
-        egui::pos2(left + 4.0 * zoom, y),
+        egui::pos2(panel.left() + 12.0 * zoom, y),
         Align2::LEFT_TOP,
-        "SUSHI INSTRUMENTS  /  MODEL 101",
+        "SUSHI / MODEL 101",
         FontId::new(font_size(8.0, zoom), bold()),
         MUTED,
     );
     painter.text(
-        egui::pos2(right, y),
+        egui::pos2(panel.right() - 12.0 * zoom, y),
         Align2::RIGHT_TOP,
         "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
         FontId::new(font_size(8.0, zoom), bold()),
         MUTED,
+    );
+
+    // The live parameter readout: the reference's central value box.
+    let (label, value) = state
+        .readout
+        .clone()
+        .unwrap_or_else(|| ("PATCH".to_string(), display_text(state)));
+    let box_rect = Rect::from_center_size(
+        egui::pos2(panel.center().x, panel.bottom() - 10.0 * zoom),
+        egui::vec2(300.0, 15.0) * zoom,
+    );
+    flat_box(&painter, box_rect, PAPER);
+    let label = truncate_name(&label, 22);
+    painter.text(
+        egui::pos2(box_rect.left() + 7.0 * zoom, box_rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::new(font_size(8.0, zoom), bold()),
+        TITLE_BLUE,
+    );
+    painter.text(
+        egui::pos2(box_rect.right() - 7.0 * zoom, box_rect.center().y),
+        Align2::RIGHT_CENTER,
+        value,
+        FontId::new(font_size(10.0, zoom), bold()),
+        TEXT,
     );
 }
 
@@ -1387,20 +1360,10 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 };
                 group(ui, rect, title, zoom, |ui, part| match part {
                     Part::Header => {
-                        // Only the waveform lives beside the title. The
-                        // destination moves into the body below, where it has
-                        // the full width and can never run into the ARP title.
-                        ctx.popup(ui, ids.0, wave, 58.0);
+                        ctx.popup(ui, ids.0, wave, 54.0);
+                        ctx.popup(ui, ids.1, target, 54.0);
                     }
                     Part::Body => {
-                        ui.horizontal(|ui| {
-                            let row = (14.0 + 6.0 + 92.0) * zoom;
-                            ui.add_space(((ui.available_width() - row) * 0.5).max(0.0));
-                            text_label(ui, "TO", 8.0, zoom, MUTED);
-                            ui.add_space(6.0 * zoom);
-                            ctx.popup(ui, ids.1, target, 92.0);
-                        });
-                        ui.add_space(6.0 * zoom);
                         column_row_fixed(ui, ids.2, 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
                             match index {
                                 0 => ctx.float(
@@ -1436,7 +1399,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     );
                 }
                 Part::Body => {
-                    column_row_fixed(ui, "arp", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "arp", 5, COLUMN_GAP, 56.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -1482,7 +1445,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             _ => group(ui, rect, "VOICE", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
                 Part::Body => {
-                    column_row_fixed(ui, "voice", 4, COLUMN_GAP, 48.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "voice", 4, COLUMN_GAP, 44.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -1820,6 +1783,11 @@ struct Ctx<'a, 'b> {
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
+    /// The readout slot of the panel.
+    fn readout(&mut self) -> &mut Option<(String, String)> {
+        &mut self.state.readout
+    }
+
     /// Draws a continuous parameter: a caption, a vertical slider and a
     /// numeric field that mirrors (or replaces) the value of the parameter.
     fn float(
@@ -1867,6 +1835,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         self.value_popup_float(ui, id, label, param, knob, &response);
         let value = format_number(knob.display(param.value()), knob.decimals);
+        if response.hovered() || response.dragged() {
+            *self.readout() = Some((
+                label.to_ascii_uppercase(),
+                format!("{}{}", value, param.unit()),
+            ));
+        }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
@@ -1917,6 +1891,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         self.value_popup_int(ui, id, label, param, knob, &response);
         let value = format_number(knob.display(param.value() as f32), knob.decimals);
+        if response.hovered() || response.dragged() {
+            *self.readout() = Some((
+                label.to_ascii_uppercase(),
+                format!("{}{}", value, param.unit()),
+            ));
+        }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
@@ -2093,6 +2073,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
         #[cfg(test)]
         self.state.popup_rects.push(response.rect);
 
+        if response.hovered() {
+            let label = id.replace('_', " ").to_ascii_uppercase();
+            let value = variants[T::to_index(param.value())].to_ascii_uppercase();
+            self.state.readout = Some((label, value));
+        }
+
         // A double click on the button of the popup resets the parameter to
         // its factory default.
         if response.double_clicked() {
@@ -2129,6 +2115,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 FontId::monospace(font_size(9.0, zoom)),
                 TEXT,
             );
+        }
+
+        if response.hovered() {
+            self.state.readout = Some((
+                label.to_ascii_uppercase(),
+                if param.value() { "ON" } else { "OFF" }.to_string(),
+            ));
         }
 
         if response.double_clicked() {
@@ -2174,6 +2167,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 ui.scope_id().with(("sushi-radio", id, index)),
                 Sense::click(),
             );
+            if response.hovered() {
+                self.state.readout = Some((id.to_ascii_uppercase(), variant.to_ascii_uppercase()));
+            }
             let painter = ui.painter_at(rect);
 
             // The active button of the pair is filled darker.
@@ -2638,14 +2634,7 @@ fn group_row(
 /// pulse widths and the arpeggiator, olive for the envelopes and the
 /// amplifier, gray for the rest.
 fn title_color(_title: &str) -> Color32 {
-    TITLE_GREEN
-}
-
-/// The domain colour of a section. It is used for the small tab at the left
-/// of its title and for the short segment of its rule; it never colours the
-/// type itself.
-fn title_accent(_title: &str) -> Color32 {
-    ACCENT
+    TITLE_BLUE
 }
 
 /// Draws a section and hands its header and body to the given callback.
@@ -2658,31 +2647,20 @@ fn group(
 ) {
     let painter = ui.painter_at(rect);
     let color = title_color(title);
-    let accent = title_accent(title);
 
-    // The tab of the domain, then the title in warm paper. The tab is the only
-    // colour on the title line; the type itself stays neutral and readable.
-    let tab = Rect::from_min_size(
-        rect.left_top() + egui::vec2(GROUP_PADDING, 4.0) * zoom,
-        egui::vec2(4.0, 12.0) * zoom,
-    );
-    painter.rect_filled(tab, CornerRadius::ZERO, accent);
-
+    // No vertical accent bars and no coloured rule heads: the reference uses
+    // blue section names on paper and lets the type do the grouping.
     let font = FontId::new(font_size(13.0, zoom), bold());
     let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, color);
     let strip = Rect::from_min_size(
-        rect.left_top() + egui::vec2(GROUP_PADDING + 8.0, 0.0) * zoom,
-        egui::vec2(galley.size().x + 8.0 * zoom, TITLE_HEIGHT * zoom),
+        rect.left_top() + egui::vec2(GROUP_PADDING, 0.0) * zoom,
+        egui::vec2(galley.size().x + 6.0 * zoom, TITLE_HEIGHT * zoom),
     );
-    // The vertical offset is already in device pixels: only the horizontal
-    // inset is a design measure. Multiplying both by the zoom again would
-    // push the title into the parameter labels at large scales.
     let title_pos =
-        strip.left_top() + egui::vec2(4.0 * zoom, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5);
+        strip.left_top() + egui::vec2(0.0, (TITLE_HEIGHT * zoom - galley.size().y) * 0.5);
     painter.galley(title_pos, galley, color);
 
-    // The rule below the title spans the whole section; the first 26 design
-    // pixels are the domain colour, the rest recedes.
+    // A quiet neutral rule remains for structure, but no yellow segment.
     let rule_y = rect.top() + TITLE_HEIGHT * zoom;
     painter.line_segment(
         [
@@ -2691,12 +2669,17 @@ fn group(
         ],
         Stroke::new(1.0, RULE),
     );
+    // A faint line through the fader bank, as in the reference.
+    let body_top = rect.top() + (TITLE_HEIGHT + 3.0) * zoom;
+    let body_bottom = rect.bottom() - GROUP_PADDING * zoom;
+    let bank_center =
+        body_top + LABEL_HEIGHT * zoom + (body_bottom - body_top - LABEL_HEIGHT * zoom) * 0.5;
     painter.line_segment(
         [
-            egui::pos2(rect.left(), rule_y),
-            egui::pos2(rect.left() + 26.0 * zoom, rule_y),
+            egui::pos2(rect.left(), bank_center),
+            egui::pos2(rect.right(), bank_center),
         ],
-        Stroke::new(1.0, accent),
+        Stroke::new(2.0, TICK),
     );
 
     // The header of the section, next to the title.
@@ -2918,10 +2901,13 @@ fn wheel_scroll(ui: &egui::Ui) -> (f32, bool) {
     if fresh { (smooth, fine) } else { (0.0, fine) }
 }
 
-/// A vertical slider: a dark milled slot with open sides, five scale ticks, a
-/// bipolar centre mark and a solid paper handle. The handle never leaves the
-/// slot; the track has no white fill, so the fifty-four faders do not read as
-/// a barcode.
+/// The fraction of the range that the fine rail moves per full-height drag.
+const FINE_DRAG_RANGE: f32 = 0.08;
+
+/// A vertical slider in the style of the SH-101 reference: a white outlined
+/// track split into a wide coarse lane and a narrow fine lane. The coarse
+/// handle is a black bar; the fine lane carries the small black square. The
+/// right lane only changes the value by dragging, so it never jumps.
 fn v_slider(
     ui: &mut egui::Ui,
     value: &mut f32,
@@ -2934,92 +2920,97 @@ fn v_slider(
     let painter = ui.painter_at(rect);
 
     let track = rect.shrink(GROOVE_INSET * zoom);
-    painter.rect_filled(track, CornerRadius::ZERO, TRACK);
+    let fine_width = 6.0 * zoom;
+    let divider = track.right() - fine_width - zoom;
+    let coarse = Rect::from_min_max(track.min, egui::pos2(divider, track.bottom()));
+    let fine = Rect::from_min_max(egui::pos2(divider + zoom, track.top()), track.max);
 
-    // Open sides: a milled slot has no top or bottom border, only two rails.
-    for x in [track.left(), track.right()] {
-        painter.line_segment(
-            [egui::pos2(x, track.top()), egui::pos2(x, track.bottom())],
-            Stroke::new(1.0, LINE),
-        );
+    flat_box(&painter, track, TRACK);
+    painter.line_segment(
+        [
+            egui::pos2(divider, track.top()),
+            egui::pos2(divider, track.bottom()),
+        ],
+        Stroke::new(1.0, LINE),
+    );
+    let id = ui.scope_id().with("sushi-fine-drag");
+    let mut fine_drag: bool = ui
+        .memory(|memory| memory.data.get_temp(id))
+        .unwrap_or(false);
+
+    let pointer = response.interact_pointer_pos();
+    let over_fine = pointer.is_some_and(|pos| pos.x > divider);
+    if response.drag_started() {
+        fine_drag = over_fine;
+        ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
+    }
+    if response.drag_stopped() {
+        fine_drag = false;
+        ui.memory_mut(|memory| memory.data.insert_temp(id, false));
     }
 
-    // Five ticks, drawn inside the left rail so they survive the narrow
-    // columns. They are deliberately quiet: they help the hand, not the eye.
-    for index in 0..=4 {
-        let t = index as f32 / 4.0;
-        let y = track.bottom() - t * track.height();
-        painter.line_segment(
-            [
-                egui::pos2(track.left() + 1.0, y),
-                egui::pos2(track.left() + 5.0 * zoom.min(1.2), y),
-            ],
-            Stroke::new(1.0, TICK),
-        );
-    }
-
-    // A bipolar control gets a centre detent across the slot.
-    if knob.min < 0.0 && knob.max > 0.0 {
-        painter.line_segment(
-            [
-                egui::pos2(track.left(), track.center().y),
-                egui::pos2(track.right(), track.center().y),
-            ],
-            Stroke::new(1.0, MUTED),
-        );
-    }
-
-    // The handle itself: a paper band, fully inside the slot. It turns green
-    // only while the pointer is on it, which makes the live control obvious
-    // without decorating all fifty-four faders.
     let position = value_to_position(*value, knob.min, knob.max, knob.log, track);
     let handle_height = HANDLE_HEIGHT * zoom;
     let handle_center = position.clamp(
         track.top() + handle_height * 0.5,
         track.bottom() - handle_height * 0.5,
     );
-    let handle = Rect::from_center_size(
-        egui::pos2(rect.center().x, handle_center),
-        egui::vec2(
-            (track.width() + 4.0 * zoom).min(rect.width()),
-            handle_height,
-        ),
+
+    // The coarse bar covers the wide lane, and the fine square sits in the
+    // narrow right lane at the same value.
+    let coarse_handle = Rect::from_center_size(
+        egui::pos2(coarse.center().x, handle_center),
+        egui::vec2(coarse.width(), handle_height),
     );
-    let live = response.hovered() || response.dragged();
+    let fine_handle = Rect::from_center_size(
+        egui::pos2(fine.center().x, handle_center),
+        egui::vec2(fine.width(), handle_height),
+    );
+    let coarse_live = response.hovered() && !over_fine || (response.dragged() && !fine_drag);
+    let fine_live = (response.hovered() && over_fine) || (response.dragged() && fine_drag);
     painter.rect_filled(
-        handle,
+        coarse_handle,
         CornerRadius::ZERO,
-        if live { LED_ON } else { HANDLE },
+        if coarse_live { TITLE_BLUE } else { HANDLE },
     );
-    // The index line is permanent, so every cap has a readable value edge
-    // even when the pointer is elsewhere.
-    painter.line_segment(
-        [
-            egui::pos2(handle.left() + 1.0, handle.center().y),
-            egui::pos2(handle.right() - 1.0, handle.center().y),
-        ],
-        Stroke::new(1.0, BG),
+    painter.rect_filled(
+        fine_handle,
+        CornerRadius::ZERO,
+        if fine_live { TITLE_BLUE } else { HANDLE },
     );
 
-    // Dragging anywhere on the track sets the value with the primary button.
-    // The secondary button opens the value editor instead.
-    if (response.dragged_by(egui::PointerButton::Primary)
+    let primary = egui::PointerButton::Primary;
+    if response.dragged_by(primary) && fine_drag {
+        // Fine dragging is relative: it never jumps to the pointer.
+        let normalized = value_to_normalized(*value, knob.min, knob.max, knob.log);
+        let move_by = -response.drag_delta().y / track.height() * FINE_DRAG_RANGE;
+        let moved = (normalized + move_by).clamp(0.0, 1.0);
+        let new_value = position_to_value(moved, knob.min, knob.max, knob.log);
+        if new_value != *value {
+            *value = new_value;
+            response.mark_changed();
+        }
+    } else if (response.dragged_by(primary)
         || (response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_down())))
-        && let Some(pointer) = response.interact_pointer_pos()
+        && let Some(pointer) = pointer
     {
-        let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
-        *value = position_to_value(position, knob.min, knob.max, knob.log);
-        response.mark_changed();
+        // The coarse lane is absolute: clicking anywhere in it jumps there,
+        // as before. The fine lane is deliberately excluded above.
+        if pointer.x <= divider {
+            let position = ((track.bottom() - pointer.y) / track.height()).clamp(0.0, 1.0);
+            *value = position_to_value(position, knob.min, knob.max, knob.log);
+            response.mark_changed();
+        }
     }
 
-    // The mouse wheel moves the value by one step, as long as the slider is
-    // hovered and is not being dragged. The value is moved in the
-    // normalized space of the range, so that a logarithmic range is as
-    // gentle as a linear one.
     if response.hovered() && !response.dragged() && !response.is_pointer_button_down_on() {
         let (scroll, fine) = wheel_scroll(ui);
         if scroll != 0.0 {
-            let step = if fine { WHEEL_STEP_FINE } else { WHEEL_STEP };
+            let step = if fine || over_fine {
+                WHEEL_STEP_FINE
+            } else {
+                WHEEL_STEP
+            };
             let direction = if scroll > 0.0 { 1.0 } else { -1.0 };
             let normalized = value_to_normalized(*value, knob.min, knob.max, knob.log);
             let moved = (normalized + direction * step).clamp(0.0, 1.0);
@@ -3098,14 +3089,14 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
 /// 1/32 still looks alive: it becomes a small, moving color cycle.
 fn arp_light_color(step: usize) -> Color32 {
     const COLORS: [Color32; 8] = [
-        Color32::from_rgb(0x1F, 0xA8, 0x4A), // green
-        Color32::from_rgb(0x9B, 0xBF, 0x30), // lime
-        Color32::from_rgb(0xD4, 0xA0, 0x17), // amber
-        Color32::from_rgb(0xE0, 0x70, 0x2A), // orange
-        Color32::from_rgb(0xD2, 0x3B, 0x3B), // red
-        Color32::from_rgb(0xB8, 0x4F, 0xA8), // magenta
-        Color32::from_rgb(0x4A, 0x6F, 0xD4), // blue
-        Color32::from_rgb(0x1E, 0x9E, 0x9E), // cyan
+        Color32::from_rgb(0x2A, 0x9D, 0x6A), // green
+        Color32::from_rgb(0x1E, 0x9E, 0x9E), // teal
+        Color32::from_rgb(0x3A, 0xA6, 0xC9), // cyan
+        Color32::from_rgb(0x3F, 0x6F, 0xB5), // blue
+        Color32::from_rgb(0x59, 0x61, 0xB3), // indigo
+        Color32::from_rgb(0x8A, 0x5B, 0xB5), // violet
+        Color32::from_rgb(0xB3, 0x55, 0xA3), // magenta
+        Color32::from_rgb(0xC1, 0x4B, 0x56), // red
     ];
     COLORS[step % COLORS.len()]
 }
@@ -3161,15 +3152,18 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
 
     let primary = text == "MUTATE";
     let pressed = response.is_pointer_button_down_on();
-    let fill = if pressed { BUTTON_ACTIVE } else { BUTTON_BG };
+    let fill = if primary {
+        if pressed {
+            BUTTON_ACTIVE
+        } else {
+            Color32::from_rgb(0xDD, 0xE4, 0xEF)
+        }
+    } else if pressed {
+        BUTTON_ACTIVE
+    } else {
+        BUTTON_BG
+    };
     flat_box(&painter, rect, fill);
-    if primary {
-        painter.rect_filled(
-            Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()) * zoom),
-            CornerRadius::ZERO,
-            ACCENT,
-        );
-    }
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -3323,8 +3317,8 @@ fn absolute_path(path: &Path) -> PathBuf {
 // --- The theme ---------------------------------------------------------------
 
 fn apply_theme(ctx: &egui::Context, zoom: f32) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.dark_mode = true;
+    let mut visuals = egui::Visuals::light();
+    visuals.dark_mode = false;
     visuals.override_text_color = Some(TEXT);
     visuals.panel_fill = BG;
     visuals.window_fill = BG;
@@ -3335,7 +3329,7 @@ fn apply_theme(ctx: &egui::Context, zoom: f32) {
     visuals.popup_shadow = egui::epaint::Shadow::NONE;
     visuals.extreme_bg_color = FIELD_BG;
     visuals.text_edit_bg_color = Some(FIELD_BG);
-    visuals.faint_bg_color = FIELD_BG;
+    visuals.faint_bg_color = BG;
     visuals.code_bg_color = FIELD_BG;
     visuals.hyperlink_color = TEXT;
     visuals.slider_trailing_fill = false;
@@ -3704,6 +3698,64 @@ mod tests {
             continuous + counts.popups + counts.checks + counts.radios,
             71
         );
+    }
+
+    #[test]
+    fn dragging_the_fine_rail_moves_the_value_slowly() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[TUNE_SLIDER];
+        let start = egui::pos2(rect.right() - 4.0, rect.center().y);
+        let end = start - egui::vec2(0.0, 20.0);
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(start)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerMoved(end)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+            ],
+        );
+
+        let value = params.tune.value();
+        assert!(
+            value > 0.0 && value < 2.0,
+            "the fine rail was not fine: {value}"
+        );
+    }
+
+    #[test]
+    fn hovering_a_slider_updates_the_bottom_readout() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let pos = sliders[TUNE_SLIDER].center();
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::PointerMoved(pos)])],
+        );
+
+        let (label, value) = editor
+            .state
+            .readout
+            .clone()
+            .expect("the bottom bar has no readout");
+        assert_eq!(label, "TUNE");
+        assert!(value.ends_with("st"), "the readout lost its unit: {value}");
     }
 
     #[test]
@@ -4280,8 +4332,6 @@ mod tests {
         for route in ["01", "02", "03", "04", "05", "06", "07", "08"] {
             assert!(names.contains(&route.to_string()), "missing route {route}");
         }
-        assert!(names.contains(&"MOD ROUTES A".to_string()));
-        assert!(names.contains(&"MOD ROUTES B".to_string()));
 
         // A second click brings the sound controls back.
         run_frames(&ctx, &mut editor, click(button));
@@ -5085,20 +5135,20 @@ mod tests {
         // The title of every section and the place where it has to be: the
         // left edge of its section and the top of its row.
         let expected = [
-            ("VCO 1", 24.0, 72.0),
-            ("VCO 2", 276.0, 72.0),
-            ("PULSE WIDTH", 480.0, 72.0),
-            ("SOURCE MIXER", 616.0, 72.0),
-            ("VCF", 24.0, 205.0),
-            ("MOD ENV", 384.0, 205.0),
-            ("AMP ENV", 680.0, 205.0),
-            ("LFO 1", 24.0, 338.0),
-            ("LFO 2", 226.0, 338.0),
-            ("ARP", 428.0, 338.0),
-            ("VOICE", 760.0, 338.0),
-            ("FX", 24.0, 471.0),
-            ("MACROS", 588.0, 471.0),
-            ("VCA", 816.0, 471.0),
+            ("VCO 1", 12.0, 64.0),
+            ("VCO 2", 264.0, 64.0),
+            ("PULSE WIDTH", 468.0, 64.0),
+            ("SOURCE MIXER", 604.0, 64.0),
+            ("VCF", 12.0, 195.0),
+            ("MOD ENV", 372.0, 195.0),
+            ("AMP ENV", 668.0, 195.0),
+            ("LFO 1", 12.0, 326.0),
+            ("LFO 2", 234.0, 326.0),
+            ("ARP", 456.0, 326.0),
+            ("VOICE", 768.0, 326.0),
+            ("FX", 12.0, 457.0),
+            ("MACROS", 576.0, 457.0),
+            ("VCA", 804.0, 457.0),
         ];
 
         let titles: Vec<(String, egui::Pos2)> = texts(&output)
