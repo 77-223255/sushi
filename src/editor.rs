@@ -3011,62 +3011,72 @@ struct FineDrag {
     start_y: f32,
 }
 
-/// The geometry of one two-lane fader. All horizontal and vertical paddings
-/// are derived here, so the coarse thumb always has equal margins on both
-/// sides and the fine thumb is centered in its own lane.
+/// The geometry of one two-lane fader. The thumb width is a ratio of the
+/// inner lane width and the thumb is always centered in that lane, so the
+/// blank margins are identical by construction no matter how wide the panel
+/// or the fader becomes.
 #[derive(Clone, Copy)]
 struct FaderGeometry {
     track: Rect,
-    coarse: Rect,
-    fine: Rect,
+    coarse_lane: Rect,
+    fine_lane: Rect,
     divider: f32,
     handle_height: f32,
-    inset: f32,
+    vertical_inset: f32,
 }
 
 impl FaderGeometry {
+    const COARSE_THUMB_RATIO: f32 = 0.75;
+    const FINE_THUMB_RATIO: f32 = 0.62;
+
     fn new(rect: Rect, zoom: f32) -> Self {
         let track = rect.shrink(GROOVE_INSET * zoom);
         let fine_width = 8.0 * zoom;
         let divider = track.right() - fine_width;
-        let coarse = Rect::from_min_max(track.min, egui::pos2(divider, track.bottom()));
-        let fine = Rect::from_min_max(egui::pos2(divider + zoom, track.top()), track.max);
+        let border = zoom;
+        // Inner lanes exclude the outer frame and the divider line. A thumb
+        // is centered in one of these lanes, never in the full track.
+        let coarse_lane = Rect::from_min_max(
+            egui::pos2(track.left() + border, track.top()),
+            egui::pos2(divider - border, track.bottom()),
+        );
+        let fine_lane = Rect::from_min_max(
+            egui::pos2(divider + border, track.top()),
+            egui::pos2(track.right() - border, track.bottom()),
+        );
         Self {
             track,
-            coarse,
-            fine,
+            coarse_lane,
+            fine_lane,
             divider,
             handle_height: HANDLE_HEIGHT * zoom,
-            inset: HANDLE_INSET * zoom,
+            vertical_inset: HANDLE_INSET * zoom,
         }
     }
 
     /// The vertical centre of both thumbs for a parameter position.
     fn thumb_y(&self, position: f32) -> f32 {
         position.clamp(
-            self.track.top() + self.handle_height * 0.5 + self.inset,
-            self.track.bottom() - self.handle_height * 0.5 - self.inset,
+            self.track.top() + self.handle_height * 0.5 + self.vertical_inset,
+            self.track.bottom() - self.handle_height * 0.5 - self.vertical_inset,
         )
     }
 
-    /// The coarse thumb, with the same blank margin on its left and right.
+    /// A thumb centered in its lane. The two side margins are the same by
+    /// definition, which is the whole point of this helper.
+    fn thumb(&self, lane: Rect, ratio: f32, y: f32) -> Rect {
+        Rect::from_center_size(
+            egui::pos2(lane.center().x, y),
+            egui::vec2((lane.width() * ratio).max(2.0), self.handle_height),
+        )
+    }
+
     fn coarse_thumb(&self, y: f32) -> Rect {
-        let width = (self.coarse.width() - 2.0 * self.inset).max(2.0);
-        Rect::from_center_size(
-            egui::pos2(self.coarse.center().x, y),
-            egui::vec2(width, self.handle_height),
-        )
+        self.thumb(self.coarse_lane, Self::COARSE_THUMB_RATIO, y)
     }
 
-    /// The fine thumb, with the same blank margin on both sides of its lane.
     fn fine_thumb(&self, y: f32) -> Rect {
-        // The fine square needs a little more width than the coarse bar, so
-        // its side margins are half the coarse inset.
-        let width = (self.fine.width() - self.inset).max(2.0);
-        Rect::from_center_size(
-            egui::pos2(self.fine.center().x, y),
-            egui::vec2(width, self.handle_height),
-        )
+        self.thumb(self.fine_lane, Self::FINE_THUMB_RATIO, y)
     }
 }
 
@@ -3098,15 +3108,20 @@ fn v_slider(
     let mut fine_drag: FineDrag = ui
         .memory(|memory| memory.data.get_temp(id))
         .unwrap_or_default();
+    // `interact_pointer_pos()` is None while merely hovering. Use the real
+    // hover position for lane highlighting and the interaction position only
+    // for the drag math.
+    let hover_pos = ui.input(|input| input.pointer.hover_pos());
     let pointer = response.interact_pointer_pos();
-    let over_fine = pointer.is_some_and(|pos| pos.x > geometry.divider);
+    let over_fine = hover_pos.is_some_and(|pos| pos.x > geometry.divider);
     let pressed = ui.input(|input| input.pointer.primary_pressed());
 
     if (response.drag_started() || pressed) && over_fine && !fine_drag.active {
+        let start = pointer.or(hover_pos);
         fine_drag = FineDrag {
             active: true,
             base: value_to_normalized(*value, knob.min, knob.max, knob.log),
-            start_y: pointer.map_or(0.0, |pos| pos.y),
+            start_y: start.map_or(0.0, |pos| pos.y),
         };
         ui.memory_mut(|memory| memory.data.insert_temp(id, fine_drag));
     } else if (response.drag_started() || pressed) && !over_fine && !fine_drag.active {
@@ -3831,6 +3846,23 @@ mod tests {
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
     const VOICES_SLIDER: usize = 42;
+
+    #[test]
+    fn fader_thumbs_keep_equal_side_margins() {
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(SLIDER_WIDTH, 200.0));
+        let geometry = FaderGeometry::new(rect, 1.0);
+        for (lane, thumb) in [
+            (geometry.coarse_lane, geometry.coarse_thumb(100.0)),
+            (geometry.fine_lane, geometry.fine_thumb(100.0)),
+        ] {
+            let left = thumb.left() - lane.left();
+            let right = lane.right() - thumb.right();
+            assert!(
+                (left - right).abs() < 0.01,
+                "the thumb is not centered in its lane: left {left}, right {right}"
+            );
+        }
+    }
 
     #[test]
     fn the_panel_has_the_expected_number_of_widgets() {
