@@ -414,6 +414,9 @@ struct EditorState {
     /// The places of the radio buttons of the last frame.
     #[cfg(test)]
     radio_rects: Vec<egui::Rect>,
+    /// The places of the popup buttons of the last frame.
+    #[cfg(test)]
+    popup_rects: Vec<egui::Rect>,
     /// The configuration of the patch browser.
     patch_config: patch::PatchConfig,
     /// Whether the window of the patch browser is open.
@@ -499,6 +502,8 @@ impl SushiEditor {
                 check_rects: Vec::new(),
                 #[cfg(test)]
                 radio_rects: Vec::new(),
+                #[cfg(test)]
+                popup_rects: Vec::new(),
                 patch_config: patch::PatchConfig::default(),
                 patch_open: false,
                 patch_dir_text: String::new(),
@@ -966,23 +971,23 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     );
     small_scope(&painter, scope, ctx.history, zoom);
 
-    let activity = egui::pos2(rect.right() - 190.0 * zoom, rect.top() + 16.0 * zoom);
+    let activity = egui::pos2(rect.right() - 198.0 * zoom, rect.top() + 16.0 * zoom);
     led(&painter, activity, LED_ON, ctx.state.activity > 0.002, zoom);
     painter.text(
         egui::pos2(activity.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "ACT",
-        FontId::proportional(font_size(8.0, zoom)),
+        FontId::proportional(font_size(9.0, zoom)),
         MUTED,
     );
 
-    let clipping = egui::pos2(rect.right() - 162.0 * zoom, rect.top() + 16.0 * zoom);
+    let clipping = egui::pos2(rect.right() - 170.0 * zoom, rect.top() + 16.0 * zoom);
     led(&painter, clipping, LED_RED, ctx.state.clipping > 0.5, zoom);
     painter.text(
         egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "CLIP",
-        FontId::proportional(font_size(8.0, zoom)),
+        FontId::proportional(font_size(9.0, zoom)),
         MUTED,
     );
 }
@@ -1382,10 +1387,20 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 };
                 group(ui, rect, title, zoom, |ui, part| match part {
                     Part::Header => {
+                        // Only the waveform lives beside the title. The
+                        // destination moves into the body below, where it has
+                        // the full width and can never run into the ARP title.
                         ctx.popup(ui, ids.0, wave, 58.0);
-                        ctx.popup(ui, ids.1, target, 64.0);
                     }
                     Part::Body => {
+                        ui.horizontal(|ui| {
+                            let row = (14.0 + 6.0 + 92.0) * zoom;
+                            ui.add_space(((ui.available_width() - row) * 0.5).max(0.0));
+                            text_label(ui, "TO", 8.0, zoom, MUTED);
+                            ui.add_space(6.0 * zoom);
+                            ctx.popup(ui, ids.1, target, 92.0);
+                        });
+                        ui.add_space(6.0 * zoom);
                         column_row_fixed(ui, ids.2, 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
                             match index {
                                 0 => ctx.float(
@@ -2074,6 +2089,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 }
             })
             .response;
+
+        #[cfg(test)]
+        self.state.popup_rects.push(response.rect);
 
         // A double click on the button of the popup resets the parameter to
         // its factory default.
@@ -4276,7 +4294,7 @@ mod tests {
 
     #[test]
     fn no_two_texts_overlap_at_any_zoom() {
-        for percent in [100, 125, 150, 175, 200, 250, 300, 400] {
+        for percent in (100..=400).step_by(5) {
             let zoom = percent as f32 / 100.0;
             for mod_page in [false, true] {
                 let (ctx, mut editor, _params) = make_editor();
@@ -4300,6 +4318,18 @@ mod tests {
                             overlap.width() <= 1.0 || overlap.height() <= 1.0,
                             "the text {text:?} is covered by a slider at {percent}% (mod={mod_page}): \
 {rect:?} / {slider:?}"
+                        );
+                    }
+                    for popup in &editor.state.popup_rects {
+                        // The selected text lives inside its own popup button.
+                        if popup.contains(rect.center()) {
+                            continue;
+                        }
+                        let overlap = rect.expand(4.0 * zoom).intersect(*popup);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the text {text:?} is too close to a popup at {percent}% (mod={mod_page}): \
+{rect:?} / {popup:?}"
                         );
                     }
                 }
