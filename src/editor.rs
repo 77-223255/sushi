@@ -3456,7 +3456,7 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
                 egui::FontFamily::Proportional
             },
         ),
-        if primary { PAPER } else { TEXT },
+        TEXT,
     );
 
     response
