@@ -5,6 +5,10 @@
 
 use std::f32::consts::PI;
 
+use super::adaa::AdaaTanh;
+use super::reverb::Reverb;
+use super::reverb_legacy::LegacyReverb;
+
 /// The base delay of the chorus in seconds.
 const CHORUS_BASE_DELAY: f32 = 0.012;
 /// The maximum modulation depth of the chorus in seconds.
@@ -15,20 +19,10 @@ const CHORUS_LOWPASS: f32 = 8_000.0;
 const DELAY_MAX_TIME: f32 = 2.0;
 /// The frequency of the lowpass in the feedback path of the delay, in Hz.
 const DELAY_LOWPASS: f32 = 5_000.0;
-/// The pre delay of the reverb, in seconds.
-const REVERB_PREDELAY: f32 = 0.015;
-/// The frequency of the lowpass of the input of the reverb, in Hz.
-const REVERB_LOWPASS: f32 = 8_000.0;
-/// The comb filter tunings of the reverb, in samples.
-const COMB_TUNINGS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
-/// The allpass filter tunings of the reverb, in samples.
-const ALLPASS_TUNINGS: [usize; 4] = [556, 441, 341, 225];
-/// The stereo spread of the reverb, in samples.
-const STEREO_SPREAD: usize = 23;
-/// The damping of the reverb's comb filters.
-const REVERB_DAMPING: f32 = 0.25;
-/// The input gain of the reverb.
-const REVERB_INPUT_GAIN: f32 = 0.015;
+/// The time constant of the one-pole that follows a change of the delay time,
+/// in seconds. Without it a moved control jumps the read position, which is
+/// heard as a click or a zipper.
+const DELAY_TIME_SMOOTHING: f32 = 0.02;
 /// The mix below which an effect is switched off completely.
 const BYPASS_MIX: f32 = 1e-4;
 
@@ -43,6 +37,9 @@ pub struct FxParams {
     pub delay_mix: f32,
     pub reverb_mix: f32,
     pub reverb_decay: f32,
+    /// Use the original Freeverb-style reverb and the unprocessed feedback
+    /// path. Set by the legacy flavor.
+    pub legacy: bool,
 }
 
 impl Default for FxParams {
@@ -56,6 +53,7 @@ impl Default for FxParams {
             delay_mix: 0.0,
             reverb_mix: 0.0,
             reverb_decay: 0.6,
+            legacy: false,
         }
     }
 }
@@ -66,74 +64,19 @@ fn lowpass_coefficient(frequency: f32, sample_rate: f32) -> f32 {
     1.0 - (-2.0 * PI * frequency / sample_rate.max(1.0)).exp()
 }
 
+/// The coefficient of a one-pole that follows a control with the given time
+/// constant. The time constant is in seconds, so the smoothing takes the same
+/// time at every sample rate.
+#[inline]
+fn smoothing_coefficient(time_seconds: f32, sample_rate: f32) -> f32 {
+    let samples = (time_seconds.max(1e-6) * sample_rate.max(1.0)).max(1.0);
+    1.0 - (-1.0 / samples).exp()
+}
+
 /// Flushes a value that is too small to be heard to exactly zero.
 #[inline]
 fn flush_denormal(value: f32) -> f32 {
     if value.abs() < 1e-20 { 0.0 } else { value }
-}
-
-/// A damped comb filter with a lowpass in its feedback path.
-struct Comb {
-    buffer: Vec<f32>,
-    index: usize,
-    filter_store: f32,
-}
-
-impl Comb {
-    fn new(size: usize) -> Self {
-        Self {
-            buffer: vec![0.0; size],
-            index: 0,
-            filter_store: 0.0,
-        }
-    }
-
-    #[inline]
-    fn process(&mut self, input: f32, feedback: f32, damping: f32) -> f32 {
-        let output = self.buffer[self.index];
-        self.filter_store = output * (1.0 - damping) + self.filter_store * damping;
-        // Flush the denormal state, so that the comb doesn't drag the CPU down
-        // with it once the signal has died away.
-        self.filter_store = flush_denormal(self.filter_store);
-        self.buffer[self.index] = input + self.filter_store * feedback;
-        self.index = (self.index + 1) % self.buffer.len();
-        output
-    }
-
-    fn reset(&mut self) {
-        self.buffer.fill(0.0);
-        self.index = 0;
-        self.filter_store = 0.0;
-    }
-}
-
-/// A Schroeder allpass filter.
-struct Allpass {
-    buffer: Vec<f32>,
-    index: usize,
-}
-
-impl Allpass {
-    fn new(size: usize) -> Self {
-        Self {
-            buffer: vec![0.0; size],
-            index: 0,
-        }
-    }
-
-    #[inline]
-    fn process(&mut self, input: f32) -> f32 {
-        let buffered = self.buffer[self.index];
-        let output = -input + buffered;
-        self.buffer[self.index] = input + buffered * 0.5;
-        self.index = (self.index + 1) % self.buffer.len();
-        output
-    }
-
-    fn reset(&mut self) {
-        self.buffer.fill(0.0);
-        self.index = 0;
-    }
 }
 
 /// The effect chain of the synthesizer.
@@ -155,24 +98,31 @@ pub struct Fx {
     delay_left: Vec<f32>,
     delay_right: Vec<f32>,
     delay_index: usize,
+    /// The smoothed delay time of the ping-pong delay, in samples. `None`
+    /// until the first sample is processed, so the first read uses the
+    /// requested time directly instead of ramping up from zero.
+    delay_time_samples: Option<f32>,
+    /// The coefficient of the one-pole that smoothes the delay time.
+    delay_smoothing: f32,
     /// The state of the lowpass in the feedback path.
     delay_lp_left: f32,
     delay_lp_right: f32,
     /// The coefficient of the lowpass in the feedback path.
     delay_coefficient: f32,
+    /// Anti-aliased saturation in the delay feedback.
+    delay_adaa_left: AdaaTanh,
+    delay_adaa_right: AdaaTanh,
 
     // The reverb.
-    combs: [Vec<Comb>; 2],
-    allpasses: [Vec<Allpass>; 2],
-    /// The delay line of the pre delay.
-    predelay_left: Vec<f32>,
-    predelay_right: Vec<f32>,
-    predelay_index: usize,
-    /// The state of the lowpass of the input.
-    reverb_lp_left: f32,
-    reverb_lp_right: f32,
-    /// The coefficient of the lowpass of the input.
-    reverb_coefficient: f32,
+    reverb: Reverb,
+    legacy_reverb: LegacyReverb,
+    /// The flavor used by the previous sample. Switching flavors clears the
+    /// reverb that was not running, so it cannot replay stale audio.
+    last_legacy: Option<bool>,
+    /// Whether the whole chain was bypassed on the previous sample. The
+    /// first bypassed sample clears all the state, so re-enabling an effect
+    /// cannot replay an old tail.
+    bypassed: bool,
 }
 
 impl Fx {
@@ -184,21 +134,6 @@ impl Fx {
         let chorus_len =
             (sample_rate * (CHORUS_BASE_DELAY + CHORUS_MAX_DEPTH + 0.002)).ceil() as usize + 2;
         let delay_len = (sample_rate * DELAY_MAX_TIME).ceil() as usize + 2;
-        let predelay_len = (sample_rate * REVERB_PREDELAY).ceil() as usize + 2;
-
-        let mut combs: [Vec<Comb>; 2] = [Vec::new(), Vec::new()];
-        let mut allpasses: [Vec<Allpass>; 2] = [Vec::new(), Vec::new()];
-        for channel in 0..2 {
-            let spread = if channel == 0 { 0 } else { STEREO_SPREAD };
-            combs[channel] = COMB_TUNINGS
-                .iter()
-                .map(|tuning| Comb::new(tuning + spread + 1))
-                .collect();
-            allpasses[channel] = ALLPASS_TUNINGS
-                .iter()
-                .map(|tuning| Allpass::new(tuning + spread + 1))
-                .collect();
-        }
 
         Self {
             sample_rate,
@@ -212,17 +147,17 @@ impl Fx {
             delay_left: vec![0.0; delay_len],
             delay_right: vec![0.0; delay_len],
             delay_index: 0,
+            delay_time_samples: None,
+            delay_smoothing: smoothing_coefficient(DELAY_TIME_SMOOTHING, sample_rate),
             delay_lp_left: 0.0,
             delay_lp_right: 0.0,
             delay_coefficient: lowpass_coefficient(DELAY_LOWPASS, sample_rate),
-            combs,
-            allpasses,
-            predelay_left: vec![0.0; predelay_len],
-            predelay_right: vec![0.0; predelay_len],
-            predelay_index: 0,
-            reverb_lp_left: 0.0,
-            reverb_lp_right: 0.0,
-            reverb_coefficient: lowpass_coefficient(REVERB_LOWPASS, sample_rate),
+            delay_adaa_left: AdaaTanh::default(),
+            delay_adaa_right: AdaaTanh::default(),
+            reverb: Reverb::new(sample_rate),
+            legacy_reverb: LegacyReverb::new(sample_rate),
+            last_legacy: None,
+            bypassed: true,
         }
     }
 
@@ -237,21 +172,15 @@ impl Fx {
         self.delay_left.fill(0.0);
         self.delay_right.fill(0.0);
         self.delay_index = 0;
+        self.delay_time_samples = None;
         self.delay_lp_left = 0.0;
         self.delay_lp_right = 0.0;
-        self.predelay_left.fill(0.0);
-        self.predelay_right.fill(0.0);
-        self.predelay_index = 0;
-        self.reverb_lp_left = 0.0;
-        self.reverb_lp_right = 0.0;
-        for channel in 0..2 {
-            for comb in &mut self.combs[channel] {
-                comb.reset();
-            }
-            for allpass in &mut self.allpasses[channel] {
-                allpass.reset();
-            }
-        }
+        self.delay_adaa_left = AdaaTanh::default();
+        self.delay_adaa_right = AdaaTanh::default();
+        self.reverb.reset();
+        self.legacy_reverb.reset();
+        self.last_legacy = None;
+        self.bypassed = true;
     }
 
     /// Processes a single stereo sample.
@@ -259,6 +188,38 @@ impl Fx {
         // The effect chain is not initialized yet.
         if self.delay_left.is_empty() {
             return (left, right);
+        }
+
+        // Clamp first, so a fully bypassed chain is detected before any
+        // effect updates its state.
+        let chorus_mix = params.chorus_mix.clamp(0.0, 1.0);
+        let delay_mix = params.delay_mix.clamp(0.0, 1.0);
+        let reverb_mix = params.reverb_mix.clamp(0.0, 1.0);
+        let all_bypassed =
+            chorus_mix <= BYPASS_MIX && delay_mix <= BYPASS_MIX && reverb_mix <= BYPASS_MIX;
+
+        if all_bypassed {
+            if !self.bypassed {
+                // Entering bypass clears every delay line and the reverb, so
+                // a later enable starts from silence instead of replaying an
+                // old tail.
+                self.reset();
+            }
+            return (left, right);
+        }
+
+        // The reset on entering bypass left the state clean, including
+        // `last_legacy`. The first active sample can therefore start here.
+        self.bypassed = false;
+
+        if self.last_legacy != Some(params.legacy) {
+            // Switching flavor resets both reverb engines and the delay
+            // saturator so no state from the other algorithm leaks in.
+            self.reverb.reset();
+            self.legacy_reverb.reset();
+            self.delay_adaa_left = AdaaTanh::default();
+            self.delay_adaa_right = AdaaTanh::default();
+            self.last_legacy = Some(params.legacy);
         }
 
         let (left, right) = self.process_chorus(left, right, params);
@@ -269,11 +230,6 @@ impl Fx {
     /// A two tap chorus with a quadrature LFO.
     fn process_chorus(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
         let mix = params.chorus_mix.clamp(0.0, 1.0);
-        if mix <= BYPASS_MIX {
-            // The chorus is switched off, so the dry signal is passed through
-            // without touching the delay lines.
-            return (left, right);
-        }
 
         let sample_rate = self.sample_rate;
 
@@ -294,7 +250,12 @@ impl Fx {
         let index = self.chorus_index;
         self.chorus_left[index] = left;
         self.chorus_right[index] = right;
-        self.chorus_index = (index + 1) % self.chorus_left.len();
+        let next_index = index + 1;
+        self.chorus_index = if next_index == self.chorus_left.len() {
+            0
+        } else {
+            next_index
+        };
 
         let mut wet_left = read_interpolated(&self.chorus_left, index, delay_left);
         let mut wet_right = read_interpolated(&self.chorus_right, index, delay_right);
@@ -308,6 +269,12 @@ impl Fx {
         wet_left = self.chorus_lp_left;
         wet_right = self.chorus_lp_right;
 
+        if mix <= BYPASS_MIX {
+            // Keep the delay line and the LFO moving so re-enabling the
+            // chorus cannot play audio from minutes ago.
+            return (left, right);
+        }
+
         (
             left * (1.0 - mix) + wet_left * mix,
             right * (1.0 - mix) + wet_right * mix,
@@ -317,15 +284,29 @@ impl Fx {
     /// A ping-pong delay with a fractional read position.
     fn process_delay(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
         let mix = params.delay_mix.clamp(0.0, 1.0);
-        if mix <= BYPASS_MIX {
-            // The delay is switched off, so the dry signal is passed through.
-            return (left, right);
-        }
 
         let len = self.delay_left.len();
         let max_delay = (len - 2) as f32;
-        let delay = (params.delay_time_s * self.sample_rate).clamp(1.0, max_delay);
-        let feedback = params.delay_feedback.clamp(0.0, 0.95);
+        let target = (params.delay_time_s * self.sample_rate).clamp(1.0, max_delay);
+        // Follow the requested time with a one-pole. A static delay adds
+        // exactly zero on every step, so its output does not change at all;
+        // a moved control glides instead of stepping the read position.
+        let delay = match self.delay_time_samples {
+            Some(current) => {
+                (current + (target - current) * self.delay_smoothing).clamp(1.0, max_delay)
+            }
+            // The first sample (and the first after a reset) uses the
+            // requested delay directly.
+            None => target,
+        };
+        self.delay_time_samples = Some(delay);
+        // A bypassed delay writes the dry signal without feedback, so old
+        // repeats cannot survive in the line and reappear later.
+        let feedback = if mix <= BYPASS_MIX {
+            0.0
+        } else {
+            params.delay_feedback.clamp(0.0, 0.95)
+        };
 
         // Read the delayed signal before writing the new one.
         let wet_left = read_interpolated(&self.delay_left, self.delay_index, delay);
@@ -333,8 +314,20 @@ impl Fx {
 
         // The feedback is damped and softly clipped, so that a long feedback
         // does not build up into a howl.
-        let mut feedback_left = (wet_right * feedback).tanh();
-        let mut feedback_right = (wet_left * feedback).tanh();
+        let (mut feedback_left, mut feedback_right) = if feedback > 0.0 {
+            if params.legacy {
+                ((wet_right * feedback).tanh(), (wet_left * feedback).tanh())
+            } else {
+                (
+                    self.delay_adaa_left.process(wet_right * feedback),
+                    self.delay_adaa_right.process(wet_left * feedback),
+                )
+            }
+        } else {
+            self.delay_adaa_left.reset();
+            self.delay_adaa_right.reset();
+            (0.0, 0.0)
+        };
         self.delay_lp_left += (feedback_left - self.delay_lp_left) * self.delay_coefficient;
         self.delay_lp_right += (feedback_right - self.delay_lp_right) * self.delay_coefficient;
         self.delay_lp_left = flush_denormal(self.delay_lp_left);
@@ -345,7 +338,13 @@ impl Fx {
         // Ping-pong: the left channel is fed by the right one and vice versa.
         self.delay_left[self.delay_index] = left + feedback_left;
         self.delay_right[self.delay_index] = right + feedback_right;
-        self.delay_index = (self.delay_index + 1) % len;
+        let next_index = self.delay_index + 1;
+        self.delay_index = if next_index == len { 0 } else { next_index };
+
+        if mix <= BYPASS_MIX {
+            // The line is kept up to date while the delay is bypassed.
+            return (left, right);
+        }
 
         (
             left * (1.0 - mix) + wet_left * mix,
@@ -353,50 +352,35 @@ impl Fx {
         )
     }
 
-    /// A compact freeverb style reverb: eight damped comb filters followed by
-    /// four allpass filters per channel.
+    /// A modulated feedback delay network reverb. The dry and wet signals are
+    /// crossfaded instead of simply added, so the effect does not raise the
+    /// perceived level when the mix is turned up.
     fn process_reverb(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
         let mix = params.reverb_mix.clamp(0.0, 1.0);
+
+        let (wet_left, wet_right) = if params.legacy {
+            self.legacy_reverb
+                .process(left, right, params.reverb_decay, mix)
+        } else {
+            self.reverb.process(left, right, params.reverb_decay, mix)
+        };
+
         if mix <= BYPASS_MIX {
-            // The reverb is switched off, so the dry signal is passed through.
+            // The reverb keeps its lines current while bypassed, so enabling
+            // it again cannot replay an old tail.
             return (left, right);
         }
 
-        // The pre delay: the signal of the reverb starts a little bit later
-        // than the dry signal.
-        let index = self.predelay_index;
-        let delayed_left = self.predelay_left[index];
-        let delayed_right = self.predelay_right[index];
-        self.predelay_left[index] = left;
-        self.predelay_right[index] = right;
-        self.predelay_index = (index + 1) % self.predelay_left.len();
-
-        // The input of the reverb is lowpassed.
-        self.reverb_lp_left += (delayed_left - self.reverb_lp_left) * self.reverb_coefficient;
-        self.reverb_lp_right += (delayed_right - self.reverb_lp_right) * self.reverb_coefficient;
-        self.reverb_lp_left = flush_denormal(self.reverb_lp_left);
-        self.reverb_lp_right = flush_denormal(self.reverb_lp_right);
-
-        let feedback = 0.7 + 0.28 * params.reverb_decay.clamp(0.0, 1.0);
-
-        let wet_left = self.reverb_channel(0, self.reverb_lp_left * REVERB_INPUT_GAIN, feedback);
-        let wet_right = self.reverb_channel(1, self.reverb_lp_right * REVERB_INPUT_GAIN, feedback);
-
-        (left + wet_left * mix, right + wet_right * mix)
-    }
-
-    /// Runs the reverb of a single channel.
-    fn reverb_channel(&mut self, channel: usize, input: f32, feedback: f32) -> f32 {
-        let mut output = 0.0;
-        for comb in &mut self.combs[channel] {
-            output += comb.process(input, feedback, REVERB_DAMPING);
+        // The old Freeverb path added its wet signal, while the FDN uses a
+        // dry/wet crossfade.
+        if params.legacy {
+            (left + wet_left * mix, right + wet_right * mix)
+        } else {
+            (
+                left * (1.0 - mix) + wet_left * mix,
+                right * (1.0 - mix) + wet_right * mix,
+            )
         }
-        for allpass in &mut self.allpasses[channel] {
-            output = allpass.process(output);
-        }
-        // The allpass filters take a lot of energy out of the signal, so the
-        // wet signal is boosted to make the reverb audible.
-        output * 3.0
     }
 }
 
@@ -405,10 +389,22 @@ impl Fx {
 #[inline]
 fn read_interpolated(buffer: &[f32], write_index: usize, delay: f32) -> f32 {
     let len = buffer.len();
-    let position = (write_index as f32 - delay).rem_euclid(len as f32);
-    let index = position.floor() as usize % len;
-    let fraction = position - position.floor();
-    let next = (index + 1) % len;
+
+    // A single conditional wrap replaces `rem_euclid`: all the callers keep
+    // the delay below the length of the line, so the read position is never
+    // more than one line away from the valid range.
+    let mut position = write_index as f32 - delay;
+    if position < 0.0 {
+        position += len as f32;
+    }
+
+    let floored = position.floor();
+    let mut index = floored as usize;
+    if index >= len {
+        index -= len;
+    }
+    let fraction = position - floored;
+    let next = if index + 1 == len { 0 } else { index + 1 };
 
     buffer[index] + (buffer[next] - buffer[index]) * fraction
 }
@@ -429,17 +425,17 @@ impl Default for Fx {
             delay_left: Vec::new(),
             delay_right: Vec::new(),
             delay_index: 0,
+            delay_time_samples: None,
+            delay_smoothing: 0.0,
             delay_lp_left: 0.0,
             delay_lp_right: 0.0,
             delay_coefficient: 0.0,
-            combs: [Vec::new(), Vec::new()],
-            allpasses: [Vec::new(), Vec::new()],
-            predelay_left: Vec::new(),
-            predelay_right: Vec::new(),
-            predelay_index: 0,
-            reverb_lp_left: 0.0,
-            reverb_lp_right: 0.0,
-            reverb_coefficient: 0.0,
+            delay_adaa_left: AdaaTanh::default(),
+            delay_adaa_right: AdaaTanh::default(),
+            reverb: Reverb::default(),
+            legacy_reverb: LegacyReverb::default(),
+            last_legacy: None,
+            bypassed: true,
         }
     }
 }
@@ -460,6 +456,7 @@ mod tests {
             delay_mix: 0.5,
             reverb_mix: 0.5,
             reverb_decay: 0.6,
+            legacy: false,
         };
 
         for sample in 0..48_000 {
@@ -528,6 +525,263 @@ mod tests {
     }
 
     #[test]
+    fn a_static_delay_is_unchanged() {
+        let sample_rate = 48_000.0f32;
+        let mut fx = Fx::new(sample_rate);
+        let params = FxParams {
+            delay_mix: 1.0,
+            delay_time_s: 0.0501,
+            delay_feedback: 0.0,
+            ..FxParams::default()
+        };
+        let delay = params.delay_time_s * sample_rate;
+        assert!(delay.fract() != 0.0, "the delay should be fractional");
+
+        // The same fractional read, on the dry input history. With no
+        // feedback the delay line only ever holds the dry signal.
+        fn read(history: &[f32], delay: f32) -> f32 {
+            let position = (history.len() - 1) as f32 - delay;
+            let index = position.floor() as usize;
+            let fraction = position - position.floor();
+            history[index] + (history[index + 1] - history[index]) * fraction
+        }
+
+        let mut history = Vec::new();
+        for sample in 0..12_000 {
+            let input = (sample as f32 * 0.017).sin() * 0.7;
+            history.push(input);
+            let (left, _) = fx.process(input, 0.0, &params);
+
+            // Smoothing a static control adds exactly zero, so the read
+            // position is the requested delay, sample for sample.
+            assert_eq!(fx.delay_time_samples.unwrap().to_bits(), delay.to_bits());
+
+            // The first samples would read before the start of the history.
+            if sample > delay.ceil() as usize {
+                assert_eq!(
+                    left.to_bits(),
+                    read(&history, delay).to_bits(),
+                    "sample {sample} changed"
+                );
+            }
+        }
+
+        // A reset clears the smoother, so the next sample is not a ramp
+        // either.
+        fx.reset();
+        fx.process(0.0, 0.0, &params);
+        assert_eq!(fx.delay_time_samples.unwrap().to_bits(), delay.to_bits());
+    }
+
+    #[test]
+    fn a_jump_in_the_delay_time_moves_gradually() {
+        let sample_rate = 48_000.0f32;
+        let mut fx = Fx::new(sample_rate);
+        let mut params = FxParams {
+            delay_mix: 1.0,
+            delay_time_s: 0.1,
+            delay_feedback: 0.0,
+            ..FxParams::default()
+        };
+
+        // The first processed sample uses the requested delay directly, with
+        // no ramp up from zero.
+        fx.process(0.0, 0.0, &params);
+        let start = 0.1 * sample_rate;
+        assert_eq!(fx.delay_time_samples.unwrap().to_bits(), start.to_bits());
+
+        params.delay_time_s = 0.2;
+        let target = 0.2 * sample_rate;
+        let total = target - start;
+        let mut previous = start;
+        let mut last_step = total;
+
+        for sample in 0..(sample_rate * 0.25) as usize {
+            fx.process(0.0, 0.0, &params);
+            let current = fx.delay_time_samples.unwrap();
+            let step = current - previous;
+
+            // The one-pole never runs backwards and it may land exactly on
+            // the requested time while the control is held, which is fine.
+            assert!(
+                step >= 0.0,
+                "the delay moved backwards at sample {sample}: {step}"
+            );
+            assert!(
+                step <= total * 0.01,
+                "the delay jumped {step} samples at sample {sample}"
+            );
+            // A one-pole moves the most on the first sample and then slows
+            // down, so the read position never overshoots the control.
+            assert!(
+                step <= last_step,
+                "the glide sped up at sample {sample}: {step} after {last_step}"
+            );
+            assert!(current <= target, "the delay overshot at sample {sample}");
+
+            previous = current;
+            last_step = step;
+        }
+
+        // Quarter of a second is twelve time constants, so the glide is done.
+        assert!(
+            (previous - target).abs() < 1.0,
+            "the delay stopped at {previous} instead of {target}"
+        );
+    }
+
+    #[test]
+    fn re_enabling_after_full_bypass_does_not_replay_the_tail() {
+        let mut fx = Fx::new(48_000.0);
+        let mut params = FxParams {
+            delay_mix: 1.0,
+            delay_time_s: 0.1,
+            delay_feedback: 0.8,
+            ..FxParams::default()
+        };
+
+        // Fill the delay line with an impulse and several feedback repeats.
+        fx.process(1.0, 0.0, &params);
+        for _ in 0..20_000 {
+            fx.process(0.0, 0.0, &params);
+        }
+
+        // Bypass the whole chain while the input is silent. The first
+        // bypassed sample clears the delay line, so re-enabling the delay
+        // cannot replay the old repeats.
+        params.delay_mix = 0.0;
+        for _ in 0..20_000 {
+            fx.process(0.0, 0.0, &params);
+        }
+
+        params.delay_mix = 1.0;
+        let mut peak: f32 = 0.0;
+        for _ in 0..10_000 {
+            let (left, right) = fx.process(0.0, 0.0, &params);
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+
+        assert!(
+            peak < 1e-4,
+            "the re-enabled delay replayed stale audio (peak {peak})"
+        );
+    }
+
+    #[test]
+    fn a_full_bypass_returns_dry_and_clears_the_state() {
+        let mut fx = Fx::new(48_000.0);
+        let mut params = FxParams {
+            chorus_mix: 1.0,
+            delay_mix: 1.0,
+            delay_time_s: 0.1,
+            delay_feedback: 0.85,
+            reverb_mix: 1.0,
+            reverb_decay: 1.0,
+            ..FxParams::default()
+        };
+
+        // Excite every effect, then let the tails fill the delay lines and
+        // the reverb.
+        fx.process(1.0, -1.0, &params);
+        for _ in 0..20_000 {
+            fx.process(0.0, 0.0, &params);
+        }
+
+        // Bypassing the whole chain returns the dry signal and clears the
+        // state on the first bypassed sample.
+        params.chorus_mix = 0.0;
+        params.delay_mix = 0.0;
+        params.reverb_mix = 0.0;
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.25, -0.75, &params);
+            assert_eq!(left, 0.25);
+            assert_eq!(right, -0.75);
+        }
+        assert!(fx.delay_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.delay_right.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_right.iter().all(|&sample| sample == 0.0));
+
+        // Enabling one effect after the bypass starts from silence, with no
+        // tail left over from before the bypass.
+        params.delay_mix = 1.0;
+        let mut peak: f32 = 0.0;
+        for _ in 0..10_000 {
+            let (left, right) = fx.process(0.0, 0.0, &params);
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+        assert!(
+            peak < 1e-4,
+            "the re-enabled delay replayed an old tail (peak {peak})"
+        );
+    }
+
+    #[test]
+    fn the_two_reverb_engines_are_different() {
+        let mut modern = Fx::new(48_000.0);
+        let mut legacy = Fx::new(48_000.0);
+        let modern_params = FxParams {
+            reverb_mix: 0.5,
+            reverb_decay: 0.6,
+            ..FxParams::default()
+        };
+        let legacy_params = FxParams {
+            legacy: true,
+            ..modern_params
+        };
+
+        let mut difference = 0.0f32;
+        for sample in 0..8_000 {
+            let input = if sample == 0 { 1.0 } else { 0.0 };
+            let (modern_left, _) = modern.process(input, input, &modern_params);
+            let (legacy_left, _) = legacy.process(input, input, &legacy_params);
+            difference += (modern_left - legacy_left).abs();
+        }
+
+        assert!(
+            difference > 0.01,
+            "the legacy and modern reverbs were identical"
+        );
+    }
+
+    #[test]
+    fn the_one_wrap_reader_matches_the_reference() {
+        let len = 97;
+        let buffer: Vec<f32> = (0..len).map(|i| (i as f32 * 0.37).sin()).collect();
+
+        // The original reader, which wrapped the position with `rem_euclid`.
+        fn reference(buffer: &[f32], write_index: usize, delay: f32) -> f32 {
+            let len = buffer.len();
+            let position = (write_index as f32 - delay).rem_euclid(len as f32);
+            let index = position.floor() as usize % len;
+            let fraction = position - position.floor();
+            let next = (index + 1) % len;
+            buffer[index] + (buffer[next] - buffer[index]) * fraction
+        }
+
+        for write_index in 0..len {
+            for delay in [0.0, 0.5, 1.0, 1.25, 2.0, 3.75, (len - 1) as f32, len as f32] {
+                assert_eq!(
+                    read_interpolated(&buffer, write_index, delay).to_bits(),
+                    reference(&buffer, write_index, delay).to_bits(),
+                    "write {write_index}, delay {delay}"
+                );
+            }
+        }
+
+        // Fractional delays across the whole line, including the wrap.
+        for step in 0..(len * 4) {
+            let delay = step as f32 * 0.25;
+            let write_index = (step * 7) % len;
+            assert_eq!(
+                read_interpolated(&buffer, write_index, delay).to_bits(),
+                reference(&buffer, write_index, delay).to_bits(),
+                "write {write_index}, delay {delay}"
+            );
+        }
+    }
+
+    #[test]
     fn the_wet_path_stays_bounded() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
@@ -539,6 +793,7 @@ mod tests {
             delay_mix: 1.0,
             reverb_mix: 1.0,
             reverb_decay: 1.0,
+            legacy: false,
         };
 
         // A loud signal that is fed back again and again must not run away.

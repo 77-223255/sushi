@@ -4,7 +4,7 @@
 //! by hosts for automation and for saving presets), so they must never change.
 
 use nice_plug::prelude::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -27,15 +27,22 @@ pub enum FilterMode {
     Notch,
 }
 
-/// The slope of the filter. The four-pole mode runs the signal through two
-/// cascaded state variable filters.
+/// The slope of the filter.
+///
+/// `TwoPole` uses a single state variable filter. `FourPole` is the original
+/// 24 dB ladder, which is kept bit-identical for old patches and host states.
+/// `FourPoleModern` uses the same ladder topology with a corrected resonance
+/// curve. The first two variants stay at indices 0 and 1, so old host states
+/// keep their original behavior.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FilterSlope {
     #[default]
     #[name = "12 dB"]
     TwoPole,
-    #[name = "24 dB"]
+    #[name = "24 dB OLD"]
     FourPole,
+    #[name = "24 dB"]
+    FourPoleModern,
 }
 
 /// The shapes an LFO can produce.
@@ -180,6 +187,7 @@ fn percentage_param(name: &str, default: f32) -> FloatParam {
         .with_value_to_string(formatters::v2s_f32_percentage(0))
         .with_string_to_value(formatters::s2v_f32_percentage())
         .with_unit("%")
+        .with_smoother(SmoothingStyle::Linear(10.0))
 }
 
 /// A time parameter in milliseconds. The range is skewed towards the short end
@@ -218,6 +226,7 @@ fn bipolar_param(name: &str, default: f32) -> FloatParam {
             .map(|value| value / 100.0)
     }))
     .with_unit("%")
+    .with_smoother(SmoothingStyle::Linear(10.0))
 }
 
 /// A frequency parameter in Hertz, skewed towards the low end.
@@ -501,6 +510,11 @@ pub struct SushiParams {
     #[id = "character"]
     pub character: EnumParam<Character>,
 
+    /// The DSP flavor. This is a host parameter, but it is deliberately not
+    /// part of the patch JSON: the same patch can be loaded in either flavor.
+    #[id = "legacy"]
+    pub legacy: BoolParam,
+
     #[id = "drift"]
     pub drift: FloatParam,
 
@@ -537,6 +551,22 @@ pub struct SushiParams {
 
     #[id = "arp_ratchet"]
     pub arp_ratchet: IntParam,
+
+    // --- Persistent editor state ------------------------------------------
+    // These fields are not parameters; nice-plug stores them with the plugin
+    // state so a reopened project keeps showing the loaded patch even though
+    // the sound itself is made of parameters.
+    #[persist = "patch_name"]
+    pub patch_name: Mutex<Option<String>>,
+
+    #[persist = "patch_path"]
+    pub patch_path: Mutex<Option<String>>,
+
+    #[persist = "preset_index"]
+    pub preset_index: Mutex<usize>,
+
+    #[persist = "patch_dirty"]
+    pub patch_dirty: Mutex<bool>,
 }
 
 impl Default for SushiParams {
@@ -566,7 +596,8 @@ impl Default for SushiParams {
             )
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage())
-            .with_unit("%"),
+            .with_unit("%")
+            .with_smoother(SmoothingStyle::Linear(10.0)),
             osc1_level: percentage_param("OSC 1 Level", 0.6),
             sub_level: percentage_param("Sub Level", 0.0),
 
@@ -594,7 +625,8 @@ impl Default for SushiParams {
             )
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage())
-            .with_unit("%"),
+            .with_unit("%")
+            .with_smoother(SmoothingStyle::Linear(10.0)),
             osc2_level: percentage_param("OSC 2 Level", 0.4),
             osc_sync: BoolParam::new("Osc Sync", false),
             fm_amount: percentage_param("FM Amount", 0.0),
@@ -610,7 +642,8 @@ impl Default for SushiParams {
                     max: 50.0,
                 },
             )
-            .with_unit(" cents"),
+            .with_unit(" cents")
+            .with_smoother(SmoothingStyle::Linear(10.0)),
             spread: percentage_param("Spread", 0.5),
 
             // --- Voice allocation ---------------------------------------------
@@ -795,6 +828,7 @@ impl Default for SushiParams {
 
             // --- Character ---------------------------------------------------
             character: EnumParam::new("Character", Character::Silk),
+            legacy: BoolParam::new("Legacy DSP", false),
             drift: percentage_param("Drift", 0.15).with_smoother(SmoothingStyle::Linear(20.0)),
             velocity: percentage_param("Velocity", 0.5).with_smoother(SmoothingStyle::Linear(20.0)),
             tone: bipolar_param("Tone", 0.0).with_smoother(SmoothingStyle::Linear(20.0)),
@@ -833,6 +867,11 @@ impl Default for SushiParams {
             .with_unit("%"),
             arp_length: IntParam::new("Arp Length", 16, IntRange::Linear { min: 1, max: 16 }),
             arp_ratchet: IntParam::new("Arp Ratchet", 1, IntRange::Linear { min: 1, max: 4 }),
+
+            patch_name: Mutex::new(None),
+            patch_path: Mutex::new(None),
+            preset_index: Mutex::new(0),
+            patch_dirty: Mutex::new(false),
         }
     }
 }
@@ -843,47 +882,47 @@ impl SushiParams {
     ///
     /// The slots are built once per audio block, so that the audio thread
     /// never has to allocate.
-    pub fn mod_slots(&self) -> [ModSlot; MOD_SLOTS] {
+    pub fn mod_slots(&self, steps: u32) -> [ModSlot; MOD_SLOTS] {
         [
             ModSlot {
                 source: self.mod1_source.value(),
                 dest: self.mod1_dest.value(),
-                amount: self.mod1_amount.value(),
+                amount: self.mod1_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod2_source.value(),
                 dest: self.mod2_dest.value(),
-                amount: self.mod2_amount.value(),
+                amount: self.mod2_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod3_source.value(),
                 dest: self.mod3_dest.value(),
-                amount: self.mod3_amount.value(),
+                amount: self.mod3_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod4_source.value(),
                 dest: self.mod4_dest.value(),
-                amount: self.mod4_amount.value(),
+                amount: self.mod4_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod5_source.value(),
                 dest: self.mod5_dest.value(),
-                amount: self.mod5_amount.value(),
+                amount: self.mod5_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod6_source.value(),
                 dest: self.mod6_dest.value(),
-                amount: self.mod6_amount.value(),
+                amount: self.mod6_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod7_source.value(),
                 dest: self.mod7_dest.value(),
-                amount: self.mod7_amount.value(),
+                amount: self.mod7_amount.smoothed.next_step(steps),
             },
             ModSlot {
                 source: self.mod8_source.value(),
                 dest: self.mod8_dest.value(),
-                amount: self.mod8_amount.value(),
+                amount: self.mod8_amount.smoothed.next_step(steps),
             },
         ]
     }
@@ -948,6 +987,7 @@ mod tests {
         assert_eq!(params.macro_motion.value(), 0.5);
         assert_eq!(params.macro_space.value(), 0.5);
         assert_eq!(params.character.value(), Character::Silk);
+        assert!(!params.legacy.value());
         assert_eq!(params.drift.value(), 0.15);
         assert_eq!(params.velocity.value(), 0.5);
         assert_eq!(params.tone.value(), 0.0);
@@ -964,11 +1004,66 @@ mod tests {
     }
 
     #[test]
+    fn the_patch_identity_is_persisted_with_the_plugin_state() {
+        let params = SushiParams::default();
+        *params
+            .patch_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some("MY PATCH".to_string());
+        *params
+            .patch_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some("/tmp/MY PATCH.json".to_string());
+        *params
+            .preset_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = 3;
+        *params
+            .patch_dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+
+        let fields = params.serialize_fields();
+        let restored = SushiParams::default();
+        restored.deserialize_fields(&fields);
+
+        assert_eq!(
+            restored
+                .patch_name
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("MY PATCH")
+        );
+        assert_eq!(
+            restored
+                .patch_path
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("/tmp/MY PATCH.json")
+        );
+        assert_eq!(
+            *restored
+                .preset_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            3
+        );
+        assert!(
+            *restored
+                .patch_dirty
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        );
+    }
+
+    #[test]
     fn the_modulation_matrix_starts_empty() {
         let params = SushiParams::default();
 
         // Every slot of the matrix is switched off.
-        let slots = params.mod_slots();
+        let slots = params.mod_slots(64);
         assert_eq!(slots.len(), 8);
         for slot in slots {
             assert_eq!(slot.source, ModSource::Off);
@@ -1028,5 +1123,8 @@ mod tests {
             ["Up", "Down", "UpDown", "Random", "As Played"]
         );
         assert_eq!(Character::variants(), ["Silk", "Grit"]);
+        assert_eq!(FilterSlope::variants(), ["12 dB", "24 dB OLD", "24 dB"]);
+        // Old host states address the old ladder by its index.
+        assert_eq!(FilterSlope::from_index(1), FilterSlope::FourPole);
     }
 }

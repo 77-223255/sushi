@@ -138,6 +138,37 @@ impl Arp {
         self.rng = RNG_SEED;
     }
 
+    /// Stops the clock without forgetting the held notes. Used when the host
+    /// transport stops; playback can resume at the next transport start.
+    pub fn pause(&mut self) {
+        self.current = None;
+        self.gate_samples = 0;
+        self.beats_to_boundary = 0.0;
+        self.sub_beats = 0.0;
+        self.sub_index = 0;
+        self.parity = false;
+    }
+
+    /// Aligns the next step with the host's beat grid. Called after a
+    /// transport start, loop or jump.
+    pub fn resync(&mut self, position_beats: f64, division_beats: f64) {
+        let division = division_beats.max(1e-9);
+        let position = if position_beats.is_finite() {
+            position_beats
+        } else {
+            0.0
+        };
+        let phase = position.rem_euclid(division);
+        self.beats_to_boundary = if phase <= 1e-9 { 0.0 } else { division - phase };
+        self.sub_index = 0;
+        self.sub_beats = 0.0;
+        self.position = 0;
+        self.current_step = 0;
+        self.current = None;
+        self.gate_samples = 0;
+        self.parity = false;
+    }
+
     /// The position of the pattern that is currently sounding.
     ///
     /// The position is the index of the step of the pattern, counted from
@@ -232,6 +263,12 @@ impl Arp {
     /// Whether a note is currently sounding.
     pub fn is_sounding(&self) -> bool {
         self.current.is_some()
+    }
+
+    /// Whether the arpeggiator still holds any notes. This is used to keep
+    /// the host from suspending the plugin between two arpeggiator steps.
+    pub fn has_notes(&self) -> bool {
+        self.held_len > 0
     }
 
     /// Advances the arpeggiator by a single sample.
@@ -483,6 +520,26 @@ mod tests {
             }
         }
         triggers
+    }
+
+    #[test]
+    fn the_arp_can_align_to_the_host_grid() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+        arp.resync(1.1, 0.25);
+
+        assert!(arp.has_notes());
+        assert!((arp.beats_to_boundary - 0.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pausing_the_arp_keeps_the_held_notes() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+        arp.pause();
+
+        assert!(arp.has_notes());
+        assert!(!arp.is_sounding());
     }
 
     #[test]

@@ -56,6 +56,15 @@ enum Stage {
 pub struct Adsr {
     stage: Stage,
     level: f32,
+    /// The level at the start of the decay stage. It makes the decay time
+    /// refer to the actual distance to the sustain level.
+    decay_start: f32,
+    /// The level at the start of the release stage. It makes the release time
+    /// refer to the actual signal level instead of an absolute threshold.
+    release_start: f32,
+    /// The original engine used absolute thresholds. The legacy flavor keeps
+    /// those thresholds so its envelopes match the first release.
+    legacy: bool,
 }
 
 impl Default for Adsr {
@@ -63,23 +72,34 @@ impl Default for Adsr {
         Self {
             stage: Stage::Off,
             level: 0.0,
+            decay_start: 0.0,
+            release_start: 0.0,
+            legacy: false,
         }
     }
 }
 
 impl Adsr {
+    /// Selects the threshold behavior of the first release.
+    pub fn set_legacy(&mut self, legacy: bool) {
+        self.legacy = legacy;
+    }
+
     /// Starts (or retriggers) the envelope. Retriggering keeps the current level so
     /// legato lines don't click.
     pub fn gate_on(&mut self) {
         if self.stage == Stage::Off {
             self.level = 0.0;
         }
+        self.decay_start = self.level;
+        self.release_start = 0.0;
         self.stage = Stage::Attack;
     }
 
     /// Enters the release stage. Safe to call multiple times.
     pub fn gate_off(&mut self) {
-        if self.stage != Stage::Off {
+        if self.stage != Stage::Off && self.stage != Stage::Release {
+            self.release_start = self.level.max(1e-6);
             self.stage = Stage::Release;
         }
     }
@@ -97,12 +117,18 @@ impl Adsr {
                 self.level += coeffs.attack_inc;
                 if self.level >= 1.0 {
                     self.level = 1.0;
+                    self.decay_start = 1.0;
                     self.stage = Stage::Decay;
                 }
             }
             Stage::Decay => {
                 self.level = coeffs.sustain + (self.level - coeffs.sustain) * coeffs.decay_coef;
-                if (self.level - coeffs.sustain).abs() < 1e-4 {
+                let threshold = if self.legacy {
+                    1e-4
+                } else {
+                    (self.decay_start - coeffs.sustain).abs().max(1e-6) * 1e-3
+                };
+                if (self.level - coeffs.sustain).abs() < threshold {
                     self.level = coeffs.sustain;
                     self.stage = Stage::Sustain;
                 }
@@ -118,7 +144,12 @@ impl Adsr {
             }
             Stage::Release => {
                 self.level *= coeffs.release_coef;
-                if self.level < 1e-5 {
+                let threshold = if self.legacy {
+                    1e-5
+                } else {
+                    self.release_start * 1e-3
+                };
+                if self.level < threshold {
                     self.level = 0.0;
                     self.stage = Stage::Off;
                 }
@@ -181,6 +212,36 @@ mod tests {
             (level - 0.5).abs() < 0.05,
             "the attack was at {level} after 5 ms"
         );
+    }
+
+    #[test]
+    fn the_legacy_release_uses_the_absolute_threshold() {
+        let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
+
+        let mut modern = Adsr::default();
+        modern.gate_on();
+        for _ in 0..480 {
+            modern.next(&coeffs);
+        }
+        modern.gate_off();
+
+        let mut legacy = Adsr::default();
+        legacy.set_legacy(true);
+        legacy.gate_on();
+        for _ in 0..480 {
+            legacy.next(&coeffs);
+        }
+        legacy.gate_off();
+
+        // 150 ms is past the -60 dB point used by the modern threshold but
+        // before the old absolute -100 dB threshold.
+        for _ in 0..(0.15 * 48_000.0) as usize {
+            modern.next(&coeffs);
+            legacy.next(&coeffs);
+        }
+
+        assert!(modern.is_finished());
+        assert!(!legacy.is_finished());
     }
 
     #[test]

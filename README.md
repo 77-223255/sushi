@@ -13,17 +13,27 @@ A compact, mouse-first polyphonic synthesizer.
 ## Sound
 
 - Two band-limited oscillators, sub oscillator, hard sync, phase FM, unison
-- 12 / 24 dB TPT filter with drive
+- Filter slopes 12 dB / 24 dB OLD (legacy) / 24 dB (new corrected ladder with
+  working resonance), with drive
+- ADAA anti-aliased saturation and drive
 - Dual ADSR envelopes, dual LFOs, analog drift
 - 8-slot modulation matrix
 - Arpeggiator with swing, ratchet, gate, length and latch
-- Chorus, delay, reverb
-- 14 factory presets, 95 parameters
+- Chorus, ping-pong delay, modulated FDN reverb
+- Modern: precise, high-performance digital DSP; the 48 kHz factory sound is
+  preserved and the reverb damping is sample-rate-correct at other rates
+- Legacy: old-school rough, analog-warm path (Freeverb, cascaded SVF, raw tanh)
+  with deterministic per-voice component tolerances, slower drift,
+  even-harmonic warmth and a fixed HF loss
+- Patch JSON and parameter IDs are unchanged; the same patch works in both
+  flavors, and old projects open in Legacy
+- 26 factory presets, 95 patch parameters
 
 ## Interface
 
-- Light SH-101-inspired faceplate, all vertical faders
+- Modern: light SH-101-inspired faceplate; Legacy: warm vintage palette, all vertical faders
 - Coarse lane plus a separate fine lane on every fader
+- Click the SUSHI wordmark to switch Modern / Legacy
 - Full-page JSON patch browser
 - Right-click value entry, mouse wheel, double-click reset
 - 960 × 600 design, continuous scaling, opens at 1280 × 800

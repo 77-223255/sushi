@@ -5,7 +5,7 @@ use nice_plug::util;
 use std::f32::consts::PI;
 
 use super::adsr::{Adsr, EnvCoeffs};
-use super::filter::Svf;
+use super::filter::{Ladder, Svf};
 use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
 use crate::params::{FilterMode, FilterSlope, LfoTarget, MOD_SLOTS, ModSlot, Waveform};
@@ -15,7 +15,7 @@ pub const MAX_UNISON: usize = 4;
 
 /// The number of samples between two updates of the pitch and of the filter.
 /// The ear does not notice the difference, but the CPU does.
-const CONTROL_RATE: u32 = 8;
+pub const CONTROL_RATE: u32 = 8;
 
 /// The rate of the drift, in Hz. The drift is a slow random modulation of the
 /// pitch and the cutoff.
@@ -30,8 +30,44 @@ const DRIFT_PITCH: f32 = 0.06;
 /// The maximum cutoff drift, in octaves.
 const DRIFT_CUTOFF: f32 = 0.2;
 
+/// The drift rate of the legacy flavor, in Hz. The old engine wandered more
+/// slowly than the modern one.
+const LEGACY_DRIFT_RATE: f32 = 0.15;
+
+/// The smoothing factor of the drift in the legacy flavor. A smaller value
+/// makes the drift wander instead of stepping towards its target.
+const LEGACY_DRIFT_SMOOTHING: f32 = 0.0006;
+
+/// The maximum pitch error of the component tolerances of a legacy voice, in
+/// semitones. It is 1.5 cents.
+const TOLERANCE_PITCH: f32 = 0.015;
+
+/// The maximum gain error of the component tolerances of a legacy voice, as a
+/// linear fraction. It is 1.5 %.
+const TOLERANCE_GAIN: f32 = 0.015;
+
+/// The maximum cutoff error of the component tolerances of a legacy voice, in
+/// octaves. It is about 2 % in frequency.
+const TOLERANCE_CUTOFF: f32 = 0.0286;
+
+/// The amount of the asymmetric quadratic term of the legacy flavor. It adds a
+/// touch of even harmonics without a `tanh` in the per-sample path.
+const LEGACY_WARMTH: f32 = 0.03;
+
+/// Compensates the tiny RMS increase of the quadratic term for a full-scale
+/// sine. The term is second order in `LEGACY_WARMTH`, so this is close to one.
+const LEGACY_WARMTH_NORMALIZER: f32 = 1.0 / (1.0 + 0.375 * LEGACY_WARMTH * LEGACY_WARMTH);
+
 /// The frequency of the DC blocker, in Hz.
 const DC_BLOCKER_FREQUENCY: f32 = 20.0;
+
+/// The corner frequency of the fixed high-frequency loss of the legacy
+/// flavor, in Hz.
+const LEGACY_HF_CORNER: f32 = 6_000.0;
+
+/// The high-frequency gain of the legacy shelf. 0.785 puts the top octave
+/// around -1 to -1.3 dB down, which is subtle but audible on bright sounds.
+const LEGACY_HF_GAIN: f32 = 0.785;
 
 /// The frequency ratio of a single unison voice, relative to the base
 /// frequency. `offset` is the position of the voice in the unison bank, in the
@@ -49,6 +85,27 @@ fn unison_offset(index: usize, count: usize) -> f32 {
     } else {
         (index as f32 * 2.0 / (count - 1) as f32) - 1.0
     }
+}
+
+/// Whether these settings run the nonlinear ladder instead of the cascaded
+/// SVF. Only the modern four-pole lowpass uses it, in both the old and the
+/// corrected flavor.
+#[inline]
+fn uses_ladder(settings: &VoiceSettings) -> bool {
+    !settings.legacy
+        && matches!(
+            settings.filter_slope,
+            FilterSlope::FourPole | FilterSlope::FourPoleModern
+        )
+        && settings.filter_mode == FilterMode::Lowpass
+}
+
+/// Whether the ladder should use the corrected resonance curve. This is only
+/// true for the `24 dB` option in the modern flavor; `24 dB OLD` keeps the
+/// original curve.
+#[inline]
+fn uses_modern_ladder(settings: &VoiceSettings) -> bool {
+    uses_ladder(settings) && settings.filter_slope == FilterSlope::FourPoleModern
 }
 
 /// The settings of a single oscillator.
@@ -104,7 +161,11 @@ pub struct VoiceSettings {
     pub spread: f32,
     /// The global tuning offset, in semitones.
     pub tune_semitones: f32,
-    /// The per-sample glide coefficient, `0..=1`.
+    /// The pitch bend offset, in semitones.
+    pub pitch_bend_semitones: f32,
+    /// The mod wheel position, `0..1`.
+    pub mod_wheel: f32,
+    /// The glide coefficient for one control-rate update, `0..=1`.
     pub glide_step: f32,
     pub lfo1_amount: f32,
     pub lfo1_target: LfoTarget,
@@ -117,6 +178,8 @@ pub struct VoiceSettings {
     pub drift_amount: f32,
     /// Whether the harsh character is active. It adds a bit of filter drive.
     pub character_grit: bool,
+    /// Whether the voice should use the original DSP paths.
+    pub legacy: bool,
     /// The eight slots of the modulation matrix.
     pub mod_slots: [ModSlot; MOD_SLOTS],
     /// The value of the first macro, `0..1`. It is a source of the modulation
@@ -152,6 +215,8 @@ impl Default for VoiceSettings {
             detune_cents: 12.0,
             spread: 0.5,
             tune_semitones: 0.0,
+            pitch_bend_semitones: 0.0,
+            mod_wheel: 0.0,
             glide_step: 1.0,
             lfo1_amount: 0.0,
             lfo1_target: LfoTarget::Off,
@@ -160,6 +225,7 @@ impl Default for VoiceSettings {
             velocity_amount: 0.0,
             drift_amount: 0.0,
             character_grit: false,
+            legacy: false,
             mod_slots: [ModSlot::default(); MOD_SLOTS],
             macro1: 0.5,
             macro2: 0.5,
@@ -170,7 +236,7 @@ impl Default for VoiceSettings {
 
 /// A one-pole highpass that takes the DC offset out of the signal.
 #[derive(Debug, Clone, Copy, Default)]
-struct DcBlocker {
+pub(crate) struct DcBlocker {
     /// The previous input sample.
     input: f32,
     /// The previous output sample.
@@ -183,7 +249,7 @@ struct DcBlocker {
 
 impl DcBlocker {
     #[inline]
-    fn process(&mut self, input: f32, sample_rate: f32) -> f32 {
+    pub(crate) fn process(&mut self, input: f32, sample_rate: f32) -> f32 {
         if self.rate != sample_rate {
             self.rate = sample_rate;
             self.coefficient = (-2.0 * PI * DC_BLOCKER_FREQUENCY / sample_rate.max(1.0)).exp();
@@ -199,6 +265,42 @@ impl DcBlocker {
     }
 }
 
+/// A one-pole high-shelf that takes a little of the top end away. It is unity
+/// at DC and settles at [`LEGACY_HF_GAIN`] above the corner. The coefficient
+/// is computed once per sample-rate change, not once per sample.
+#[derive(Debug, Clone, Copy, Default)]
+struct LegacyHfShelf {
+    /// The state of the one-pole lowpass.
+    lowpass: f32,
+    /// The one-pole coefficient that was computed for `rate`.
+    coefficient: f32,
+    /// The sample rate of the cached coefficient.
+    rate: f32,
+}
+
+impl LegacyHfShelf {
+    #[inline]
+    fn process(&mut self, input: f32, sample_rate: f32) -> f32 {
+        if self.rate != sample_rate {
+            self.rate = sample_rate;
+            let omega = 2.0 * PI * LEGACY_HF_CORNER / sample_rate.max(1.0);
+            self.coefficient = (1.0 - (-omega).exp()).clamp(0.0, 1.0);
+        }
+
+        self.lowpass += self.coefficient * (input - self.lowpass);
+        if self.lowpass.abs() < 1e-20 {
+            self.lowpass = 0.0;
+        }
+
+        // Unity at DC, `LEGACY_HF_GAIN` well above the corner.
+        self.lowpass + LEGACY_HF_GAIN * (input - self.lowpass)
+    }
+
+    fn reset(&mut self) {
+        self.lowpass = 0.0;
+    }
+}
+
 /// One synth voice: two oscillators with a unison bank each, an amplitude and
 /// a filter envelope and a stereo filter.
 pub struct Voice {
@@ -209,6 +311,8 @@ pub struct Voice {
     /// Monotonically increasing ID used to steal the oldest voice.
     internal_voice_id: u64,
     releasing: bool,
+    /// Whether a note off has been deferred by the sustain pedal.
+    sustained: bool,
 
     /// Square root of the note velocity, used as an amplitude multiplier.
     velocity: f32,
@@ -233,8 +337,13 @@ pub struct Voice {
     filter_right: Svf,
     filter_left2: Svf,
     filter_right2: Svf,
+    ladder_left: Ladder,
+    ladder_right: Ladder,
     dc_left: DcBlocker,
     dc_right: DcBlocker,
+    /// The fixed top-end loss of the legacy flavor, after the DC blockers.
+    hf_left: LegacyHfShelf,
+    hf_right: LegacyHfShelf,
 
     /// The counter of the control rate. The pitch and the filter are only
     /// updated every eighth sample.
@@ -249,6 +358,17 @@ pub struct Voice {
     g: f32,
     /// The damping of the filter.
     k: f32,
+    /// The gain compensation of the unison bank, `1/sqrt(unison)`. It is
+    /// cached at the control rate.
+    unison_gain: f32,
+    /// The equal-power left pan gain of each unison voice, cached at the
+    /// control rate.
+    pan_left: [f32; MAX_UNISON],
+    /// The equal-power right pan gain of each unison voice, cached at the
+    /// control rate.
+    pan_right: [f32; MAX_UNISON],
+    /// The stereo spread that the cached pan gains were computed for.
+    pan_spread: f32,
 
     /// The phase of the drift, `0..1`.
     drift_phase: f32,
@@ -260,9 +380,27 @@ pub struct Voice {
     drift_rng: u32,
     /// The random number generator of the phases of the oscillators.
     phase_rng: u32,
+    /// The deterministic pitch tolerance of a legacy voice, in semitones.
+    pitch_tolerance: f32,
+    /// The deterministic gain tolerance of a legacy voice, as a linear
+    /// fraction.
+    gain_tolerance: f32,
+    /// The deterministic cutoff tolerance of a legacy voice, in octaves.
+    cutoff_tolerance: f32,
     /// The modulation of the destinations of the modulation matrix. It is
     /// refreshed at the control rate.
     modulation: Modulation,
+    /// The flavor used by the previous sample. A switch clears the filter
+    /// state that belongs to the other topology.
+    last_legacy: bool,
+    /// Whether the previous sample ran the nonlinear ladder. A switch resets
+    /// the filter path that becomes active, so that it never runs with stale
+    /// or default coefficients while waiting for the next control tick.
+    last_ladder_mode: bool,
+    /// The cutoff that the last control tick used by the filter, in Hz.
+    current_cutoff: f32,
+    /// The resonance that the last control tick used by the filter, `0..1`.
+    current_resonance: f32,
 }
 
 impl Voice {
@@ -275,8 +413,10 @@ impl Voice {
         settings: &VoiceSettings,
     ) -> Self {
         let mut amp_env = Adsr::default();
+        amp_env.set_legacy(settings.legacy);
         amp_env.gate_on();
         let mut filter_env = Adsr::default();
+        filter_env.set_legacy(settings.legacy);
         filter_env.gate_on();
 
         let pitch = key.number_or_middle_c() as f32;
@@ -298,12 +438,22 @@ impl Voice {
             phase_rng = 0x2545_F491;
         }
 
+        // The component tolerances are fixed for the life of the voice. They
+        // use their own hash, so the existing drift and phase streams stay
+        // untouched. The modern flavor has no tolerances at all.
+        let (pitch_tolerance, gain_tolerance, cutoff_tolerance) = if settings.legacy {
+            legacy_tolerances(internal_voice_id)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
         let mut voice = Self {
             voice_id,
             channel,
             key,
             internal_voice_id,
             releasing: false,
+            sustained: false,
             velocity: velocity.sqrt(),
             velocity_raw: velocity,
             target_pitch: pitch,
@@ -320,23 +470,39 @@ impl Voice {
             filter_right: Svf::new(),
             filter_left2: Svf::new(),
             filter_right2: Svf::new(),
+            ladder_left: Ladder::new(),
+            ladder_right: Ladder::new(),
             dc_left: DcBlocker::default(),
             dc_right: DcBlocker::default(),
+            hf_left: LegacyHfShelf::default(),
+            hf_right: LegacyHfShelf::default(),
             control_counter: CONTROL_RATE - 1,
             filter_env_level: 0.0,
             phase_delta1: [0.0; MAX_UNISON],
             phase_delta2: [0.0; MAX_UNISON],
             g: 0.0,
             k: 2.0,
+            unison_gain: 1.0,
+            pan_left: [0.0; MAX_UNISON],
+            pan_right: [0.0; MAX_UNISON],
+            pan_spread: settings.spread,
             drift_phase,
             drift_target,
             drift_value: 0.0,
             drift_rng,
             phase_rng,
+            pitch_tolerance,
+            gain_tolerance,
+            cutoff_tolerance,
             modulation: Modulation::default(),
+            last_legacy: settings.legacy,
+            last_ladder_mode: uses_ladder(settings),
+            current_cutoff: 1_000.0,
+            current_resonance: settings.resonance.clamp(0.0, 1.0),
         };
 
         voice.reset_osc_phases();
+        voice.update_pan_gains(settings.spread);
         voice
     }
 
@@ -348,6 +514,19 @@ impl Voice {
     /// note in mono and legato mode.
     pub fn set_voice_id(&mut self, voice_id: i32) {
         self.voice_id = voice_id;
+    }
+
+    /// Changes the MIDI channel of a reused voice (mono and legato mode).
+    pub fn set_channel(&mut self, channel: Channel) {
+        self.channel = channel;
+    }
+
+    /// Changes the velocity of a reused voice (mono and legato mode). The
+    /// amplitude and the velocity-to-filter modulation follow the new note.
+    pub fn set_velocity(&mut self, velocity: f32) {
+        let velocity = velocity.clamp(0.0, 1.0);
+        self.velocity = velocity.sqrt();
+        self.velocity_raw = velocity;
     }
 
     pub fn channel(&self) -> Channel {
@@ -366,9 +545,31 @@ impl Voice {
         self.releasing
     }
 
+    /// Whether the sustain pedal is holding this voice after its key was
+    /// released.
+    pub fn is_sustained(&self) -> bool {
+        self.sustained
+    }
+
+    /// Keeps the voice sounding after a note off until the pedal is released.
+    pub fn sustain(&mut self) {
+        if !self.releasing {
+            self.sustained = true;
+        }
+    }
+
+    /// Releases a voice that was held by the sustain pedal.
+    pub fn release_sustained(&mut self) {
+        if self.sustained {
+            self.sustained = false;
+            self.release();
+        }
+    }
+
     /// Changes the played key. When `retrigger` is set, both envelopes are
     /// restarted, otherwise the pitch glides to the new key.
     pub fn set_key(&mut self, key: Key, settings: &VoiceSettings, retrigger: bool) {
+        self.sustained = false;
         self.key = key;
         self.target_pitch = key.number_or_middle_c() as f32;
 
@@ -381,13 +582,14 @@ impl Voice {
         let unison = settings.unison.clamp(1, MAX_UNISON);
         if unison != self.unison {
             self.unison = unison;
-            self.reset_osc_phases();
+            self.update_pan_gains(settings.spread);
         }
     }
 
     /// Puts the voice into its release stage.
     pub fn release(&mut self) {
         self.releasing = true;
+        self.sustained = false;
         self.amp_env.gate_off();
         self.filter_env.gate_off();
     }
@@ -411,7 +613,41 @@ impl Voice {
     ) -> (f32, f32) {
         let sample_rate = sample_rate.max(1.0);
 
-        // The envelopes.
+        if settings.legacy != self.last_legacy {
+            // The ladder and the cascaded SVF have different state. Clear
+            // both when the flavor changes so no old filter state leaks in.
+            self.filter_left = Svf::new();
+            self.filter_right = Svf::new();
+            self.filter_left2 = Svf::new();
+            self.filter_right2 = Svf::new();
+            // Fresh filters carry no coefficients, so prepare them with the
+            // current control values right away.
+            self.filter_left.set(self.g, self.k);
+            self.filter_right.set(self.g, self.k);
+            self.filter_left2.set(self.g, self.k);
+            self.filter_right2.set(self.g, self.k);
+            self.ladder_left.reset();
+            self.ladder_right.reset();
+            self.hf_left.reset();
+            self.hf_right.reset();
+            if settings.legacy {
+                let (pitch, gain, cutoff) = legacy_tolerances(self.internal_voice_id);
+                self.pitch_tolerance = pitch;
+                self.gain_tolerance = gain;
+                self.cutoff_tolerance = cutoff;
+            } else {
+                // The modern flavor has no component tolerances at all.
+                self.pitch_tolerance = 0.0;
+                self.gain_tolerance = 0.0;
+                self.cutoff_tolerance = 0.0;
+            }
+            self.last_legacy = settings.legacy;
+        }
+
+        // The envelopes. The threshold flavor follows the mode even for a
+        // note that is already sounding.
+        self.amp_env.set_legacy(settings.legacy);
+        self.filter_env.set_legacy(settings.legacy);
         let amp = self.amp_env.next(&settings.amp_env);
         self.filter_env_level = self.filter_env.next(&settings.filter_env);
 
@@ -420,7 +656,7 @@ impl Voice {
             lfo_modulation(settings, lfo1, lfo2);
 
         // The drift.
-        self.update_drift(sample_rate);
+        self.update_drift(sample_rate, settings.legacy);
 
         // The control rate. The pitch, the filter and the modulation matrix
         // are updated every eighth sample only, which saves a lot of CPU
@@ -443,8 +679,53 @@ impl Voice {
             );
         }
 
-        let unison = self.unison.clamp(1, MAX_UNISON);
-        let unison_gain = 1.0 / (unison as f32).sqrt();
+        // The filter topology can change between two control ticks. The
+        // ladder is only prepared by the control tick while it is active, so
+        // a switch has to reset the newly active path and prepare its
+        // coefficients here. Otherwise it would run with stale or default
+        // coefficients for up to seven samples.
+        let ladder_mode = uses_ladder(settings);
+        if ladder_mode != self.last_ladder_mode {
+            self.last_ladder_mode = ladder_mode;
+            self.filter_left = Svf::new();
+            self.filter_right = Svf::new();
+            self.filter_left2 = Svf::new();
+            self.filter_right2 = Svf::new();
+            self.filter_left.set(self.g, self.k);
+            self.filter_right.set(self.g, self.k);
+            self.filter_left2.set(self.g, self.k);
+            self.filter_right2.set(self.g, self.k);
+            self.ladder_left.reset();
+            self.ladder_right.reset();
+            if ladder_mode {
+                if uses_modern_ladder(settings) {
+                    self.ladder_left.set_modern(
+                        self.current_cutoff,
+                        self.current_resonance,
+                        sample_rate,
+                    );
+                    self.ladder_right.set_modern(
+                        self.current_cutoff,
+                        self.current_resonance,
+                        sample_rate,
+                    );
+                } else {
+                    self.ladder_left
+                        .set(self.current_cutoff, self.current_resonance, sample_rate);
+                    self.ladder_right
+                        .set(self.current_cutoff, self.current_resonance, sample_rate);
+                }
+            }
+        }
+
+        let unison = self.unison;
+        let unison_gain = self.unison_gain;
+
+        // The pan gains are refreshed at the control rate as well. The spread
+        // can change between two control ticks, so pick it up here.
+        if settings.spread != self.pan_spread {
+            self.update_pan_gains(settings.spread);
+        }
 
         let mut left = 0.0;
         let mut right = 0.0;
@@ -459,9 +740,10 @@ impl Voice {
             &self.phase_delta2,
             unison,
             unison_gain,
+            &self.pan_left,
+            &self.pan_right,
             pulse_width_offset + self.modulation.pulse_width1,
             pulse_width_offset + self.modulation.pulse_width2,
-            self.modulation.pan,
         );
 
         // The sub oscillator is one octave below VCO 1 and stays in the
@@ -490,29 +772,57 @@ impl Voice {
             (settings.filter_drive + self.modulation.drive).clamp(0.0, 1.0)
         };
 
-        let left = self.filter_left.process(
-            left * attenuation,
-            self.g,
-            self.k,
-            settings.filter_mode,
-            drive,
-        );
-        let right = self.filter_right.process(
-            right * attenuation,
-            self.g,
-            self.k,
-            settings.filter_mode,
-            drive,
-        );
-        let (left, right) = if settings.filter_slope == FilterSlope::FourPole {
+        // The legacy flavor adds a tiny asymmetric quadratic term just before
+        // the filter. The normalizer keeps the RMS where it was, and the DC
+        // blockers after the filter take the small offset back out.
+        let (left, right) = if settings.legacy {
             (
-                self.filter_left2
-                    .process(left, self.g, self.k, settings.filter_mode, drive),
-                self.filter_right2
-                    .process(right, self.g, self.k, settings.filter_mode, drive),
+                legacy_warmth(left * attenuation),
+                legacy_warmth(right * attenuation),
             )
         } else {
-            (left, right)
+            (left * attenuation, right * attenuation)
+        };
+
+        // The 24 dB lowpass uses the nonlinear ladder; the other modes keep
+        // the transparent cascaded SVF so they can still provide highpass,
+        // bandpass and notch outputs.
+        let (left, right) = if ladder_mode {
+            (
+                self.ladder_left.process(left, drive),
+                self.ladder_right.process(right, drive),
+            )
+        } else {
+            let left = self.filter_left.process_prepared(
+                left,
+                settings.filter_mode,
+                drive,
+                settings.legacy,
+            );
+            let right = self.filter_right.process_prepared(
+                right,
+                settings.filter_mode,
+                drive,
+                settings.legacy,
+            );
+            if settings.filter_slope != FilterSlope::TwoPole {
+                (
+                    self.filter_left2.process_prepared(
+                        left,
+                        settings.filter_mode,
+                        drive,
+                        settings.legacy,
+                    ),
+                    self.filter_right2.process_prepared(
+                        right,
+                        settings.filter_mode,
+                        drive,
+                        settings.legacy,
+                    ),
+                )
+            } else {
+                (left, right)
+            }
         };
 
         // The DC blocker, which takes the offset of the wave out of the
@@ -520,8 +830,26 @@ impl Voice {
         let left = self.dc_left.process(left, sample_rate);
         let right = self.dc_right.process(right, sample_rate);
 
-        // The amplifier.
+        // The fixed high-frequency loss of the legacy flavor. It sits after
+        // the DC blocker, so the quadratic warmth cannot leave any offset in
+        // the output. The modern path skips it entirely.
+        let (left, right) = if settings.legacy {
+            (
+                self.hf_left.process(left, sample_rate),
+                self.hf_right.process(right, sample_rate),
+            )
+        } else {
+            (left, right)
+        };
+
+        // The amplifier. The legacy gain tolerance is a fixed trim, while the
+        // modern flavor keeps exactly the gain it had before.
         let gain = amp * self.velocity * amp_scale * self.modulation.volume;
+        let gain = if settings.legacy {
+            gain * (1.0 + self.gain_tolerance)
+        } else {
+            gain
+        };
         (left * gain, right * gain)
     }
 
@@ -559,27 +887,61 @@ impl Voice {
         // The pitch, with optional glide.
         self.current_pitch += (self.target_pitch - self.current_pitch) * settings.glide_step;
         let drift_pitch = self.drift_value * settings.drift_amount * DRIFT_PITCH;
-        let base_frequency = util::f32_midi_key_to_freq(
-            self.current_pitch + settings.tune_semitones + pitch_semitones + drift_pitch,
-        );
+        let mut pitch = self.current_pitch
+            + settings.tune_semitones
+            + settings.pitch_bend_semitones
+            + pitch_semitones
+            + drift_pitch;
+        if settings.legacy {
+            pitch += self.pitch_tolerance;
+        }
+        let base_frequency = util::f32_midi_key_to_freq(pitch);
 
         // The filter.
         let key = self.key.number_or_middle_c() as f32;
         let drift_filter = self.drift_value * settings.drift_amount * DRIFT_CUTOFF;
-        let octaves = settings.filter_env_octaves * self.filter_env_level
+        let mut octaves = settings.filter_env_octaves * self.filter_env_level
             + settings.filter_keytrack * (key - 60.0) / 12.0
             + settings.velocity_amount * self.velocity_raw * 1.5
             + filter_octaves
             + drift_filter;
+        if settings.legacy {
+            octaves += self.cutoff_tolerance;
+        }
         let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
+        self.current_cutoff = cutoff;
         self.g = (PI * cutoff / sample_rate).tan();
 
         // The resonance of the filter, with the modulation of the matrix.
         let resonance = (settings.resonance + self.modulation.resonance).clamp(0.0, 1.0);
+        self.current_resonance = resonance;
         self.k = 2.0 - 1.98 * resonance;
 
-        // The phase increments of the unison voices.
-        let unison = self.unison.clamp(1, MAX_UNISON);
+        // Prepare the coefficients of the cascaded SVF stages once per
+        // control tick instead of once per sample.
+        self.filter_left.set(self.g, self.k);
+        self.filter_right.set(self.g, self.k);
+        self.filter_left2.set(self.g, self.k);
+        self.filter_right2.set(self.g, self.k);
+
+        if uses_ladder(settings) {
+            if uses_modern_ladder(settings) {
+                self.ladder_left.set_modern(cutoff, resonance, sample_rate);
+                self.ladder_right.set_modern(cutoff, resonance, sample_rate);
+            } else {
+                self.ladder_left.set(cutoff, resonance, sample_rate);
+                self.ladder_right.set(cutoff, resonance, sample_rate);
+            }
+        }
+
+        // The phase increments of the unison voices. Unison can be changed
+        // while a note is held, so the cached count is refreshed here. The
+        // sounding slots keep their phases; the new slots already have their
+        // deterministic random phases from the construction of the voice.
+        let unison = settings.unison.clamp(1, MAX_UNISON);
+        if unison != self.unison {
+            self.unison = unison;
+        }
         let frequency1 = base_frequency * 2f32.powf(settings.osc1.semitones / 12.0);
         let frequency2 = base_frequency * 2f32.powf(settings.osc2.semitones / 12.0);
         for index in 0..unison {
@@ -589,6 +951,39 @@ impl Voice {
             self.phase_delta2[index] = (frequency2 * ratio / sample_rate).clamp(0.0, 0.5);
         }
         self.sub_delta = (frequency1 * 0.5 / sample_rate).clamp(0.0, 0.5);
+
+        // The pan gains depend on the unison count, the spread and the pan
+        // modulation, all of which are control rate values as well.
+        self.update_pan_gains(settings.spread);
+    }
+
+    /// Caches the equal-power pan gains of the unison bank and its gain
+    /// compensation. This uses the same formula as the per-sample path, just
+    /// once per control tick.
+    fn update_pan_gains(&mut self, spread: f32) {
+        let unison = self.unison.clamp(1, MAX_UNISON);
+        self.unison = unison;
+        self.unison_gain = 1.0 / (unison as f32).sqrt();
+        self.pan_spread = spread;
+
+        let pan_offset = self.modulation.pan;
+        for index in 0..unison {
+            let offset = unison_offset(index, unison);
+            let pan = (offset * spread + pan_offset).clamp(-1.0, 1.0);
+            let angle = (pan + 1.0) * PI * 0.25;
+            self.pan_left[index] = angle.cos();
+            self.pan_right[index] = angle.sin();
+        }
+    }
+
+    /// Forces the SVF coefficients to be recomputed for every sample, as the
+    /// original path did. Only used by the cached/uncached regression test.
+    #[cfg(test)]
+    fn force_uncached_svf(&mut self) {
+        self.filter_left.force_uncached();
+        self.filter_right.force_uncached();
+        self.filter_left2.force_uncached();
+        self.filter_right2.force_uncached();
     }
 
     /// Gives every unison oscillator a random starting phase, so that the
@@ -605,16 +1000,66 @@ impl Voice {
     }
 
     /// Moves the drift towards its new target. Every time the phase of the
-    /// drift wraps around, a new target is picked.
+    /// drift wraps around, a new target is picked. The legacy flavor uses a
+    /// slower rate and a slower smoothing so that the drift wanders instead of
+    /// stepping.
     #[inline]
-    fn update_drift(&mut self, sample_rate: f32) {
-        self.drift_phase += DRIFT_RATE / sample_rate;
-        if self.drift_phase >= 1.0 {
-            self.drift_phase -= 1.0;
-            self.drift_target = next_random(&mut self.drift_rng);
+    fn update_drift(&mut self, sample_rate: f32, legacy: bool) {
+        if legacy {
+            self.drift_phase += LEGACY_DRIFT_RATE / sample_rate;
+            if self.drift_phase >= 1.0 {
+                self.drift_phase -= 1.0;
+                self.drift_target = next_random(&mut self.drift_rng);
+            }
+            self.drift_value += (self.drift_target - self.drift_value) * LEGACY_DRIFT_SMOOTHING;
+        } else {
+            // The modern drift stays exactly as it was before the legacy
+            // additions.
+            self.drift_phase += DRIFT_RATE / sample_rate;
+            if self.drift_phase >= 1.0 {
+                self.drift_phase -= 1.0;
+                self.drift_target = next_random(&mut self.drift_rng);
+            }
+            self.drift_value += (self.drift_target - self.drift_value) * DRIFT_SMOOTHING;
         }
-        self.drift_value += (self.drift_target - self.drift_value) * DRIFT_SMOOTHING;
     }
+}
+
+/// The fixed component tolerances of a legacy voice, as a pitch offset in
+/// semitones, a linear gain offset and a cutoff offset in octaves.
+///
+/// This is a private hash of `internal_voice_id`, not the drift or phase RNG,
+/// so adding it leaves the existing random sequences untouched.
+fn legacy_tolerances(internal_voice_id: u64) -> (f32, f32, f32) {
+    (
+        signed_hash(internal_voice_id, 0xD1B5_4A32_D192_ED03) * TOLERANCE_PITCH,
+        signed_hash(internal_voice_id, 0x2545_F491_4F6C_DD1D) * TOLERANCE_GAIN,
+        signed_hash(internal_voice_id, 0x9E37_79B9_7F4A_7C15) * TOLERANCE_CUTOFF,
+    )
+}
+
+/// A deterministic random number in the `-1..1` range. The salt selects an
+/// independent stream for the same voice.
+#[inline]
+fn signed_hash(internal_voice_id: u64, salt: u64) -> f32 {
+    let mut x = internal_voice_id ^ salt;
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+
+    // Use the upper 24 bits so that the full float precision is used.
+    ((x >> 40) as f32 / 16_777_215.0) * 2.0 - 1.0
+}
+
+/// The asymmetric quadratic warmth of the legacy flavor.
+///
+/// The quadratic term adds a little second harmonic. The normalizer keeps the
+/// level of a full-scale sine unchanged, and the DC blockers after the filter
+/// take care of the small offset that `x * x` introduces.
+#[inline]
+fn legacy_warmth(input: f32) -> f32 {
+    (input + LEGACY_WARMTH * input * input) * LEGACY_WARMTH_NORMALIZER
 }
 
 /// A random number in the `-1..1` range.
@@ -648,42 +1093,50 @@ fn render_oscillators(
     phase_deltas2: &[f32; MAX_UNISON],
     unison: usize,
     unison_gain: f32,
+    pan_left: &[f32; MAX_UNISON],
+    pan_right: &[f32; MAX_UNISON],
     pulse_width_offset1: f32,
     pulse_width_offset2: f32,
-    pan_offset: f32,
 ) {
     let pulse_width1 = (settings.osc1.pulse_width + pulse_width_offset1).clamp(0.05, 0.95);
     let pulse_width2 = (settings.osc2.pulse_width + pulse_width_offset2).clamp(0.05, 0.95);
 
+    // FM and hard sync create discontinuities that PolyBLEP cannot remove.
+    // Rendering those two cases at twice the control rate and averaging the
+    // two sub-samples is a cheap first step towards anti-aliasing. Normal
+    // waveforms keep the single-rate path.
+    let oversample = !settings.legacy && (settings.osc_sync || settings.fm_amount > 1e-4);
+    let steps = if oversample { 2 } else { 1 };
+    let step_scale = 1.0 / steps as f32;
+    let step_gain = 1.0 / steps as f32;
+
     for index in 0..unison {
-        let (master, wrapped) = osc2_bank[index].next_modulated(
-            phase_deltas2[index],
-            settings.osc2.waveform,
-            pulse_width2,
-            0.0,
-        );
-        if settings.osc_sync && wrapped {
-            osc1_bank[index].set_phase(0.0);
+        let mut sample = 0.0;
+        for _ in 0..steps {
+            let (master, wrapped) = osc2_bank[index].next_modulated(
+                phase_deltas2[index] * step_scale,
+                settings.osc2.waveform,
+                pulse_width2,
+                0.0,
+            );
+            if settings.osc_sync && wrapped {
+                osc1_bank[index].set_phase(0.0);
+            }
+
+            let phase_offset = master * settings.fm_amount * FM_PHASE_RANGE;
+            let (slave, _) = osc1_bank[index].next_modulated(
+                phase_deltas1[index] * step_scale,
+                settings.osc1.waveform,
+                pulse_width1,
+                phase_offset,
+            );
+
+            sample += (slave * settings.osc1.level + master * settings.osc2.level) * step_gain;
         }
 
-        let phase_offset = master * settings.fm_amount * FM_PHASE_RANGE;
-        let (slave, _) = osc1_bank[index].next_modulated(
-            phase_deltas1[index],
-            settings.osc1.waveform,
-            pulse_width1,
-            phase_offset,
-        );
-
-        let offset = unison_offset(index, unison);
-        let pan = (offset * settings.spread + pan_offset).clamp(-1.0, 1.0);
-        let angle = (pan + 1.0) * PI * 0.25;
-        let gain_left = angle.cos();
-        let gain_right = angle.sin();
-
-        let sample =
-            slave * settings.osc1.level * unison_gain + master * settings.osc2.level * unison_gain;
-        *left += sample * gain_left;
-        *right += sample * gain_right;
+        let sample = sample * unison_gain;
+        *left += sample * pan_left[index];
+        *right += sample * pan_right[index];
     }
 }
 
@@ -698,8 +1151,19 @@ fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, 
     let mut amp_scale = 1.0;
     let mut pulse_width_offset = 0.0;
 
+    // The mod wheel adds to LFO 1. When no destination was chosen, it acts
+    // as a conventional vibrato wheel.
+    let mut lfo1_target = settings.lfo1_target;
+    let mut lfo1_amount = settings.lfo1_amount;
+    if settings.mod_wheel > 1e-4 {
+        lfo1_amount = (lfo1_amount + settings.mod_wheel).clamp(0.0, 1.0);
+        if lfo1_target == LfoTarget::Off {
+            lfo1_target = LfoTarget::Pitch;
+        }
+    }
+
     for (value, target, amount) in [
-        (lfo1, settings.lfo1_target, settings.lfo1_amount),
+        (lfo1, lfo1_target, lfo1_amount),
         (lfo2, settings.lfo2_target, settings.lfo2_amount),
     ] {
         match target {
@@ -897,6 +1361,99 @@ mod tests {
         assert!(
             difference > 0.1,
             "the unison voices did not differ (difference {difference})"
+        );
+    }
+
+    #[test]
+    fn a_reused_voice_takes_the_new_velocity_and_channel() {
+        let settings = VoiceSettings::default();
+        let mut voice = voice(&settings);
+        voice.set_velocity(0.2);
+        voice.set_channel(Channel::Number(3));
+
+        assert!((voice.velocity_raw - 0.2).abs() < 1e-6);
+        assert_eq!(voice.channel(), Channel::Number(3));
+    }
+
+    #[test]
+    fn the_mod_wheel_adds_vibrato_when_lfo1_is_off() {
+        let settings = VoiceSettings {
+            mod_wheel: 0.5,
+            lfo1_target: LfoTarget::Off,
+            lfo1_amount: 0.0,
+            ..VoiceSettings::default()
+        };
+
+        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0);
+        assert!(pitch > 0.0, "the mod wheel did not bend the pitch");
+    }
+
+    #[test]
+    fn the_sustain_pedal_defers_the_release() {
+        let settings = VoiceSettings::default();
+        let mut voice = voice(&settings);
+
+        voice.sustain();
+        assert!(voice.is_sustained());
+        assert!(!voice.is_releasing());
+
+        voice.release_sustained();
+        assert!(voice.is_releasing());
+        assert!(!voice.is_sustained());
+    }
+
+    #[test]
+    fn the_pitch_bend_shifts_the_pitch() {
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            pitch_bend_semitones: 12.0,
+            ..VoiceSettings::default()
+        };
+        let mut voice = voice(&settings);
+        let frequency = measure_frequency(&mut voice, &settings);
+
+        assert!(
+            (frequency - 523.2).abs() < 8.0,
+            "the bent voice played at {frequency} Hz"
+        );
+    }
+
+    #[test]
+    fn the_unison_count_can_change_while_a_note_is_held() {
+        let mut settings = plain_settings();
+        settings.unison = 1;
+        let mut voice = voice(&settings);
+        // The first sample triggers a control update for the initial count.
+        voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+
+        settings.unison = 3;
+        for _ in 0..CONTROL_RATE - 1 {
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+
+        // The next sample updates the control values and renders once with
+        // the new unison count. The first, already sounding slot must keep
+        // its phase and merely advance by its new increment.
+        let before = voice.osc1_bank[0].phase();
+        voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        let after = voice.osc1_bank[0].phase();
+        let expected = (before + voice.phase_delta1[0]).rem_euclid(1.0);
+        let distance = (after - expected).abs();
+        let distance = distance.min(1.0 - distance);
+
+        assert_eq!(voice.unison, 3);
+        assert!(
+            distance < 1e-6,
+            "the first unison slot jumped from {before} to {after} instead of {expected}"
         );
     }
 
@@ -1179,6 +1736,51 @@ mod tests {
     }
 
     #[test]
+    fn a_static_voice_is_bit_identical_across_the_cached_and_uncached_svf() {
+        for (mode, slope) in [
+            (FilterMode::Lowpass, FilterSlope::TwoPole),
+            (FilterMode::Lowpass, FilterSlope::FourPoleModern),
+            (FilterMode::Highpass, FilterSlope::FourPole),
+            (FilterMode::Highpass, FilterSlope::FourPoleModern),
+            (FilterMode::Bandpass, FilterSlope::TwoPole),
+            (FilterMode::Notch, FilterSlope::FourPole),
+            (FilterMode::Notch, FilterSlope::FourPoleModern),
+        ] {
+            let settings = VoiceSettings {
+                filter_mode: mode,
+                filter_slope: slope,
+                filter_drive: 0.2,
+                character_grit: true,
+                unison: 4,
+                spread: 0.7,
+                ..VoiceSettings::default()
+            };
+
+            let mut cached = Voice::new(1, Channel::Number(0), Key::Number(60), 42, 0.8, &settings);
+            let mut uncached =
+                Voice::new(1, Channel::Number(0), Key::Number(60), 42, 0.8, &settings);
+            uncached.force_uncached_svf();
+
+            for sample in 0..2_048 {
+                let (cached_left, cached_right) =
+                    cached.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+                let (uncached_left, uncached_right) =
+                    uncached.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+                assert_eq!(
+                    cached_left.to_bits(),
+                    uncached_left.to_bits(),
+                    "{mode:?} {slope:?} left at sample {sample}"
+                );
+                assert_eq!(
+                    cached_right.to_bits(),
+                    uncached_right.to_bits(),
+                    "{mode:?} {slope:?} right at sample {sample}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_four_pole_filter_is_steeper() {
         fn energy(slope: FilterSlope) -> f32 {
             let settings = VoiceSettings {
@@ -1206,6 +1808,94 @@ mod tests {
             four_pole < two_pole * 0.8,
             "the four-pole filter is not steeper: {four_pole} vs {two_pole}"
         );
+    }
+
+    #[test]
+    fn switching_the_ladder_slope_prepares_the_filter_immediately() {
+        let mut settings = plain_settings();
+        settings.resonance = 0.3;
+        let mut voice = voice(&settings);
+
+        // Let the SVF run through a couple of control ticks, then stop just
+        // before the next one so that the switch happens in the middle of a
+        // control period.
+        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
+        assert_eq!(voice.ladder_left.coefficients(), (0.0, 0.0, 0.0));
+
+        // Switch to the 24 dB lowpass. The first sample already has to run
+        // the ladder with real coefficients, not with the defaults.
+        settings.filter_slope = FilterSlope::FourPole;
+        let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        assert!(left.is_finite() && right.is_finite());
+        let (p, k, rez) = voice.ladder_left.coefficients();
+        assert!(
+            p != 0.0 && k != 0.0 && rez != 0.0,
+            "the ladder kept its default coefficients: {p}, {k}, {rez}"
+        );
+        assert_eq!(voice.ladder_right.coefficients(), (p, k, rez));
+
+        let mut ladder_samples = vec![left];
+        for _ in 0..255 {
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+            ladder_samples.push(left);
+        }
+        assert!(
+            rms(&ladder_samples[64..]) > 0.01,
+            "the voice went silent when the ladder took over: {}",
+            rms(&ladder_samples[64..])
+        );
+
+        // Switch back to the 12 dB lowpass in the middle of a control period
+        // as well. The SVF path has to come back without stale state.
+        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
+        settings.filter_slope = FilterSlope::TwoPole;
+        let mut svf_samples = Vec::new();
+        for _ in 0..256 {
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+            svf_samples.push(left);
+        }
+        assert!(
+            rms(&svf_samples[64..]) > 0.01,
+            "the voice went silent when the SVF took over: {}",
+            rms(&svf_samples[64..])
+        );
+    }
+
+    #[test]
+    fn switching_to_the_modern_ladder_uses_the_corrected_resonance() {
+        let mut settings = plain_settings();
+        settings.resonance = 1.0;
+        let mut voice = voice(&settings);
+
+        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
+
+        // The switch happens in the middle of a control period, so the
+        // transition preparation has to choose the modern resonance curve.
+        settings.filter_slope = FilterSlope::FourPoleModern;
+        let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        assert!(left.is_finite() && right.is_finite());
+        let (_, _, rez) = voice.ladder_left.coefficients();
+        assert!(
+            rez > 0.999,
+            "the modern ladder kept the old resonance clamp: {rez}"
+        );
+        assert_eq!(
+            voice.ladder_right.coefficients(),
+            voice.ladder_left.coefficients()
+        );
+
+        for _ in 0..256 {
+            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+        }
     }
 
     #[test]
@@ -1415,5 +2105,262 @@ mod tests {
             (frequency - 261.6).abs() < 5.0,
             "the default matrix changed the pitch ({frequency} Hz)"
         );
+    }
+
+    /// The magnitude of a single frequency in a block of samples.
+    fn tone_magnitude(samples: &[f32], frequency: f32, sample_rate: f32) -> f32 {
+        let mut real = 0.0;
+        let mut imaginary = 0.0;
+        for (index, sample) in samples.iter().enumerate() {
+            let phase = 2.0 * PI * frequency * index as f32 / sample_rate;
+            real += sample * phase.cos();
+            imaginary += sample * phase.sin();
+        }
+        2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f32
+    }
+
+    #[test]
+    fn the_legacy_component_tolerances_are_deterministic_and_bounded() {
+        for id in 0..64 {
+            let tolerances = legacy_tolerances(id);
+            assert_eq!(legacy_tolerances(id), tolerances);
+            assert!(tolerances.0.abs() <= TOLERANCE_PITCH);
+            assert!(tolerances.1.abs() <= TOLERANCE_GAIN);
+            assert!(tolerances.2.abs() <= TOLERANCE_CUTOFF);
+        }
+
+        // Two voices must not get the same component set.
+        assert_ne!(legacy_tolerances(1), legacy_tolerances(2));
+    }
+
+    #[test]
+    fn the_legacy_component_tolerances_average_out() {
+        let count = 4_096;
+        let mut pitch = 0.0;
+        let mut gain = 0.0;
+        let mut cutoff = 0.0;
+        for id in 0..count {
+            let (voice_pitch, voice_gain, voice_cutoff) = legacy_tolerances(id);
+            pitch += voice_pitch;
+            gain += voice_gain;
+            cutoff += voice_cutoff;
+        }
+        let count = count as f32;
+        assert!((pitch / count).abs() < TOLERANCE_PITCH * 0.1);
+        assert!((gain / count).abs() < TOLERANCE_GAIN * 0.1);
+        assert!((cutoff / count).abs() < TOLERANCE_CUTOFF * 0.1);
+    }
+
+    #[test]
+    fn modern_voices_have_no_component_tolerances() {
+        let modern = VoiceSettings::default();
+        let legacy = VoiceSettings {
+            legacy: true,
+            ..modern
+        };
+
+        let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &modern);
+        assert_eq!(voice.pitch_tolerance, 0.0);
+        assert_eq!(voice.gain_tolerance, 0.0);
+        assert_eq!(voice.cutoff_tolerance, 0.0);
+
+        // A modern voice that becomes legacy gets its tolerances then, and a
+        // voice that goes back to modern loses them again.
+        voice.next_sample(&legacy, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        assert_eq!(
+            (
+                voice.pitch_tolerance,
+                voice.gain_tolerance,
+                voice.cutoff_tolerance,
+            ),
+            legacy_tolerances(7)
+        );
+        voice.next_sample(&modern, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+        assert_eq!(voice.pitch_tolerance, 0.0);
+        assert_eq!(voice.gain_tolerance, 0.0);
+        assert_eq!(voice.cutoff_tolerance, 0.0);
+
+        // A voice that starts legacy gets the same fixed set right away.
+        let voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &legacy);
+        assert_eq!(
+            (
+                voice.pitch_tolerance,
+                voice.gain_tolerance,
+                voice.cutoff_tolerance,
+            ),
+            legacy_tolerances(7)
+        );
+    }
+
+    #[test]
+    fn the_legacy_drift_is_slower() {
+        let modern_settings = VoiceSettings::default();
+        let legacy_settings = VoiceSettings {
+            legacy: true,
+            ..VoiceSettings::default()
+        };
+        let mut modern = Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            11,
+            1.0,
+            &modern_settings,
+        );
+        let mut legacy = Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            11,
+            1.0,
+            &legacy_settings,
+        );
+
+        for voice in [&mut modern, &mut legacy] {
+            voice.drift_phase = 0.0;
+            voice.drift_value = 0.0;
+            voice.drift_target = 1.0;
+        }
+        modern.update_drift(SAMPLE_RATE, false);
+        legacy.update_drift(SAMPLE_RATE, true);
+
+        assert_eq!(modern.drift_value, DRIFT_SMOOTHING);
+        assert_eq!(legacy.drift_value, LEGACY_DRIFT_SMOOTHING);
+        assert!(legacy.drift_phase < modern.drift_phase);
+        assert!((modern.drift_phase - DRIFT_RATE / SAMPLE_RATE).abs() < 1e-9);
+        assert!((legacy.drift_phase - LEGACY_DRIFT_RATE / SAMPLE_RATE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_legacy_warmth_adds_even_harmonics_and_keeps_the_rms() {
+        let frequency = 220.0;
+        let amplitude = 0.5;
+        let mut input = Vec::new();
+        let mut output = Vec::new();
+        for index in 0..(SAMPLE_RATE as usize) {
+            let sample = amplitude * (2.0 * PI * frequency * index as f32 / SAMPLE_RATE).sin();
+            input.push(sample);
+            output.push(legacy_warmth(sample));
+        }
+
+        let input_rms = rms(&input);
+        let output_rms = rms(&output);
+        assert!(
+            (output_rms - input_rms).abs() < input_rms * 0.005,
+            "the warmth changed the RMS: {output_rms} instead of {input_rms}"
+        );
+
+        let fundamental = tone_magnitude(&output, frequency, SAMPLE_RATE);
+        let second = tone_magnitude(&output, frequency * 2.0, SAMPLE_RATE);
+        assert!(fundamental > 0.4);
+        assert!(
+            second > fundamental * 0.002,
+            "the second harmonic was too weak: {second}"
+        );
+        assert!(
+            second < fundamental * 0.02,
+            "the second harmonic was too strong: {second}"
+        );
+
+        // The quadratic term has a positive mean. The voice path removes it
+        // again with the DC blockers after the filter.
+        let mean = output.iter().sum::<f32>() / output.len() as f32;
+        assert!(
+            mean > 0.001,
+            "there was no DC offset from the warmth: {mean}"
+        );
+    }
+
+    #[test]
+    fn the_legacy_warmth_does_not_add_dc_to_the_output() {
+        let settings = VoiceSettings {
+            legacy: true,
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            filter_keytrack: 0.0,
+            velocity_amount: 0.0,
+            drift_amount: 0.0,
+            ..VoiceSettings::default()
+        };
+        let mut voice = Voice::new(1, Channel::Number(0), Key::Number(48), 3, 1.0, &settings);
+
+        // Let the envelope settle and the DC blocker remove the offset that
+        // the quadratic term puts into the filter.
+        for _ in 0..(SAMPLE_RATE as usize) {
+            voice.next_sample(&settings, 12_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        let mut sum = 0.0;
+        for _ in 0..(SAMPLE_RATE as usize) {
+            let (left, _) = voice.next_sample(&settings, 12_000.0, 0.0, 0.0, SAMPLE_RATE);
+            sum += left;
+        }
+        let offset = sum / SAMPLE_RATE;
+        assert!(
+            offset.abs() < 0.001,
+            "the legacy voice had a DC offset of {offset}"
+        );
+    }
+
+    #[test]
+    fn the_legacy_character_stays_bounded() {
+        let settings = VoiceSettings {
+            legacy: true,
+            resonance: 1.0,
+            filter_drive: 1.0,
+            filter_slope: FilterSlope::FourPole,
+            character_grit: true,
+            drift_amount: 1.0,
+            unison: 4,
+            ..VoiceSettings::default()
+        };
+        let mut voice = voice(&settings);
+
+        let mut peak: f32 = 0.0;
+        for _ in 0..(SAMPLE_RATE as usize) {
+            let (left, right) = voice.next_sample(&settings, 800.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+
+        assert!(peak < 25.0, "the legacy voice ran away ({peak})");
+    }
+
+    #[test]
+    fn the_legacy_hf_shelf_rolls_off_the_top_end() {
+        fn gain_at(frequency: f32) -> f32 {
+            let mut shelf = LegacyHfShelf::default();
+            let mut input_energy = 0.0;
+            let mut output_energy = 0.0;
+            let samples = SAMPLE_RATE as usize;
+            for index in 0..samples {
+                let input = (2.0 * PI * frequency * index as f32 / SAMPLE_RATE).sin();
+                let output = shelf.process(input, SAMPLE_RATE);
+                if index >= samples / 2 {
+                    input_energy += input * input;
+                    output_energy += output * output;
+                }
+            }
+            (output_energy / input_energy).sqrt()
+        }
+
+        let low = gain_at(100.0);
+        let high = gain_at(12_000.0);
+        assert!(
+            (low - 1.0).abs() < 0.01,
+            "the shelf changed the low end: {low}"
+        );
+        assert!(
+            (0.85..=0.9).contains(&high),
+            "the shelf gain at 12 kHz was {high}"
+        );
+        assert!(high < low * 0.92);
     }
 }

@@ -14,6 +14,7 @@
 //! and so is every font.
 
 mod presets;
+mod theme;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -32,45 +33,7 @@ use nice_plug_egui::NiceEguiApp;
 use crate::params::SushiParams;
 use crate::patch;
 use presets::{PRESETS, Rng};
-
-// --- Light SH-101-inspired palette ------------------------------------------
-
-/// The warm paper background of the panel, close to the reference.
-const BG: Color32 = Color32::from_rgb(0xF1, 0xF0, 0xEB);
-/// The slightly darker strip behind the header.
-const HEADER_BG: Color32 = Color32::from_rgb(0xE6, 0xE5, 0xDF);
-/// Fine structural rules between sections.
-const RULE: Color32 = Color32::from_rgb(0xBC, 0xBB, 0xB4);
-/// The dark outline of fields, tracks and the panel.
-const LINE: Color32 = Color32::from_rgb(0x55, 0x55, 0x51);
-const TEXT: Color32 = Color32::from_rgb(0x1D, 0x1D, 0x1B);
-const MUTED: Color32 = Color32::from_rgb(0x75, 0x73, 0x6B);
-/// The near-white paper of buttons and fader tracks.
-const PAPER: Color32 = Color32::from_rgb(0xFB, 0xFA, 0xF6);
-/// The blue of the section titles, taken from the SH-101 reference.
-const TITLE_BLUE: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
-/// Parameter captions use a slightly quieter blue-grey.
-const LABEL: Color32 = Color32::from_rgb(0x35, 0x5D, 0x88);
-/// The one interactive accent: the MOD page underline and focus states.
-const ACCENT: Color32 = TITLE_BLUE;
-/// The track of a slider: white, outlined in dark ink.
-const TRACK: Color32 = Color32::from_rgb(0xFB, 0xFA, 0xF6);
-/// The handle band of a slider: black, like the reference.
-const HANDLE: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1A);
-/// The centre/scale marks of a slider.
-const TICK: Color32 = Color32::from_rgb(0x8A, 0x89, 0x81);
-const FIELD_BG: Color32 = Color32::from_rgb(0xFC, 0xFB, 0xF7);
-const BUTTON_BG: Color32 = Color32::from_rgb(0xE3, 0xE2, 0xDC);
-const BUTTON_ACTIVE: Color32 = Color32::from_rgb(0xD4, 0xDC, 0xE8);
-/// The light preset display and scope screen.
-const LCD_BG: Color32 = Color32::from_rgb(0xF6, 0xF6, 0xF1);
-const LCD_FG: Color32 = Color32::from_rgb(0x23, 0x4F, 0x82);
-const LED_ON: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
-const LED_RED: Color32 = Color32::from_rgb(0xB2, 0x3A, 0x32);
-const LED_OFF: Color32 = Color32::from_rgb(0xC9, 0xC8, 0xC1);
-const TRACE: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
-const STATUS_OK: Color32 = Color32::from_rgb(0x2E, 0x5C, 0x9C);
-const STATUS_ERROR: Color32 = Color32::from_rgb(0xA3, 0x3A, 0x30);
+use theme::{palette, set_legacy as set_legacy_theme};
 
 // --- The fonts ---------------------------------------------------------------
 
@@ -80,6 +43,24 @@ const SILKSCREEN_REGULAR: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Reg
 const SILKSCREEN_BOLD: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Bold.ttf");
 /// The name of the font family that holds the bold pixel font.
 const BOLD_FAMILY: &str = "sushi-bold";
+
+/// Common system CJK fonts and the face index to use inside a collection.
+/// They are loaded as a fallback so Chinese patch names and folder paths do
+/// not turn into boxes. The file is not bundled with the plugin.
+const CJK_FONT_PATHS: &[(&str, u32)] = &[
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/System/Library/Fonts/PingFang.ttc", 0),
+    ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+    ("/Library/Fonts/Arial Unicode.ttf", 0),
+    (r"C:\Windows\Fonts\msyh.ttc", 0),
+    (r"C:\Windows\Fonts\msyh.ttf", 0),
+    (r"C:\Windows\Fonts\simhei.ttf", 0),
+    (r"C:\Windows\Fonts\simsun.ttc", 0),
+];
 /// A normal monospace family for JSON and code previews. Silkscreen is kept
 /// for the faceplate only, because it has no true lowercase.
 const CODE_FAMILY: &str = "sushi-code";
@@ -90,7 +71,7 @@ const CODE_FAMILY: &str = "sushi-code";
 /// the list as a fallback for glyphs that Silkscreen does not have.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let code_fonts = fonts
+    let mut code_fonts = fonts
         .families
         .get(&egui::FontFamily::Monospace)
         .cloned()
@@ -112,6 +93,28 @@ fn install_fonts(ctx: &egui::Context) {
             .insert(0, "silkscreen".to_owned());
     }
 
+    // Add a system CJK fallback after the pixel font. The file stays on the
+    // user's system; the plugin only reads it at runtime.
+    let mut cjk_loaded = false;
+    for (path, index) in CJK_FONT_PATHS {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let data = egui::FontData::from_blob(Arc::new(bytes), *index);
+        fonts
+            .font_data
+            .insert("cjk-fallback".to_owned(), Arc::new(data));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("cjk-fallback".to_owned());
+        }
+        cjk_loaded = true;
+        break;
+    }
+
     let mut bold_list = fonts
         .families
         .get(&egui::FontFamily::Proportional)
@@ -121,6 +124,9 @@ fn install_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(egui::FontFamily::Name(Arc::from(BOLD_FAMILY)), bold_list);
+    if cjk_loaded {
+        code_fonts.push("cjk-fallback".to_owned());
+    }
     fonts
         .families
         .insert(egui::FontFamily::Name(Arc::from(CODE_FAMILY)), code_fonts);
@@ -212,6 +218,15 @@ const VOICE_METER_GAP: f32 = 8.0;
 const PATCHES_BUTTON_WIDTH: f32 = 62.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
+/// The largest font of the preset display, in the design size. Long names use
+/// a smaller font instead of running into the border of the display.
+const LCD_FONT_SIZE: f32 = 14.0;
+/// The smallest font of the preset display before a name gets an ellipsis.
+const LCD_MIN_FONT_SIZE: f32 = 10.0;
+/// The empty margin at both ends of the preset display.
+const LCD_PADDING: f32 = 7.0;
+/// The mark that the preset display had to cut a name off.
+const LCD_ELLIPSIS: &str = "...";
 /// The size of a check box.
 const CHECK_SIZE: f32 = 11.0;
 /// The height of the buttons of the radio pair.
@@ -375,6 +390,17 @@ enum Widget {
     Radio,
 }
 
+/// The part of the editor state that is stored with the plugin state by the
+/// host. Comparing it with the last value lets the open editor notice a
+/// project reload or an undo performed by the host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PersistedEditorState {
+    preset_index: usize,
+    patch_name: Option<String>,
+    patch_path: Option<String>,
+    dirty: bool,
+}
+
 /// The state that only the editor needs.
 struct EditorState {
     /// The text buffers of the numeric value fields, keyed by parameter id.
@@ -432,6 +458,10 @@ struct EditorState {
     patch_confirm_overwrite: bool,
     /// The name of the patch of the user that is loaded.
     patch_active: Option<String>,
+    /// The actual file of the loaded patch. The JSON name and the file stem
+    /// may differ after a manual edit or a rename, so the path is the
+    /// authoritative identity.
+    patch_active_path: Option<PathBuf>,
     /// The raw JSON shown in the right pane of the browser.
     patch_preview: String,
     /// The name that belongs to the preview.
@@ -458,6 +488,10 @@ pub struct SushiEditor {
     history: VecDeque<f32>,
     gui_ctx: Option<GuiContext>,
     state: EditorState,
+    /// The theme that is currently applied.
+    legacy_theme: bool,
+    /// The persisted identity that was last seen by this editor.
+    last_persisted: PersistedEditorState,
     /// The zoom of the panel, as it was last applied to the styles.
     zoom: f32,
     /// The number of arpeggiator triggers.
@@ -482,6 +516,8 @@ impl SushiEditor {
             scope_rx,
             history: VecDeque::with_capacity(HISTORY_LEN),
             gui_ctx: None,
+            legacy_theme: false,
+            last_persisted: PersistedEditorState::default(),
             zoom: 1.0,
             state: EditorState {
                 texts: HashMap::new(),
@@ -513,6 +549,7 @@ impl SushiEditor {
                 patch_status_error: false,
                 patch_confirm_overwrite: false,
                 patch_active: None,
+                patch_active_path: None,
                 patch_preview: String::new(),
                 patch_preview_title: String::new(),
             },
@@ -521,6 +558,7 @@ impl SushiEditor {
             voice_count,
         };
         editor.init_patch_state();
+        editor.last_persisted = editor.read_persisted_state();
         editor
     }
 
@@ -535,22 +573,164 @@ impl SushiEditor {
             .patch_dir
             .to_string_lossy()
             .into_owned();
-        self.state.patch_name = PRESETS[self.state.preset_index].name.to_string();
+
+        // Restore the display state that the host saved with the project.
+        // The sound itself lives in the parameters; this is only the patch
+        // identity shown by the LCD and used by the browser.
+        let index = *self
+            .params
+            .preset_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.state.preset_index = index.min(PRESETS.len() - 1);
+        self.state.dirty = *self
+            .params
+            .patch_dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let legacy = self.params.legacy.value();
+        self.legacy_theme = legacy;
+        set_legacy_theme(legacy);
+        self.state.patch_active_path = self
+            .params
+            .patch_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(PathBuf::from);
+        self.state.patch_active = self
+            .params
+            .patch_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .or_else(|| {
+                self.state
+                    .patch_active_path
+                    .as_ref()
+                    .and_then(|path| path.file_stem())
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            });
+        self.state.patch_name = self
+            .state
+            .patch_active_path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .or_else(|| self.state.patch_active.clone())
+            .unwrap_or_else(|| PRESETS[self.state.preset_index].name.to_string());
         self.state.patch_files = patch::list_patches(&self.state.patch_config.patch_dir);
         self.state.patch_status.clear();
         self.state.patch_status_error = false;
         self.state.patch_confirm_overwrite = false;
-        self.state.patch_active = None;
-        self.state.patch_preview_title = format!(
-            "{:02} {}",
-            self.state.preset_index + 1,
-            PRESETS[self.state.preset_index].name
-        );
+        self.state.patch_preview_title = match &self.state.patch_active {
+            Some(name) => name.clone(),
+            None => format!(
+                "{:02} {}",
+                self.state.preset_index + 1,
+                PRESETS[self.state.preset_index].name
+            ),
+        };
         self.state.patch_preview = serde_json::to_string_pretty(&patch::to_json(
             &self.params,
             &self.state.patch_preview_title,
         ))
         .unwrap_or_default();
+    }
+
+    /// Reads the identity that the host has stored for this instance.
+    fn read_persisted_state(&self) -> PersistedEditorState {
+        PersistedEditorState {
+            preset_index: (*self
+                .params
+                .preset_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()))
+            .min(PRESETS.len() - 1),
+            patch_name: self
+                .params
+                .patch_name
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+            patch_path: self
+                .params
+                .patch_path
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+            dirty: *self
+                .params
+                .patch_dirty
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        }
+    }
+
+    /// Applies a host state change (project reload, undo, another editor) to
+    /// the open editor without touching the patch folder or the search.
+    fn apply_persisted_state(&mut self, persisted: PersistedEditorState) {
+        self.state.preset_index = persisted.preset_index.min(PRESETS.len() - 1);
+        self.state.dirty = persisted.dirty;
+        self.state.patch_confirm_overwrite = false;
+        self.state.patch_active_path = persisted.patch_path.map(PathBuf::from);
+        self.state.patch_active = persisted.patch_name.or_else(|| {
+            self.state
+                .patch_active_path
+                .as_ref()
+                .and_then(|path| path.file_stem())
+                .map(|stem| stem.to_string_lossy().into_owned())
+        });
+        self.state.patch_name = self
+            .state
+            .patch_active_path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .or_else(|| self.state.patch_active.clone())
+            .unwrap_or_else(|| PRESETS[self.state.preset_index].name.to_string());
+        self.state.patch_preview_title = match &self.state.patch_active {
+            Some(name) => name.clone(),
+            None => format!(
+                "{:02} {}",
+                self.state.preset_index + 1,
+                PRESETS[self.state.preset_index].name
+            ),
+        };
+        self.state.patch_preview = serde_json::to_string_pretty(&patch::to_json(
+            &self.params,
+            &self.state.patch_preview_title,
+        ))
+        .unwrap_or_default();
+    }
+
+    /// Writes the patch identity and the dirty flag into the persistent
+    /// fields so the host can restore the LCD after a project reload.
+    fn sync_persisted_state(&self) {
+        *self
+            .params
+            .preset_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = self.state.preset_index;
+        *self
+            .params
+            .patch_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = self.state.patch_active.clone();
+        *self
+            .params
+            .patch_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = self
+            .state
+            .patch_active_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        *self
+            .params
+            .patch_dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = self.state.dirty;
     }
 
     /// Takes the samples of the scope out of the ring buffer.
@@ -609,14 +789,25 @@ impl NiceEguiApp for SushiEditor {
         while self.scope_rx.pop().is_ok() {}
         self.history.clear();
         self.init_patch_state();
+        self.last_persisted = self.read_persisted_state();
 
+        set_legacy_theme(self.params.legacy.value());
+        self.legacy_theme = self.params.legacy.value();
         install_fonts(&egui_ctx);
         apply_theme(&egui_ctx, 1.0);
         Ok(())
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut nice_plug_egui::Frame) {
+        let persisted = self.read_persisted_state();
+        if persisted != self.last_persisted {
+            self.apply_persisted_state(persisted.clone());
+            self.last_persisted = persisted;
+        }
+
         self.draw(ui);
+        self.sync_persisted_state();
+        self.last_persisted = self.read_persisted_state();
     }
 }
 
@@ -630,10 +821,13 @@ impl SushiEditor {
 
         self.collect_scope();
         self.update_arp_position();
+        let legacy = self.params.legacy.value();
+        set_legacy_theme(legacy);
         ui.ctx().request_repaint_after(Duration::from_millis(16));
 
         let full = ui.max_rect();
-        ui.painter().rect_filled(full, CornerRadius::ZERO, BG);
+        ui.painter()
+            .rect_filled(full, CornerRadius::ZERO, palette().bg);
 
         // The panel needs at least the size it was made for. A smaller window
         // only shows a sad face, so that nothing is cut in half.
@@ -644,12 +838,13 @@ impl SushiEditor {
 
         // The styles of the widgets follow the zoom of the panel, so that the
         // texts of the fields and of the windows grow with it.
-        if layout.zoom != self.zoom {
+        if layout.zoom != self.zoom || legacy != self.legacy_theme {
             apply_theme(ui.ctx(), layout.zoom);
             // The root ui was made before the theme was changed, so it still
             // has the old one.
             ui.reset_style();
             self.zoom = layout.zoom;
+            self.legacy_theme = legacy;
         }
 
         // Split the borrow of the editor, so that the parameters, the state of
@@ -707,7 +902,7 @@ fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
             egui::pos2(panel.left(), panel.bottom() - FOOTER_HEIGHT * zoom),
             egui::pos2(panel.right(), panel.bottom() - FOOTER_HEIGHT * zoom),
         ],
-        Stroke::new(1.0, RULE),
+        Stroke::new(1.0, palette().rule),
     );
 
     painter.text(
@@ -715,14 +910,14 @@ fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
         Align2::LEFT_TOP,
         "SUSHI / MODEL 101",
         FontId::new(font_size(8.0, zoom), bold()),
-        MUTED,
+        palette().muted,
     );
     painter.text(
         egui::pos2(panel.right() - 12.0 * zoom, y),
         Align2::RIGHT_TOP,
         "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
         FontId::new(font_size(8.0, zoom), bold()),
-        MUTED,
+        palette().muted,
     );
 
     // The live parameter readout: the reference's central value box.
@@ -734,21 +929,21 @@ fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
         egui::pos2(panel.center().x, panel.bottom() - 10.0 * zoom),
         egui::vec2(300.0, 15.0) * zoom,
     );
-    flat_box(&painter, box_rect, PAPER);
+    flat_box(&painter, box_rect, palette().paper);
     let label = truncate_name(&label, 22);
     painter.text(
         egui::pos2(box_rect.left() + 7.0 * zoom, box_rect.center().y),
         Align2::LEFT_CENTER,
         label,
         FontId::new(font_size(8.0, zoom), bold()),
-        TITLE_BLUE,
+        palette().title_blue,
     );
     painter.text(
         egui::pos2(box_rect.right() - 7.0 * zoom, box_rect.center().y),
         Align2::RIGHT_CENTER,
         value,
         FontId::new(font_size(10.0, zoom), bold()),
-        TEXT,
+        palette().text,
     );
 }
 
@@ -762,16 +957,24 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
     // The face grows with the window, but never gets bigger than 64 px.
     let size = (rect.height().min(rect.width()) * 0.4).clamp(12.0, 64.0);
-    let face = painter.layout_no_wrap(":(".to_string(), FontId::proportional(size), TEXT);
+    let face = painter.layout_no_wrap(":(".to_string(), FontId::proportional(size), palette().text);
 
     // The line below the face tells the user how big the window has to be.
     // It gets a bit smaller when the window is too narrow for it.
     let hint = format!("MINIMUM {} x {}", WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
     let width = (rect.width() - 8.0).max(8.0);
-    let galley = painter.layout_no_wrap(hint.to_string(), FontId::proportional(10.0), MUTED);
+    let galley = painter.layout_no_wrap(
+        hint.to_string(),
+        FontId::proportional(10.0),
+        palette().muted,
+    );
     let hint = if galley.size().x > width {
         let size = (10.0 * width / galley.size().x).max(4.0);
-        painter.layout_no_wrap(hint.to_string(), FontId::proportional(size), MUTED)
+        painter.layout_no_wrap(
+            hint.to_string(),
+            FontId::proportional(size),
+            palette().muted,
+        )
     } else {
         galley
     };
@@ -786,12 +989,12 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
     painter.galley(
         egui::pos2(rect.center().x - face_size.x * 0.5, top),
         face,
-        TEXT,
+        palette().text,
     );
     painter.galley(
         egui::pos2(rect.center().x - hint_size.x * 0.5, top + face_size.y + gap),
         hint,
-        MUTED,
+        palette().muted,
     );
 }
 
@@ -799,6 +1002,8 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
 /// The places of the widgets of the header.
 struct HeaderRects {
+    /// The clickable area of the wordmark. The subtitle has to stay inside it.
+    logo: Rect,
     /// The button of the previous factory preset.
     previous: Rect,
     /// The display that shows the name of the sound.
@@ -817,8 +1022,17 @@ struct HeaderRects {
 
 /// The places of the widgets of the header.
 fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
-    // The presets.
-    let preset_x = rect.left() + 172.0 * zoom;
+    // The wordmark is also the Modern/Legacy switch. The subtitle has to fit
+    // into the same clickable area, so the logo stops before the presets.
+    let logo = Rect::from_min_size(
+        rect.left_top() + egui::vec2(6.0, 0.0) * zoom,
+        egui::vec2(140.0, HEADER_HEIGHT) * zoom,
+    );
+
+    // The presets. The block starts close to the logo, so the display is wide
+    // enough for the long factory names. The next button keeps its old place,
+    // which leaves the meter and the scope untouched.
+    let preset_x = rect.left() + 152.0 * zoom;
     let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5 * zoom;
     let previous = Rect::from_min_size(
         egui::pos2(preset_x, button_y),
@@ -826,14 +1040,14 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     );
     let display = Rect::from_min_size(
         egui::pos2(preset_x + 26.0 * zoom, button_y),
-        egui::vec2(160.0, 28.0) * zoom,
+        egui::vec2(178.0, 28.0) * zoom,
     );
     let next = Rect::from_min_size(
-        egui::pos2(preset_x + 190.0 * zoom, button_y),
+        egui::pos2(preset_x + 210.0 * zoom, button_y),
         egui::vec2(22.0, 28.0) * zoom,
     );
     let mutate = Rect::from_min_size(
-        egui::pos2(preset_x + 216.0 * zoom, button_y),
+        egui::pos2(preset_x + 236.0 * zoom, button_y),
         egui::vec2(62.0, 28.0) * zoom,
     );
     let patches = Rect::from_min_size(
@@ -855,6 +1069,7 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     );
 
     HeaderRects {
+        logo,
         previous,
         display,
         next,
@@ -873,18 +1088,45 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
 fn display_text(state: &EditorState) -> String {
     let dirty = if state.dirty { "*" } else { "" };
     match &state.patch_active {
-        Some(name) => format!("{}{dirty}", truncate_name(name, LCD_NAME_LENGTH)),
+        Some(name) => format!(
+            "{}{dirty}",
+            truncate_name(&sanitize_lcd_name(name), LCD_NAME_LENGTH)
+        ),
         None => format!(
             "{:02} {}{dirty}",
             state.preset_index + 1,
-            PRESETS[state.preset_index].name
+            sanitize_lcd_name(PRESETS[state.preset_index].name)
         ),
     }
 }
 
-/// Cuts a name off, so that it fits into the display of the header.
+/// Replaces the control characters that would break the single-line display
+/// with spaces. A hand-edited patch name must not make the LCD multi-line.
+fn sanitize_lcd_name(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if matches!(character, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// Cuts a name off, so that it fits into the display of the header. A name
+/// that is too long ends in an explicit ellipsis instead of being clipped in
+/// the middle of a letter by the border of the display.
 fn truncate_name(name: &str, length: usize) -> String {
-    name.chars().take(length).collect()
+    if name.chars().count() <= length {
+        return name.to_owned();
+    }
+    if length <= LCD_ELLIPSIS.len() {
+        return name.chars().take(length).collect();
+    }
+    let mut truncated: String = name.chars().take(length - LCD_ELLIPSIS.len()).collect();
+    truncated.push_str(LCD_ELLIPSIS);
+    truncated
 }
 
 /// Draws the header: the wordmark, the presets and the oscilloscope.
@@ -893,35 +1135,58 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let painter = ui.painter_at(rect);
 
     // The header sits on its own deeper plate, separated by a full-width rule.
-    painter.rect_filled(rect, CornerRadius::ZERO, HEADER_BG);
+    painter.rect_filled(rect, CornerRadius::ZERO, palette().header_bg);
     let rule_y = rect.bottom() - 0.5;
     painter.line_segment(
         [
             egui::pos2(rect.left(), rule_y),
             egui::pos2(rect.right(), rule_y),
         ],
-        Stroke::new(1.0, RULE),
+        Stroke::new(1.0, palette().rule),
     );
 
-    // The wordmark. It is drawn with the bold pixel font, so it does not
-    // have to be drawn twice.
+    // The wordmark is also the Modern/Legacy switch. It is drawn with the
+    // bold pixel font, so it does not have to be drawn twice. The preset
+    // controls and the display are measured first, so that the subtitle can
+    // be checked against the clickable logo area.
+    let rects = header_rects(rect, zoom);
+    let logo_response = ui.interact(rects.logo, ui.scope_id().with("sushi-logo"), Sense::click());
     let wordmark = FontId::new(font_size(20.0, zoom), bold());
     painter.text(
         rect.left_top() + egui::vec2(8.0, 2.0) * zoom,
         Align2::LEFT_TOP,
         "SUSHI",
         wordmark,
-        TEXT,
+        if logo_response.hovered() {
+            palette().title_blue
+        } else {
+            palette().text
+        },
     );
+    let mode = if ctx.params.legacy.value() {
+        "LEGACY"
+    } else {
+        "MODERN"
+    };
     painter.text(
-        rect.left_top() + egui::vec2(8.0, 27.0) * zoom,
+        rect.left_top() + egui::vec2(8.0, 30.0) * zoom,
         Align2::LEFT_TOP,
-        "POLYPHONIC SYNTHESIZER",
+        format!("POLYPHONIC / {mode}"),
         FontId::proportional(font_size(8.0, zoom)),
-        MUTED,
+        if logo_response.hovered() {
+            palette().accent
+        } else {
+            palette().muted
+        },
     );
+    if logo_response.clicked() {
+        ctx.toggle_legacy();
+        ui.ctx().request_repaint();
+    }
+    logo_response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Click to switch Modern / Legacy DSP");
     // The presets.
-    let rects = header_rects(rect, zoom);
     let index = ctx.state.preset_index;
     lcd(&painter, rects.display, &display_text(ctx.state), zoom);
 
@@ -949,7 +1214,7 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
             egui::pos2(rects.mod_page.left(), rects.mod_page.bottom() - 2.0 * zoom),
             rects.mod_page.right_bottom(),
         );
-        painter.rect_filled(underline, CornerRadius::ZERO, ACCENT);
+        painter.rect_filled(underline, CornerRadius::ZERO, palette().accent);
     }
 
     // The meter that shows how many voices are playing.
@@ -968,23 +1233,35 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     small_scope(&painter, scope, ctx.history, zoom);
 
     let activity = egui::pos2(rect.right() - 202.0 * zoom, rect.top() + 16.0 * zoom);
-    led(&painter, activity, LED_ON, ctx.state.activity > 0.002, zoom);
+    led(
+        &painter,
+        activity,
+        palette().led_on,
+        ctx.state.activity > 0.002,
+        zoom,
+    );
     painter.text(
         egui::pos2(activity.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "ACT",
         FontId::proportional(font_size(9.0, zoom)),
-        MUTED,
+        palette().muted,
     );
 
     let clipping = egui::pos2(rect.right() - 172.0 * zoom, rect.top() + 16.0 * zoom);
-    led(&painter, clipping, LED_RED, ctx.state.clipping > 0.5, zoom);
+    led(
+        &painter,
+        clipping,
+        palette().led_red,
+        ctx.state.clipping > 0.5,
+        zoom,
+    );
     painter.text(
         egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "CLIP",
         FontId::proportional(font_size(9.0, zoom)),
-        MUTED,
+        palette().muted,
     );
 }
 
@@ -1246,7 +1523,7 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             0 => group(ui, rect, "VCF", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.popup(ui, "filter_mode", &p.filter_mode, 70.0);
-                    ctx.popup(ui, "filter_slope", &p.filter_slope, 52.0);
+                    ctx.popup(ui, "filter_slope", &p.filter_slope, 66.0);
                 }
                 Part::Body => {
                     column_row_fixed(ui, "filter", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
@@ -1632,7 +1909,7 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     Align2::CENTER_CENTER,
                     *label,
                     FontId::new(font_size(8.0, zoom), bold()),
-                    MUTED,
+                    palette().muted,
                 );
             }
         }
@@ -1652,7 +1929,7 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
                 let p = ctx.params;
-                text_label(ui, "CHAR", 8.0, zoom, MUTED);
+                text_label(ui, "CHAR", 8.0, zoom, palette().muted);
                 ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
             Part::Body => column_row_fixed(ui, "output", 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
@@ -1806,6 +2083,15 @@ struct Ctx<'a, 'b> {
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
+    /// Switches between the modern and the legacy DSP flavor.
+    fn toggle_legacy(&mut self) {
+        let legacy = !self.params.legacy.value();
+        self.setter.begin_set_parameter(&self.params.legacy);
+        self.setter.set_parameter(&self.params.legacy, legacy);
+        self.setter.end_set_parameter(&self.params.legacy);
+        set_legacy_theme(legacy);
+    }
+
     /// The readout slot of the panel.
     fn readout(&mut self) -> &mut Option<(String, String)> {
         &mut self.state.readout
@@ -1826,7 +2112,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let zoom = self.zoom;
 
-        caption(ui, label, 9.0, zoom, LABEL);
+        caption(ui, label, 9.0, zoom, palette().label);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
@@ -1882,7 +2168,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         let zoom = self.zoom;
 
-        caption(ui, label, 9.0, zoom, LABEL);
+        caption(ui, label, 9.0, zoom, palette().label);
 
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
@@ -1939,8 +2225,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .frame(
                 egui::Frame::new()
-                    .fill(BUTTON_BG)
-                    .stroke(Stroke::new(1.0, LINE))
+                    .fill(palette().button_bg)
+                    .stroke(Stroke::new(1.0, palette().line))
                     .inner_margin(Margin::same((6.0 * zoom).round() as i8)),
             );
 
@@ -1996,7 +2282,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             }
 
             if invalid {
-                ui.colored_label(STATUS_ERROR, "Invalid value");
+                ui.colored_label(palette().status_error, "Invalid value");
             }
         });
     }
@@ -2016,8 +2302,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .frame(
                 egui::Frame::new()
-                    .fill(BUTTON_BG)
-                    .stroke(Stroke::new(1.0, LINE))
+                    .fill(palette().button_bg)
+                    .stroke(Stroke::new(1.0, palette().line))
                     .inner_margin(Margin::same((6.0 * zoom).round() as i8)),
             );
 
@@ -2073,7 +2359,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             }
 
             if invalid {
-                ui.colored_label(STATUS_ERROR, "Invalid value");
+                ui.colored_label(palette().status_error, "Invalid value");
             }
         });
     }
@@ -2143,14 +2429,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
         );
         let painter = ui.painter_at(rect);
         // A flat white square with a thin outline and a black check mark.
-        flat_box(&painter, rect, TRACK);
+        flat_box(&painter, rect, palette().track);
         if param.value() {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 "X",
                 FontId::monospace(font_size(9.0, zoom)),
-                TEXT,
+                palette().text,
             );
         }
 
@@ -2172,7 +2458,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.state.dirty = true;
         }
 
-        text_label(ui, label, 9.0, zoom, TEXT);
+        text_label(ui, label, 9.0, zoom, palette().text);
     }
 
     /// Draws a pair of square buttons of which one is active.
@@ -2211,9 +2497,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
             // The active button of the pair is filled darker.
             let fill = if index == current || response.is_pointer_button_down_on() {
-                BUTTON_ACTIVE
+                palette().button_active
             } else {
-                BUTTON_BG
+                palette().button_bg
             };
             flat_box(&painter, rect, fill);
             painter.text(
@@ -2223,7 +2509,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 // other labels of the panel.
                 variant.to_ascii_uppercase(),
                 FontId::proportional(font_size(9.0, zoom)),
-                TEXT,
+                palette().text,
             );
 
             if response.double_clicked() {
@@ -2245,6 +2531,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.dirty = false;
         // A factory preset replaces the patch of the user.
         self.state.patch_active = None;
+        self.state.patch_active_path = None;
         self.state.patch_name = PRESETS[index].name.to_string();
         presets::apply(self.params, self.setter, index);
         self.refresh_patch_preview();
@@ -2255,7 +2542,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
     fn patch_page(&mut self, ui: &mut egui::Ui) {
         let zoom = self.zoom;
         let page = ui.max_rect();
-        ui.painter().rect_filled(page, CornerRadius::ZERO, BG);
+        ui.painter()
+            .rect_filled(page, CornerRadius::ZERO, palette().bg);
         let mut close = false;
         let inner = page.shrink(12.0 * zoom);
 
@@ -2269,7 +2557,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     ui.add(egui::Label::new(
                         egui::RichText::new("PATCHES")
                             .font(FontId::new(font_size(16.0, zoom), bold()))
-                            .color(TITLE_BLUE),
+                            .color(palette().title_blue),
                     ));
                     ui.with_layout(EguiLayout::right_to_left(Align::Center), |ui| {
                         if ui.button("CLOSE").clicked() {
@@ -2280,7 +2568,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
                 // FOLDER: the button follows a field that absorbs the row.
                 ui.horizontal(|ui| {
-                    text_label(ui, "FOLDER", 9.0, zoom, TEXT);
+                    text_label(ui, "FOLDER", 9.0, zoom, palette().text);
                     let width = (ui.available_width() - 52.0 * zoom).max(120.0 * zoom);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_dir_text)
@@ -2292,12 +2580,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     }
                 });
                 if !self.folder_is_applied() {
-                    ui.colored_label(MUTED, FOLDER_HINT);
+                    ui.colored_label(palette().muted, FOLDER_HINT);
                 }
 
                 // SEARCH + REFRESH + count in one row.
                 ui.horizontal(|ui| {
-                    text_label(ui, "SEARCH", 9.0, zoom, TEXT);
+                    text_label(ui, "SEARCH", 9.0, zoom, palette().text);
                     let width = (ui.available_width() - 150.0 * zoom).max(120.0 * zoom);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state.patch_search)
@@ -2339,10 +2627,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                         search.is_empty() || name.to_lowercase().contains(&search)
                                     };
 
-                                    text_label(ui, "USER", 9.0, zoom, MUTED);
+                                    text_label(ui, "USER", 9.0, zoom, palette().muted);
                                     let files = self.state.patch_files.clone();
                                     if files.is_empty() {
-                                        ui.colored_label(MUTED, NO_PATCHES);
+                                        ui.colored_label(palette().muted, NO_PATCHES);
                                     }
                                     let mut found = 0;
                                     for path in files {
@@ -2354,8 +2642,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                             continue;
                                         }
                                         found += 1;
-                                        let selected = self.state.patch_active.as_deref()
-                                            == Some(name.as_str());
+                                        let selected = self.state.patch_active.is_some()
+                                            && self.state.patch_active_path.as_deref()
+                                                == Some(path.as_path());
                                         let clicked = ui
                                             .push_id(("user", &name), |ui| {
                                                 ui.selectable_label(selected, &name).clicked()
@@ -2366,7 +2655,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                         }
                                     }
 
-                                    text_label(ui, "FACTORY", 9.0, zoom, MUTED);
+                                    text_label(ui, "FACTORY", 9.0, zoom, palette().muted);
                                     for (index, preset) in PRESETS.iter().enumerate() {
                                         if !matches(preset.name) {
                                             continue;
@@ -2385,7 +2674,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                     }
 
                                     if found == 0 {
-                                        ui.colored_label(MUTED, NO_MATCHES);
+                                        ui.colored_label(palette().muted, NO_MATCHES);
                                     }
                                 });
                         },
@@ -2401,20 +2690,20 @@ impl<'a, 'b> Ctx<'a, 'b> {
                         EguiLayout::top_down(Align::Min),
                         |ui| {
                             ui.horizontal(|ui| {
-                                text_label(ui, "JSON", 9.0, zoom, TITLE_BLUE);
+                                text_label(ui, "JSON", 9.0, zoom, palette().title_blue);
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&self.state.patch_preview_title)
                                             .size(font_size(9.0, zoom))
-                                            .color(MUTED),
+                                            .color(palette().muted),
                                     )
                                     .truncate(),
                                 );
                             });
                             let preview_height = (body_height - 24.0 * zoom).max(40.0 * zoom);
                             egui::Frame::NONE
-                                .fill(FIELD_BG)
-                                .stroke(Stroke::new(1.0, LINE))
+                                .fill(palette().field_bg)
+                                .stroke(Stroke::new(1.0, palette().line))
                                 .inner_margin(Margin::same(3))
                                 .show(ui, |ui| {
                                     ui.set_min_height(preview_height);
@@ -2448,7 +2737,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     |ui| {
                         ui.add_space(8.0 * zoom);
                         ui.horizontal(|ui| {
-                            text_label(ui, "NAME", 9.0, zoom, TEXT);
+                            text_label(ui, "NAME", 9.0, zoom, palette().text);
                             // A short field, not a nearly full-width box whose
                             // top border reads as a separator across the bar.
                             let width =
@@ -2470,9 +2759,9 @@ impl<'a, 'b> Ctx<'a, 'b> {
                         });
 
                         let color = if self.state.patch_status_error {
-                            STATUS_ERROR
+                            palette().status_error
                         } else {
-                            STATUS_OK
+                            palette().status_ok
                         };
                         ui.add(
                             egui::Label::new(
@@ -2560,15 +2849,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
             )
         };
 
-        if let Some(active) = &self.state.patch_active {
-            let path = self
-                .patch_dir()
-                .join(format!("{}.json", patch::sanitize_file_name(active)));
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                self.state.patch_preview = text;
-                self.state.patch_preview_title = title;
-                return;
-            }
+        if let (Some(_active), Some(path)) =
+            (&self.state.patch_active, &self.state.patch_active_path)
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            self.state.patch_preview = text;
+            self.state.patch_preview_title = title;
+            return;
         }
 
         self.state.patch_preview =
@@ -2585,7 +2872,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 // for a confirmation anymore.
                 self.state.patch_confirm_overwrite = false;
                 self.state.patch_active = Some(name.clone());
-                self.state.patch_name = name.clone();
+                self.state.patch_active_path = Some(path.to_path_buf());
+                // The save field follows the file name, not the display name
+                // inside the JSON, so saving again overwrites the file the
+                // user actually opened.
+                self.state.patch_name = path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| name.clone());
                 self.state.dirty = false;
                 self.refresh_patch_preview();
                 self.set_status(format!("Loaded {name}"), false);
@@ -2616,10 +2910,11 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         match patch::save_patch(&dir, &name, self.params) {
-            Ok(_) => {
+            Ok(path) => {
                 self.state.patch_confirm_overwrite = false;
                 self.state.patch_name = name.clone();
                 self.state.patch_active = Some(name);
+                self.state.patch_active_path = Some(path);
                 self.state.dirty = false;
                 self.refresh_patch_list();
                 self.refresh_patch_preview();
@@ -2768,7 +3063,7 @@ fn group_row(
 /// pulse widths and the arpeggiator, olive for the envelopes and the
 /// amplifier, gray for the rest.
 fn title_color(_title: &str) -> Color32 {
-    TITLE_BLUE
+    palette().title_blue
 }
 
 /// Draws a section and hands its header and body to the given callback.
@@ -2801,7 +3096,7 @@ fn group(
             egui::pos2(rect.left(), rule_y),
             egui::pos2(rect.right(), rule_y),
         ],
-        Stroke::new(1.0, RULE),
+        Stroke::new(1.0, palette().rule),
     );
     // A faint line through the fader bank, as in the reference.
     let body_top = rect.top() + (TITLE_HEIGHT + 3.0) * zoom;
@@ -2812,7 +3107,7 @@ fn group(
         let y = bank_center + offset * zoom;
         painter.line_segment(
             [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            Stroke::new(1.0, TICK),
+            Stroke::new(1.0, palette().tick),
         );
     }
 
@@ -2897,7 +3192,7 @@ fn sections(
                 egui::pos2(x, start.y + 2.0 * zoom),
                 egui::pos2(x, start.y + height - 2.0 * zoom),
             ],
-            Stroke::new(1.0, RULE),
+            Stroke::new(1.0, palette().rule),
         );
     }
 
@@ -3139,13 +3434,13 @@ fn v_slider(
     let painter = ui.painter_at(rect);
     let geometry = FaderGeometry::new(rect, zoom);
 
-    flat_box(&painter, geometry.track, TRACK);
+    flat_box(&painter, geometry.track, palette().track);
     painter.line_segment(
         [
             egui::pos2(geometry.divider, geometry.track.top()),
             egui::pos2(geometry.divider, geometry.track.bottom()),
         ],
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, palette().line),
     );
 
     let id = ui.scope_id().with("sushi-fine-drag");
@@ -3198,12 +3493,20 @@ fn v_slider(
     painter.rect_filled(
         coarse_thumb,
         CornerRadius::ZERO,
-        if coarse_live { TITLE_BLUE } else { HANDLE },
+        if coarse_live {
+            palette().title_blue
+        } else {
+            palette().handle
+        },
     );
     painter.rect_filled(
         fine_thumb,
         CornerRadius::ZERO,
-        if fine_live { TITLE_BLUE } else { HANDLE },
+        if fine_live {
+            palette().title_blue
+        } else {
+            palette().handle
+        },
     );
 
     let primary = egui::PointerButton::Primary;
@@ -3328,7 +3631,7 @@ fn format_number(value: f32, decimals: usize) -> String {
 /// lights of the activity meter.
 fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
     let font = FontId::proportional(font_size(8.0, zoom));
-    let label = painter.layout_no_wrap("VOICES".to_string(), font.clone(), MUTED);
+    let label = painter.layout_no_wrap("VOICES".to_string(), font.clone(), palette().muted);
     let label_width = label.size().x;
 
     let row_width =
@@ -3344,7 +3647,7 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
         Align2::LEFT_CENTER,
         "VOICES",
         font,
-        MUTED,
+        palette().muted,
     );
 
     // The row of the lights. Every light that stands for a playing voice is
@@ -3352,7 +3655,11 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
     let row_left = (left + label_width + VOICE_METER_GAP * zoom).round();
     for index in 0..VOICE_LEDS {
         let x = row_left + index as f32 * (VOICE_LED_WIDTH + VOICE_LED_GAP) * zoom;
-        let color = if index < voices { LED_ON } else { LED_OFF };
+        let color = if index < voices {
+            palette().led_on
+        } else {
+            palette().led_off
+        };
         painter.rect_filled(
             Rect::from_min_size(
                 egui::pos2(x, top),
@@ -3384,40 +3691,77 @@ fn arp_light_color(step: usize) -> Color32 {
 /// A small light: a flat square that is either lit or switched off.
 fn led(painter: &egui::Painter, center: Pos2, color: Color32, on: bool, zoom: f32) {
     let rect = Rect::from_center_size(center, egui::vec2(LED_SIZE, LED_SIZE) * zoom);
-    let fill = if on { color } else { LED_OFF };
+    let fill = if on { color } else { palette().led_off };
     painter.rect_filled(rect, CornerRadius::ZERO, fill);
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, palette().line),
         egui::StrokeKind::Inside,
     );
 }
 
+/// The width of a text in the given font.
+fn text_width(painter: &egui::Painter, text: &str, font: &FontId) -> f32 {
+    painter
+        .layout_no_wrap(text.to_owned(), font.clone(), palette().lcd_fg)
+        .size()
+        .x
+}
+
+/// Fits a name into the preset display: the largest font that works is used,
+/// and a name that is still too wide is cut off with an explicit ellipsis.
+/// The returned width is never bigger than `max_width`.
+fn fit_lcd_text(
+    painter: &egui::Painter,
+    text: &str,
+    max_width: f32,
+    zoom: f32,
+) -> (String, FontId) {
+    let mut size = LCD_FONT_SIZE;
+    let mut font = FontId::monospace(font_size(size, zoom));
+    while size > LCD_MIN_FONT_SIZE && text_width(painter, text, &font) > max_width {
+        size -= 1.0;
+        font = FontId::monospace(font_size(size, zoom));
+    }
+    if text_width(painter, text, &font) <= max_width {
+        return (text.to_owned(), font);
+    }
+
+    // The name does not even fit at the smallest font, so mark the cut with
+    // an ellipsis instead of letting the border clip a glyph in half.
+    let mut chars: Vec<char> = text.chars().collect();
+    loop {
+        chars.pop();
+        let mut fitted: String = chars.iter().collect();
+        fitted.push_str(LCD_ELLIPSIS);
+        if text_width(painter, &fitted, &font) <= max_width {
+            return (fitted, font);
+        }
+        if chars.is_empty() {
+            let ellipsis = LCD_ELLIPSIS.to_owned();
+            if text_width(painter, &ellipsis, &font) <= max_width {
+                return (ellipsis, font);
+            }
+            return (String::new(), font);
+        }
+    }
+}
+
 /// The flat white display that shows the name of the preset.
 fn lcd(painter: &egui::Painter, rect: Rect, text: &str, zoom: f32) {
-    flat_box(painter, rect, LCD_BG);
+    flat_box(painter, rect, palette().lcd_bg);
 
-    let font = FontId::monospace(font_size(14.0, zoom));
-    let max_width = (rect.width() - 14.0 * zoom).max(1.0);
-    let mut fitted = text.to_string();
-    while !fitted.is_empty()
-        && painter
-            .layout_no_wrap(fitted.clone(), font.clone(), LCD_FG)
-            .size()
-            .x
-            > max_width
-    {
-        fitted.pop();
-    }
+    let max_width = (rect.width() - 2.0 * LCD_PADDING * zoom).max(1.0);
+    let (fitted, font) = fit_lcd_text(painter, text, max_width, zoom);
 
     let painter = painter.with_clip_rect(rect.shrink(2.0 * zoom));
     painter.text(
-        rect.left_top() + egui::vec2(7.0, rect.height() * 0.5),
+        rect.left_top() + egui::vec2(LCD_PADDING, rect.height() * 0.5),
         Align2::LEFT_CENTER,
         fitted,
         font,
-        LCD_FG,
+        palette().lcd_fg,
     );
 }
 
@@ -3434,14 +3778,14 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
     let pressed = response.is_pointer_button_down_on();
     let fill = if primary {
         if pressed {
-            BUTTON_ACTIVE
+            palette().button_active
         } else {
-            Color32::from_rgb(0xDD, 0xE4, 0xEF)
+            palette().primary_bg
         }
     } else if pressed {
-        BUTTON_ACTIVE
+        palette().button_active
     } else {
-        BUTTON_BG
+        palette().button_bg
     };
     flat_box(&painter, rect, fill);
     painter.text(
@@ -3456,7 +3800,7 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
                 egui::FontFamily::Proportional
             },
         ),
-        TEXT,
+        palette().text,
     );
 
     response
@@ -3467,20 +3811,20 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
 fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoom: f32) {
     // A dark instrument screen with a quiet grid, even while the sound is
     // silent. It is the one live object in the header.
-    flat_box(painter, rect, LCD_BG);
+    flat_box(painter, rect, palette().lcd_bg);
     let inner = rect.shrink(3.0 * zoom);
     for index in 1..4 {
         let x = inner.left() + inner.width() * index as f32 / 4.0;
         painter.line_segment(
             [egui::pos2(x, inner.top()), egui::pos2(x, inner.bottom())],
-            Stroke::new(1.0, RULE),
+            Stroke::new(1.0, palette().rule),
         );
     }
     for index in 1..3 {
         let y = inner.top() + inner.height() * index as f32 / 3.0;
         painter.line_segment(
             [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
-            Stroke::new(1.0, RULE),
+            Stroke::new(1.0, palette().rule),
         );
     }
 
@@ -3491,7 +3835,7 @@ fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoo
                 egui::pos2(inner.left(), inner.center().y),
                 egui::pos2(inner.right(), inner.center().y),
             ],
-            Stroke::new(1.0, TRACE),
+            Stroke::new(1.0, palette().trace),
         );
         return;
     }
@@ -3508,7 +3852,7 @@ fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoo
         })
         .collect();
 
-    painter.add(egui::Shape::line(points, Stroke::new(1.0, TRACE)));
+    painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().trace)));
 }
 
 /// The offset that is added to the values of a logarithmic range so that a
@@ -3599,61 +3943,61 @@ fn absolute_path(path: &Path) -> PathBuf {
 fn apply_theme(ctx: &egui::Context, zoom: f32) {
     let mut visuals = egui::Visuals::light();
     visuals.dark_mode = false;
-    visuals.override_text_color = Some(TEXT);
-    visuals.panel_fill = BG;
-    visuals.window_fill = BG;
-    visuals.window_stroke = Stroke::new(1.0, LINE);
+    visuals.override_text_color = Some(palette().text);
+    visuals.panel_fill = palette().bg;
+    visuals.window_fill = palette().bg;
+    visuals.window_stroke = Stroke::new(1.0, palette().line);
     visuals.window_corner_radius = CornerRadius::ZERO;
     visuals.window_shadow = egui::epaint::Shadow::NONE;
     visuals.menu_corner_radius = CornerRadius::ZERO;
     visuals.popup_shadow = egui::epaint::Shadow::NONE;
-    visuals.extreme_bg_color = FIELD_BG;
-    visuals.text_edit_bg_color = Some(FIELD_BG);
-    visuals.faint_bg_color = BG;
-    visuals.code_bg_color = FIELD_BG;
-    visuals.hyperlink_color = TEXT;
+    visuals.extreme_bg_color = palette().field_bg;
+    visuals.text_edit_bg_color = Some(palette().field_bg);
+    visuals.faint_bg_color = palette().bg;
+    visuals.code_bg_color = palette().field_bg;
+    visuals.hyperlink_color = palette().text;
     visuals.slider_trailing_fill = false;
     visuals.button_frame = true;
-    visuals.selection.bg_fill = BUTTON_ACTIVE;
-    visuals.selection.stroke = Stroke::new(1.0, LINE);
+    visuals.selection.bg_fill = palette().button_active;
+    visuals.selection.stroke = Stroke::new(1.0, palette().line);
 
     let square = CornerRadius::ZERO;
 
     // Every widget is a flat fill with a single 1 px outline: no bevel, no
     // shadow and no expansion.
-    visuals.widgets.noninteractive.bg_fill = BG;
-    visuals.widgets.noninteractive.weak_bg_fill = BG;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, RULE);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.noninteractive.bg_fill = palette().bg;
+    visuals.widgets.noninteractive.weak_bg_fill = palette().bg;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette().rule);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette().text);
     visuals.widgets.noninteractive.corner_radius = square;
     visuals.widgets.noninteractive.expansion = 0.0;
 
     // The buttons, the popups and the text fields of the panel.
-    visuals.widgets.inactive.bg_fill = BUTTON_BG;
-    visuals.widgets.inactive.weak_bg_fill = BUTTON_BG;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.inactive.bg_fill = palette().button_bg;
+    visuals.widgets.inactive.weak_bg_fill = palette().button_bg;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, palette().line);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, palette().text);
     visuals.widgets.inactive.corner_radius = square;
     visuals.widgets.inactive.expansion = 0.0;
 
-    visuals.widgets.hovered.bg_fill = BUTTON_BG;
-    visuals.widgets.hovered.weak_bg_fill = BUTTON_ACTIVE;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, TEXT);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.hovered.bg_fill = palette().button_bg;
+    visuals.widgets.hovered.weak_bg_fill = palette().button_active;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, palette().text);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, palette().text);
     visuals.widgets.hovered.corner_radius = square;
     visuals.widgets.hovered.expansion = 0.0;
 
-    visuals.widgets.active.bg_fill = BUTTON_ACTIVE;
-    visuals.widgets.active.weak_bg_fill = BUTTON_ACTIVE;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, TEXT);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.active.bg_fill = palette().button_active;
+    visuals.widgets.active.weak_bg_fill = palette().button_active;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, palette().text);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, palette().text);
     visuals.widgets.active.corner_radius = square;
     visuals.widgets.active.expansion = 0.0;
 
-    visuals.widgets.open.bg_fill = FIELD_BG;
-    visuals.widgets.open.weak_bg_fill = BUTTON_ACTIVE;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, LINE);
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.open.bg_fill = palette().field_bg;
+    visuals.widgets.open.weak_bg_fill = palette().button_active;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0, palette().line);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0, palette().text);
     visuals.widgets.open.corner_radius = square;
     visuals.widgets.open.expansion = 0.0;
 
@@ -3690,7 +4034,7 @@ fn flat_box(painter: &egui::Painter, rect: Rect, fill: Color32) {
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, palette().line),
         egui::StrokeKind::Inside,
     );
 }
@@ -3784,6 +4128,9 @@ mod tests {
         let voice_count = Arc::new(AtomicUsize::new(0));
         let mut editor = SushiEditor::new(params.clone(), rx, arp_led, arp_position, voice_count);
         let ctx = egui::Context::default();
+        // The tests draw with the fonts of the real panel, so that a text that
+        // is too wide is caught here and not only in the host.
+        install_fonts(&ctx);
         editor.gui_ctx = Some(GuiContext::new(Arc::new(Stub)));
         apply_theme(&ctx, 1.0);
         (ctx, editor, params)
@@ -3892,6 +4239,13 @@ mod tests {
             .collect()
     }
 
+    /// The rects of the header of a window of the given size.
+    fn header_rects_at(size: egui::Vec2) -> HeaderRects {
+        let layout = Layout::for_rect(Rect::from_min_size(egui::pos2(0.0, 0.0), size))
+            .expect("the window is big enough");
+        header_rects(layout.header(), layout.zoom)
+    }
+
     /// The centre of the ring of the arpeggiator and the number of its lit
     /// sectors.
     /// Runs a few frames, so that the animations of the panel can settle.
@@ -3986,9 +4340,10 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The panel page has 71 parameters: 56 sliders, 11 choices, 3 switches
-        // and one pair of buttons. The modulation matrix adds 24 more on its
-        // own page, which has its own test.
+        // The panel page has 71 patch parameters: 56 sliders, 11 choices,
+        // 3 switches and one pair of buttons. The modulation matrix adds 24
+        // more on its own page, which has its own test. The Modern/Legacy
+        // switch is a host parameter reached through the SUSHI wordmark.
         let continuous = counts.sliders;
         assert_eq!(continuous, 56);
         assert_eq!(
@@ -4649,55 +5004,60 @@ mod tests {
 
     #[test]
     fn no_two_texts_overlap_at_any_zoom() {
-        for percent in (100..=400).step_by(5) {
-            let zoom = percent as f32 / 100.0;
-            for mod_page in [false, true] {
-                let (ctx, mut editor, _params) = make_editor();
-                editor.state.mod_page = mod_page;
-                let output = run_frames(
-                    &ctx,
-                    &mut editor,
-                    vec![input_at(
-                        egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom,
-                        vec![],
-                    )],
-                );
+        for legacy in [false, true] {
+            for percent in (100..=400).step_by(5) {
+                let zoom = percent as f32 / 100.0;
+                for mod_page in [false, true] {
+                    let (ctx, mut editor, params) = make_editor();
+                    let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+                    let setter = gui_ctx.param_setter();
+                    setter.set_parameter(&params.legacy, legacy);
+                    editor.state.mod_page = mod_page;
+                    let output = run_frames(
+                        &ctx,
+                        &mut editor,
+                        vec![input_at(
+                            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom,
+                            vec![],
+                        )],
+                    );
 
-                let texts = text_shapes(&output);
-                let sliders = slider_rects(&ctx, &output);
-                for (text, pos, size) in &texts {
-                    let rect = Rect::from_min_size(*pos, *size);
-                    for slider in &sliders {
-                        let overlap = rect.intersect(*slider);
-                        assert!(
-                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                            "the text {text:?} is covered by a slider at {percent}% (mod={mod_page}): \
-{rect:?} / {slider:?}"
-                        );
-                    }
-                    for popup in &editor.state.popup_rects {
-                        // The selected text lives inside its own popup button.
-                        if popup.contains(rect.center()) {
-                            continue;
+                    let texts = text_shapes(&output);
+                    let sliders = slider_rects(&ctx, &output);
+                    for (text, pos, size) in &texts {
+                        let rect = Rect::from_min_size(*pos, *size);
+                        for slider in &sliders {
+                            let overlap = rect.intersect(*slider);
+                            assert!(
+                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                                "the text {text:?} is covered by a slider at {percent}% \
+(mod={mod_page}, legacy={legacy}): {rect:?} / {slider:?}"
+                            );
                         }
-                        let overlap = rect.expand(4.0 * zoom).intersect(*popup);
-                        assert!(
-                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                            "the text {text:?} is too close to a popup at {percent}% (mod={mod_page}): \
-{rect:?} / {popup:?}"
-                        );
+                        for popup in &editor.state.popup_rects {
+                            // The selected text lives inside its own popup button.
+                            if popup.contains(rect.center()) {
+                                continue;
+                            }
+                            let overlap = rect.expand(4.0 * zoom).intersect(*popup);
+                            assert!(
+                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                                "the text {text:?} is too close to a popup at {percent}% \
+(mod={mod_page}, legacy={legacy}): {rect:?} / {popup:?}"
+                            );
+                        }
                     }
-                }
-                for (index, (first, first_pos, first_size)) in texts.iter().enumerate() {
-                    let first_rect = Rect::from_min_size(*first_pos, *first_size);
-                    for (second, second_pos, second_size) in texts.iter().skip(index + 1) {
-                        let second_rect = Rect::from_min_size(*second_pos, *second_size);
-                        let overlap = first_rect.intersect(second_rect);
-                        assert!(
-                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                            "the texts {first:?} and {second:?} overlap at {percent}% (mod={mod_page}): \
-{first_rect:?} / {second_rect:?}"
-                        );
+                    for (index, (first, first_pos, first_size)) in texts.iter().enumerate() {
+                        let first_rect = Rect::from_min_size(*first_pos, *first_size);
+                        for (second, second_pos, second_size) in texts.iter().skip(index + 1) {
+                            let second_rect = Rect::from_min_size(*second_pos, *second_size);
+                            let overlap = first_rect.intersect(second_rect);
+                            assert!(
+                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                                "the texts {first:?} and {second:?} overlap at {percent}% \
+(mod={mod_page}, legacy={legacy}): {first_rect:?} / {second_rect:?}"
+                            );
+                        }
                     }
                 }
             }
@@ -5338,6 +5698,234 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_previews_the_loaded_file_by_its_path() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("identity-preview");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+
+        // The internal name differs from the file stem on purpose. The path
+        // must win, otherwise the preview and the selection point at the
+        // wrong file.
+        let path = dir.path.join("FILE.json");
+        std::fs::write(
+            &path,
+            r#"{"format":"sushi-patch","version":1,"name":"DISPLAY","params":{"cutoff":1234.0}}"#,
+        )
+        .expect("the patch was not written");
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&path);
+        }
+
+        assert_eq!(editor.state.patch_active.as_deref(), Some("DISPLAY"));
+        assert_eq!(
+            editor.state.patch_active_path.as_deref(),
+            Some(path.as_path())
+        );
+        // Saving again targets FILE.json, not DISPLAY.json.
+        assert_eq!(editor.state.patch_name, "FILE");
+        assert!(
+            editor.state.patch_preview.contains("\"name\":\"DISPLAY\"")
+                || editor.state.patch_preview.contains("\"name\": \"DISPLAY\""),
+            "the preview did not read the file: {}",
+            editor.state.patch_preview
+        );
+    }
+
+    #[test]
+    fn a_system_cjk_font_is_used_when_available() {
+        let available = CJK_FONT_PATHS
+            .iter()
+            .any(|(path, _)| Path::new(path).exists());
+        if !available {
+            return;
+        }
+
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let _ = run_frames(&ctx, &mut make_editor().1, vec![input(vec![])]);
+        let has_glyphs =
+            ctx.fonts_mut(|fonts| fonts.has_glyphs(&egui::FontId::proportional(12.0), "中文"));
+
+        assert!(has_glyphs, "the CJK fallback was not installed");
+    }
+
+    #[test]
+    fn the_two_flavors_have_different_palettes() {
+        set_legacy_theme(false);
+        let modern = palette().bg;
+        set_legacy_theme(true);
+        let legacy = palette().bg;
+        set_legacy_theme(false);
+
+        assert_ne!(modern, legacy);
+    }
+
+    #[test]
+    fn clicking_the_logo_switches_the_flavor() {
+        let (ctx, mut editor, params) = make_editor();
+        assert!(!params.legacy.value());
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, position) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "SUSHI")
+            .expect("the header has no wordmark");
+        run_frames(&ctx, &mut editor, click(position + egui::vec2(2.0, 2.0)));
+
+        assert!(params.legacy.value());
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"POLYPHONIC / LEGACY".to_string()),
+            "the header did not show the legacy flavor: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_header_subtitle_stays_inside_the_logo() {
+        for legacy in [false, true] {
+            let (ctx, mut editor, params) = make_editor();
+            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+            let setter = gui_ctx.param_setter();
+            setter.set_parameter(&params.legacy, legacy);
+            let subtitle = if legacy {
+                "POLYPHONIC / LEGACY"
+            } else {
+                "POLYPHONIC / MODERN"
+            };
+
+            for percent in (100..=400).step_by(5) {
+                let zoom = percent as f32 / 100.0;
+                let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+                let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+                let rects = header_rects_at(size);
+                assert!(
+                    !rects.logo.intersects(rects.previous),
+                    "the clickable logo overlaps the previous preset at {percent}%: \
+{:?} / {:?}",
+                    rects.logo,
+                    rects.previous
+                );
+                let (_, pos, text_size) = text_shapes(&output)
+                    .into_iter()
+                    .find(|(text, _, _)| text == subtitle)
+                    .unwrap_or_else(|| {
+                        panic!("the header has no subtitle {subtitle:?} at {percent}%")
+                    });
+                let rect = Rect::from_min_size(pos, text_size);
+
+                assert!(
+                    rects.logo.contains_rect(rect),
+                    "the subtitle {subtitle:?} is outside the logo at {percent}%: \
+{rect:?} / {:?}",
+                    rects.logo
+                );
+                for (name, control) in [
+                    ("preset display", rects.display),
+                    ("previous preset", rects.previous),
+                    ("next preset", rects.next),
+                    ("mutate", rects.mutate),
+                    ("patches", rects.patches),
+                    ("mod page", rects.mod_page),
+                ] {
+                    assert!(
+                        !rect.intersects(control),
+                        "the subtitle {subtitle:?} intersects the {name} at {percent}%: \
+{rect:?} / {control:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_flavor_survives_a_host_state_reload() {
+        let (_ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.legacy, true);
+
+        editor.init_patch_state();
+        assert!(params.legacy.value());
+        assert!(editor.legacy_theme);
+    }
+
+    #[test]
+    fn the_patch_identity_survives_a_host_state_reload() {
+        let (_ctx, mut editor, params) = make_editor();
+
+        *params
+            .preset_index
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = 3;
+        *params
+            .patch_name
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some("MY PATCH".to_string());
+        *params
+            .patch_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some("/tmp/MY PATCH.json".to_string());
+        *params
+            .patch_dirty
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+
+        editor.init_patch_state();
+
+        assert_eq!(editor.state.preset_index, 3);
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+        assert_eq!(
+            editor.state.patch_active_path.as_deref(),
+            Some(Path::new("/tmp/MY PATCH.json"))
+        );
+        assert!(editor.state.dirty);
+
+        // The other direction: the editor writes the current identity back
+        // into the host state.
+        editor.state.preset_index = 4;
+        editor.state.patch_active = Some("OTHER".to_string());
+        editor.state.patch_active_path = Some(PathBuf::from("/tmp/OTHER.json"));
+        editor.state.dirty = false;
+        editor.sync_persisted_state();
+
+        assert_eq!(
+            *params
+                .preset_index
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            4
+        );
+        assert_eq!(
+            params
+                .patch_name
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("OTHER")
+        );
+        assert_eq!(
+            params
+                .patch_path
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("/tmp/OTHER.json")
+        );
+        assert!(
+            !*params
+                .patch_dirty
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        );
+    }
+
+    #[test]
     fn the_display_shows_the_name_of_the_patch() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.patch_active = Some("MY PATCH".to_string());
@@ -5357,6 +5945,116 @@ mod tests {
             names.contains(&"MY PATCH*".to_string()),
             "the display does not mark the patch: {names:?}"
         );
+    }
+
+    #[test]
+    fn the_display_shows_the_long_factory_names() {
+        let names = [
+            "PROPHET BRASS",
+            "MELLOTRON FLUTE",
+            "JUPITER STRINGS",
+            "POLY STRINGS",
+        ];
+        for legacy in [false, true] {
+            let (ctx, mut editor, params) = make_editor();
+            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+            let setter = gui_ctx.param_setter();
+            setter.set_parameter(&params.legacy, legacy);
+
+            for percent in (100..=400).step_by(5) {
+                let zoom = percent as f32 / 100.0;
+                let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+                let rects = header_rects_at(size);
+                for name in names {
+                    let index = PRESETS
+                        .iter()
+                        .position(|preset| preset.name == name)
+                        .unwrap_or_else(|| panic!("there is no preset {name:?}"));
+                    editor.state.preset_index = index;
+                    editor.state.patch_active = None;
+                    editor.state.patch_active_path = None;
+                    editor.state.dirty = false;
+
+                    let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+                    let expected = format!("{:02} {name}", index + 1);
+                    let (_, pos, text_size) = text_shapes(&output)
+                        .into_iter()
+                        .find(|(text, _, _)| text == &expected)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "the display does not show {expected:?} at {percent}% \
+(legacy={legacy})"
+                            )
+                        });
+                    let rect = Rect::from_min_size(pos, text_size);
+                    assert!(
+                        rects.display.contains_rect(rect),
+                        "the display text {expected:?} is outside the display at {percent}% \
+(legacy={legacy}): {rect:?} / {:?}",
+                        rects.display
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_too_long_ends_in_an_ellipsis() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.patch_active = Some("A VERY LONG PATCH NAME THAT DOES NOT FIT".to_string());
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+        let (text, pos, text_size) = text_shapes(&output)
+            .into_iter()
+            .find(|(_, pos, size)| {
+                rects
+                    .display
+                    .contains_rect(Rect::from_min_size(*pos, *size))
+            })
+            .expect("the display has no text");
+        let rect = Rect::from_min_size(pos, text_size);
+
+        assert!(
+            text.ends_with(LCD_ELLIPSIS),
+            "the cut name {text:?} has no explicit ellipsis"
+        );
+        assert!(
+            rects.display.contains_rect(rect),
+            "the cut name is outside the display: {rect:?} / {:?}",
+            rects.display
+        );
+    }
+
+    #[test]
+    fn fit_lcd_text_puts_an_ellipsis_on_a_narrow_display() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        // Fonts are only laid out after the first frame of the context.
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let painter = egui::Painter::new(
+            ctx,
+            egui::LayerId::background(),
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+        );
+        let text = "A VERY LONG PATCH NAME THAT DOES NOT FIT";
+        let max_width = 40.0;
+
+        let (fitted, font) = fit_lcd_text(&painter, text, max_width, 1.0);
+
+        assert!(fitted.ends_with(LCD_ELLIPSIS), "{fitted:?} has no ellipsis");
+        assert_ne!(fitted, text);
+        assert!(text_width(&painter, &fitted, &font) <= max_width);
+    }
+
+    #[test]
+    fn control_characters_in_display_names_become_spaces() {
+        assert_eq!(sanitize_lcd_name("A\nB\rC\tD"), "A B C D");
+
+        let (_ctx, mut editor, _params) = make_editor();
+        editor.state.patch_active = Some("A\nB\rC\tD".to_string());
+        assert_eq!(display_text(&editor.state), "A B C D");
     }
 
     #[test]
@@ -5468,6 +6166,70 @@ mod tests {
         assert!(
             names.contains(&"As Played".to_string()),
             "the popup has no as played pattern: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_filter_slope_popup_shows_the_old_and_the_modern_four_pole() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "12 dB")
+            .expect("the filter slope popup is missing");
+        let button = pos + egui::vec2(2.0, 2.0);
+
+        // Open the popup. The second frame paints the list of choices.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(button)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![]),
+            ],
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"24 dB OLD".to_string()),
+            "the popup has no old four-pole option: {names:?}"
+        );
+        assert!(
+            names.contains(&"24 dB".to_string()),
+            "the popup has no modern four-pole option: {names:?}"
+        );
+
+        // The old option is the legacy mapping, and it sits at the index that
+        // old host states use.
+        assert_eq!(crate::params::FilterSlope::variants()[1], "24 dB OLD");
+        assert_eq!(
+            crate::params::FilterSlope::from_index(1),
+            crate::params::FilterSlope::FourPole
+        );
+
+        // Pick the old option and check that the parameter follows it.
+        let (_, old) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "24 dB OLD")
+            .expect("the old four-pole option is missing");
+        let item = old + egui::vec2(2.0, 2.0);
+        run_frames(&ctx, &mut editor, click(item));
+        assert_eq!(
+            params.filter_slope.value(),
+            crate::params::FilterSlope::FourPole
         );
     }
 

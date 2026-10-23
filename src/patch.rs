@@ -47,10 +47,42 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The documents folder from the XDG user directories file, if the user has
+/// configured one. This keeps localized folders such as `~/文档` working.
+fn xdg_documents_dir() -> Option<PathBuf> {
+    let home = home_dir()?;
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
+    let text = fs::read_to_string(config_home.join("user-dirs.dirs")).ok()?;
+
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(value) = line.strip_prefix("XDG_DOCUMENTS_DIR=") else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        let expanded = if value == "$HOME" {
+            home.to_string_lossy().into_owned()
+        } else if let Some(rest) = value.strip_prefix("$HOME/") {
+            home.join(rest).to_string_lossy().into_owned()
+        } else {
+            value.to_string()
+        };
+        let path = PathBuf::from(expanded);
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 /// The folder in which the patches are stored by default.
 pub fn default_patch_dir() -> PathBuf {
-    match home_dir() {
-        Some(home) => home.join("Documents").join("Sushi Patches"),
+    match xdg_documents_dir().or_else(|| home_dir().map(|home| home.join("Documents"))) {
+        Some(documents) => documents.join("Sushi Patches"),
         None => PathBuf::from("sushi-patches"),
     }
 }
@@ -240,6 +272,41 @@ fn normalize_name(name: &str) -> String {
         .collect()
 }
 
+/// The name with which a variant is written into a patch.
+///
+/// The modern 24 dB ladder is displayed as "24 dB", but old patches already
+/// used that text for the old ladder. The modern one is therefore spelled out
+/// so that a patch can never turn an old sound into a new one by accident.
+fn variant_to_json_name(variants: &[&str], name: &str) -> String {
+    if name == "24 dB" && variants.contains(&"24 dB OLD") {
+        "24 dB NEW".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// The index of a variant that was read from a patch.
+///
+/// "24 dB" is the name that old patches gave to the old ladder, so it keeps
+/// resolving to "24 dB OLD". The modern ladder is only selected by the
+/// explicit "24 dB NEW" spelling, which is what this version writes.
+fn variant_index_from_name(variants: &[&str], name: &str) -> Option<usize> {
+    let wanted = normalize_name(name);
+
+    if variants.contains(&"24 dB OLD") {
+        if wanted == normalize_name("24 dB") {
+            return variants.iter().position(|variant| *variant == "24 dB OLD");
+        }
+        if wanted == normalize_name("24 dB NEW") {
+            return variants.iter().position(|variant| *variant == "24 dB");
+        }
+    }
+
+    variants
+        .iter()
+        .position(|variant| normalize_name(variant) == wanted)
+}
+
 /// The value of a floating point parameter as a JSON number.
 ///
 /// The shortest text that can be read back as the same number is used, so that
@@ -383,18 +450,15 @@ impl<T: Enum + PartialEq + 'static> PatchParam for EnumParam<T> {
     fn to_json(&self) -> Value {
         let index = T::to_index(self.value());
         match T::variants().get(index) {
-            Some(name) => Value::String((*name).to_string()),
+            Some(name) => Value::String(variant_to_json_name(T::variants(), name)),
             None => Value::Null,
         }
     }
 
     fn read_json(&self, value: &Value) -> Result<T, String> {
         if let Some(name) = value.as_str() {
-            let wanted = normalize_name(name);
-            for (index, variant) in T::variants().iter().enumerate() {
-                if normalize_name(variant) == wanted {
-                    return Ok(T::from_index(index));
-                }
+            if let Some(index) = variant_index_from_name(T::variants(), name) {
+                return Ok(T::from_index(index));
             }
             return Err(format!("\"{name}\" is not a valid value"));
         }
@@ -434,6 +498,29 @@ macro_rules! sushi_params {
                 map.insert($id.to_string(), params.$field.to_json());
             )*
             map
+        }
+
+        /// Checks every value of a JSON object without changing the
+        /// synthesizer. A broken patch must not leave the current sound in a
+        /// half loaded state.
+        fn params_validate_json(
+            params: &SushiParams,
+            map: &Map<String, Value>,
+        ) -> Result<(), String> {
+            for (id, value) in map {
+                match id.as_str() {
+                    $(
+                        $id => {
+                            params
+                                .$field
+                                .read_json(value)
+                                .map_err(|error| format!("{id}: {error}"))?;
+                        }
+                    )*
+                    _ => {}
+                }
+            }
+            Ok(())
         }
 
         /// Writes the values of a JSON object into the parameters of the host.
@@ -596,6 +683,9 @@ fn param_map(value: &Value) -> Result<Map<String, Value>, String> {
 /// not hold are ignored, which keeps old patches loadable.
 pub fn apply_json(params: &SushiParams, setter: &ParamSetter, value: &Value) -> Result<(), String> {
     let map = param_map(value)?;
+    // Validate first: applying the defaults before discovering a bad value
+    // would destroy the sound that is currently loaded.
+    params_validate_json(params, &map)?;
     apply_defaults(params, setter);
     params_from_json(params, setter, &map)
 }
@@ -739,7 +829,8 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::params::{
-        Character, FilterMode, LfoWaveform, ModDest, ModSource, NoteDiv, PolyMode, Waveform,
+        Character, FilterMode, FilterSlope, LfoWaveform, ModDest, ModSource, NoteDiv, PolyMode,
+        Waveform,
     };
     use crate::patch::test_support::{reset_count, set_count, setter};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -920,6 +1011,60 @@ mod tests {
     }
 
     #[test]
+    fn old_patches_load_the_old_four_pole_ladder() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        // "24 dB" is the name that every old patch and factory preset uses.
+        // It has to keep meaning the old ladder, not the corrected one.
+        apply_json(
+            &params,
+            &setter,
+            &json!({ "params": { "filter_slope": "24 dB" } }),
+        )
+        .expect("the legacy patch could not be applied");
+        assert_eq!(params.filter_slope.value(), FilterSlope::FourPole);
+
+        // An old patch that is saved again spells out the old ladder.
+        let document = to_json(&params, "LEGACY 24 DB");
+        assert_eq!(document["params"]["filter_slope"], "24 dB OLD");
+    }
+
+    #[test]
+    fn the_two_four_pole_ladders_have_distinct_patch_names() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        setter.set_parameter(&params.filter_slope, FilterSlope::FourPoleModern);
+        let document = to_json(&params, "MODERN 24 DB");
+        assert_eq!(document["params"]["filter_slope"], "24 dB NEW");
+
+        let other = SushiParams::default();
+        apply_json(&other, &setter, &document).expect("the modern patch could not be applied");
+        assert_eq!(
+            other.filter_slope.value(),
+            FilterSlope::FourPoleModern,
+            "the modern patch did not restore the corrected ladder"
+        );
+
+        // The explicit names and the host indices all select the right one.
+        for (value, expected) in [
+            (json!("24 dB OLD"), FilterSlope::FourPole),
+            (json!("24 dB NEW"), FilterSlope::FourPoleModern),
+            (json!(1), FilterSlope::FourPole),
+            (json!(2), FilterSlope::FourPoleModern),
+        ] {
+            apply_json(
+                &other,
+                &setter,
+                &json!({ "params": { "filter_slope": value } }),
+            )
+            .expect("the patch could not be applied");
+            assert_eq!(other.filter_slope.value(), expected);
+        }
+    }
+
+    #[test]
     fn booleans_can_be_read_as_numbers() {
         let params = SushiParams::default();
         let setter = setter();
@@ -989,6 +1134,29 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_patch_does_not_change_the_sound() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        setter.set_parameter(&params.cutoff, 2_400.0);
+        setter.set_parameter(&params.resonance, 0.8);
+
+        // The first value is valid, the second one is not. The old
+        // implementation applied the defaults and the first value before it
+        // noticed the error.
+        let document = json!({
+            "params": {
+                "cutoff": 1_200.0,
+                "unison": 1.5,
+            }
+        });
+        assert!(apply_json(&params, &setter, &document).is_err());
+
+        assert!((params.cutoff.value() - 2_400.0).abs() < 0.1);
+        assert!((params.resonance.value() - 0.8).abs() < 0.01);
+    }
+
+    #[test]
     fn the_values_are_clamped_to_their_range() {
         let params = SushiParams::default();
         let setter = setter();
@@ -1016,10 +1184,12 @@ mod tests {
     fn the_patch_folder_is_in_the_documents() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
 
-        let old = std::env::var_os("HOME");
+        let old_home = std::env::var_os("HOME");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
         let home = TempDir::new("home");
         unsafe {
             std::env::set_var("HOME", &home.path);
+            std::env::set_var("XDG_CONFIG_HOME", home.path.join("config"));
         }
 
         assert_eq!(
@@ -1028,12 +1198,62 @@ mod tests {
         );
         assert_eq!(PatchConfig::default().patch_dir, default_patch_dir());
 
-        match old {
+        match old_home {
             Some(value) => unsafe {
                 std::env::set_var("HOME", value);
             },
             None => unsafe {
                 std::env::remove_var("HOME");
+            },
+        }
+        match old_config {
+            Some(value) => unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            },
+        }
+    }
+
+    #[test]
+    fn the_patch_folder_follows_the_xdg_documents_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+
+        let old_home = std::env::var_os("HOME");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        let home = TempDir::new("xdg-home");
+        let config = home.path.join("config");
+        fs::create_dir_all(&config).expect("the configuration folder was not created");
+        fs::write(
+            config.join("user-dirs.dirs"),
+            "XDG_DOCUMENTS_DIR=\"$HOME/文档\"\n",
+        )
+        .expect("the user directories file was not written");
+        unsafe {
+            std::env::set_var("HOME", &home.path);
+            std::env::set_var("XDG_CONFIG_HOME", &config);
+        }
+
+        assert_eq!(
+            default_patch_dir(),
+            home.path.join("文档").join("Sushi Patches")
+        );
+
+        match old_home {
+            Some(value) => unsafe {
+                std::env::set_var("HOME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
+        }
+        match old_config {
+            Some(value) => unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", value);
+            },
+            None => unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
             },
         }
     }

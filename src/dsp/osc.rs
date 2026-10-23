@@ -64,6 +64,12 @@ impl Oscillator {
         self.triangle = naive_triangle(phase);
     }
 
+    /// The current phase, for regression tests.
+    #[cfg(test)]
+    pub fn phase(&self) -> f32 {
+        self.phase
+    }
+
     /// Renders the next sample. `phase_delta` is the phase increment per sample
     /// (i.e. the frequency divided by the sample rate) and `pulse_width` is the
     /// duty cycle of the pulse waveform.

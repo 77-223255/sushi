@@ -17,13 +17,14 @@ mod editor;
 pub mod params;
 pub mod patch;
 
+use dsp::adaa::{AdaaTanh, AdaaTanhAsym};
 use dsp::adsr::EnvCoeffs;
 use dsp::arp::Arp;
 use dsp::fx::{Fx, FxParams};
 use dsp::lfo::Lfo;
-use dsp::voice::{OscSettings, Voice, VoiceSettings};
+use dsp::voice::{CONTROL_RATE, DcBlocker, OscSettings, Voice, VoiceSettings};
 use editor::{SushiEditor, WINDOW_HEIGHT, WINDOW_WIDTH};
-use params::Character;
+use params::{Character, PolyMode};
 pub use params::{SushiParams, Waveform};
 
 /// Number of simultaneous voices. Steals the oldest voice when exceeded.
@@ -43,6 +44,16 @@ const FIRST_ARP_VOICE_ID: i32 = 0x0100_0000;
 /// The frequency of the tone tilt filter, in Hz.
 const TONE_TILT_FREQUENCY: f32 = 700.0;
 
+/// The maximum number of keys that a mono or legato voice remembers. This is
+/// deliberately a fixed array: note handling runs on the audio thread.
+const MAX_MONO_NOTES: usize = 16;
+
+/// The length of the short fade applied to a stolen voice, in samples.
+const STEAL_FADE_SAMPLES: f32 = 64.0;
+
+/// The length of the reported reverb/delay tail, in seconds.
+const TAIL_SECONDS: f32 = 12.0;
+
 /// Values that are smaller than this are flushed to zero, so that they do not
 /// linger in the denormal range.
 const DENORMAL_LIMIT: f32 = 1e-20;
@@ -56,14 +67,32 @@ fn flush_denormal(value: f32) -> f32 {
     }
 }
 
-/// The saturation of a single sample. The two halves of the wave are driven
-/// with different gains, so that the harsh character is a little asymmetric
-/// without adding a DC offset to the signal.
+/// The saturation of a single sample used by the legacy flavor.
+#[inline]
 fn saturate_sample(sample: f32, drive: f32, negative_gain: f32) -> f32 {
     if sample >= 0.0 {
         (sample * drive).tanh()
     } else {
         (sample * drive * negative_gain).tanh()
+    }
+}
+
+/// The extra wet mix that the space macro adds. The first release scaled the
+/// macro straight into the wet mix, and that curve is kept so old patches keep
+/// their sound.
+fn space_amount(space: f32) -> f32 {
+    (space * 0.35).clamp(0.0, 0.35)
+}
+
+/// The glide coefficient for one control-rate update. A control update happens
+/// every `CONTROL_RATE` samples, so the requested time constant is divided by
+/// that rate.
+fn glide_coefficient(glide_ms: f32, sample_rate: f32) -> f32 {
+    if glide_ms <= 0.0 {
+        1.0
+    } else {
+        let control_samples = (glide_ms * 0.001 * sample_rate / CONTROL_RATE as f32).max(1.0);
+        1.0 - (-1.0 / control_samples).exp()
     }
 }
 
@@ -89,9 +118,34 @@ impl Default for Macros {
     }
 }
 
+/// A note that a mono or legato voice remembers while it is held.
+#[derive(Debug, Clone, Copy)]
+struct MonoNote {
+    voice_id: VoiceID,
+    channel: Channel,
+    key: Key,
+    velocity: f32,
+}
+
+/// A stolen voice that is fading out instead of being cut off immediately.
+struct FadingVoice {
+    voice: Voice,
+    gain: f32,
+    step: f32,
+}
+
 pub struct Sushi {
     params: Arc<SushiParams>,
     voices: [Option<Voice>; NUM_VOICES],
+    /// The keys that are still held in mono and legato mode. The newest note
+    /// is at the end of the array.
+    mono_notes: [Option<MonoNote>; MAX_MONO_NOTES],
+    mono_len: usize,
+    /// The poly mode that was active in the last block. A mode change clears
+    /// the mono note stack.
+    last_poly_mode: PolyMode,
+    /// Stolen voices that are faded out over a few samples.
+    fading_voices: [Option<FadingVoice>; NUM_VOICES],
     next_internal_voice_id: u64,
     sample_rate: f32,
     /// The number of voices that may play at the same time. It is read once
@@ -121,9 +175,33 @@ pub struct Sushi {
     next_arp_voice_id: i32,
     /// Whether the arpeggiator was enabled in the last block.
     arp_was_on: bool,
+    /// Whether the arpeggiator clock was running in the last block.
+    arp_was_playing: bool,
+    /// The host transport position at the start of the last block. It is used
+    /// to detect loops and jumps so the arpeggiator can rephase.
+    arp_last_position: Option<f64>,
+    /// The smoothed pitch bend and mod wheel values.
+    pitch_bend: f32,
+    pitch_bend_target: f32,
+    mod_wheel: f32,
+    mod_wheel_target: f32,
+    /// Whether the sustain pedal is down.
+    sustain: bool,
+    /// The flavor used by the previous block. A flavor switch resets the
+    /// nonlinear stages that differ between the two engines.
+    last_legacy: Option<bool>,
     /// The state of the two tone tilt filters.
     tone_left: f32,
     tone_right: f32,
+    /// DC blockers after the character saturator. The grit character is
+    /// intentionally asymmetric and otherwise leaves a DC offset.
+    character_dc_left: DcBlocker,
+    character_dc_right: DcBlocker,
+    /// Anti-aliased nonlinear stages.
+    character_adaa_left: AdaaTanhAsym,
+    character_adaa_right: AdaaTanhAsym,
+    master_adaa_left: AdaaTanh,
+    master_adaa_right: AdaaTanh,
 
     editor_state: Arc<EguiEditorState>,
     repaint_notifier: RepaintNotifier,
@@ -138,6 +216,10 @@ impl Default for Sushi {
         Self {
             params: Arc::new(SushiParams::default()),
             voices: std::array::from_fn(|_| None),
+            mono_notes: [None; MAX_MONO_NOTES],
+            mono_len: 0,
+            last_poly_mode: PolyMode::Poly,
+            fading_voices: std::array::from_fn(|_| None),
             next_internal_voice_id: 0,
             sample_rate: 48_000.0,
             voice_limit: NUM_VOICES,
@@ -153,8 +235,22 @@ impl Default for Sushi {
             arp_voice_id: None,
             next_arp_voice_id: FIRST_ARP_VOICE_ID,
             arp_was_on: false,
+            arp_was_playing: false,
+            arp_last_position: None,
+            pitch_bend: 0.0,
+            pitch_bend_target: 0.0,
+            mod_wheel: 0.0,
+            mod_wheel_target: 0.0,
+            sustain: false,
+            last_legacy: None,
             tone_left: 0.0,
             tone_right: 0.0,
+            character_dc_left: DcBlocker::default(),
+            character_dc_right: DcBlocker::default(),
+            character_adaa_left: AdaaTanhAsym::default(),
+            character_adaa_right: AdaaTanhAsym::default(),
+            master_adaa_left: AdaaTanh::default(),
+            master_adaa_right: AdaaTanh::default(),
 
             // Open the editor a little larger than the 960x600 design so
             // the panel is comfortable on a normal DAW screen. The design
@@ -208,13 +304,9 @@ impl Sushi {
         );
 
         // The glide is a one-pole filter: the bigger the time, the slower the
-        // pitch moves towards the target.
-        let glide_ms = params.glide.value();
-        let glide_step = if glide_ms <= 0.0 {
-            1.0
-        } else {
-            1.0 - (-1.0 / (glide_ms * 0.001 * sample_rate)).exp()
-        };
+        // pitch moves towards the target. The coefficient is applied at the
+        // control rate.
+        let glide_step = glide_coefficient(params.glide.value(), sample_rate);
 
         VoiceSettings {
             osc1,
@@ -238,6 +330,8 @@ impl Sushi {
             detune_cents: params.detune.value(),
             spread: params.spread.value(),
             tune_semitones: params.tune.smoothed.next_step(steps),
+            pitch_bend_semitones: self.pitch_bend,
+            mod_wheel: self.mod_wheel,
             glide_step,
             lfo1_amount: params.lfo1_amount.value(),
             lfo1_target: params.lfo1_target.value(),
@@ -246,8 +340,9 @@ impl Sushi {
             velocity_amount: params.velocity.smoothed.next_step(steps),
             drift_amount: 0.0,
             character_grit: false,
+            legacy: false,
             // The slots of the modulation matrix are read once per block.
-            mod_slots: params.mod_slots(),
+            mod_slots: params.mod_slots(steps),
             // The macros are the sources of the modulation matrix.
             macro1: macros.bright,
             macro2: macros.motion,
@@ -267,6 +362,7 @@ impl Sushi {
             delay_mix: params.delay_mix.value(),
             reverb_mix: params.reverb_mix.value(),
             reverb_decay: params.reverb_decay.value(),
+            legacy: false,
         }
     }
 
@@ -327,6 +423,7 @@ impl Sushi {
         let voice_idx = self.voice_slot_to_use(NUM_VOICES);
         if let Some(stolen) = self.voices[voice_idx].take() {
             terminate_voice(context, sample_offset, &stolen);
+            self.start_fade(stolen);
         }
 
         let voice_id = self.next_arp_voice_id;
@@ -350,9 +447,10 @@ impl Sushi {
     /// The saturation of the character. The silk character is gentle, the grit
     /// character is harsh and a little asymmetric.
     ///
-    /// The asymmetry only changes the gain of the two halves of the wave, so
-    /// the signal does not get a DC offset and silence stays exactly silent.
-    fn saturate(&self, left: f32, right: f32, grit: bool) -> (f32, f32) {
+    /// The asymmetry only changes the gain of the two halves of the wave. That
+    /// does introduce a DC offset on non-silent signals, which the character
+    /// DC blocker after this stage removes; silence stays exactly silent.
+    fn saturate(&mut self, left: f32, right: f32, grit: bool, legacy: bool) -> (f32, f32) {
         let amount = if grit { 0.30 } else { 0.10 };
         let drive = 1.0 + 2.0 * amount;
         let normalizer = 1.0 / (1.0 + amount);
@@ -360,9 +458,19 @@ impl Sushi {
         // the negative one.
         let negative_gain = if grit { 1.0 - 0.6 * amount } else { 1.0 };
 
+        if legacy {
+            return (
+                flush_denormal(saturate_sample(left, drive, negative_gain) * normalizer),
+                flush_denormal(saturate_sample(right, drive, negative_gain) * normalizer),
+            );
+        }
+
+        self.character_adaa_left.set_negative_gain(negative_gain);
+        self.character_adaa_right.set_negative_gain(negative_gain);
+
         (
-            flush_denormal(saturate_sample(left, drive, negative_gain) * normalizer),
-            flush_denormal(saturate_sample(right, drive, negative_gain) * normalizer),
+            flush_denormal(self.character_adaa_left.process(left * drive) * normalizer),
+            flush_denormal(self.character_adaa_right.process(right * drive) * normalizer),
         )
     }
 
@@ -413,6 +521,145 @@ impl Sushi {
             .map(|(index, _)| index)
     }
 
+    /// Adds a note to the mono/legato held-key stack. A repeated note is
+    /// moved to the top instead of being stored twice.
+    fn push_mono_note(&mut self, note: MonoNote) {
+        self.remove_mono_note(note.voice_id, note.channel, note.key);
+
+        if self.mono_len == MAX_MONO_NOTES {
+            // Drop the oldest note. This can only happen with a broken host
+            // that never sends note offs.
+            self.mono_notes.copy_within(1..MAX_MONO_NOTES, 0);
+            self.mono_len -= 1;
+        }
+
+        self.mono_notes[self.mono_len] = Some(note);
+        self.mono_len += 1;
+    }
+
+    /// Removes a held note from the mono/legato stack.
+    fn remove_mono_note(
+        &mut self,
+        voice_id: VoiceID,
+        channel: Channel,
+        key: Key,
+    ) -> Option<MonoNote> {
+        for index in (0..self.mono_len).rev() {
+            let Some(note) = self.mono_notes[index] else {
+                continue;
+            };
+            let same_id = !voice_id.is_wildcard() && note.voice_id == voice_id;
+            if same_id || (note.channel == channel && note.key == key) {
+                for shift in index..self.mono_len - 1 {
+                    self.mono_notes[shift] = self.mono_notes[shift + 1];
+                }
+                self.mono_len -= 1;
+                self.mono_notes[self.mono_len] = None;
+                return Some(note);
+            }
+        }
+
+        None
+    }
+
+    /// The most recently pressed key that is still held.
+    fn mono_top(&self) -> Option<MonoNote> {
+        if self.mono_len == 0 {
+            None
+        } else {
+            self.mono_notes[self.mono_len - 1]
+        }
+    }
+
+    fn clear_mono_notes(&mut self) {
+        self.mono_notes = [None; MAX_MONO_NOTES];
+        self.mono_len = 0;
+    }
+
+    /// Puts a stolen voice into the short fade-out pool instead of cutting it
+    /// off at a random sample value.
+    fn start_fade(&mut self, voice: Voice) {
+        let slot = match self.fading_voices.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                let mut quietest = 0;
+                let mut gain = f32::MAX;
+                for (index, fading) in self.fading_voices.iter().enumerate() {
+                    if let Some(fading) = fading
+                        && fading.gain < gain
+                    {
+                        gain = fading.gain;
+                        quietest = index;
+                    }
+                }
+                quietest
+            }
+        };
+
+        self.fading_voices[slot] = Some(FadingVoice {
+            voice,
+            gain: 1.0,
+            step: 1.0 / STEAL_FADE_SAMPLES,
+        });
+    }
+
+    /// Handles a note off in mono and legato mode. Releasing the sounding note
+    /// returns to the most recent key that is still held.
+    fn release_mono_note(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        sample_offset: u32,
+        voice_id: VoiceID,
+        channel: Channel,
+        key: Key,
+        settings: &VoiceSettings,
+    ) {
+        let Some(released) = self.remove_mono_note(voice_id, channel, key) else {
+            return;
+        };
+
+        let Some(index) = self.newest_voice_index() else {
+            return;
+        };
+
+        let is_current = self.voices[index].as_ref().is_some_and(|voice| {
+            (voice.channel() == released.channel && voice.key() == released.key)
+                || voice.voice_id()
+                    == released
+                        .voice_id
+                        .id_or_fallback(released.key, released.channel)
+        });
+        if !is_current {
+            // An older held key was released while a newer one is sounding.
+            return;
+        }
+
+        if self.sustain {
+            // The pedal keeps the released note alive. On pedal up the
+            // release_sustained_voices method returns to the held key.
+            if let Some(voice) = self.voices[index].as_mut() {
+                voice.sustain();
+            }
+            return;
+        }
+
+        if let Some(top) = self.mono_top() {
+            if let Some(voice) = self.voices[index].as_mut() {
+                // The current note is over and the previous held note takes
+                // over. Its envelopes keep running, so returning to it feels
+                // legato instead of restarting the sound.
+                terminate_voice(context, sample_offset, voice);
+                voice.set_voice_id(top.voice_id.id_or_fallback(top.key, top.channel));
+                voice.set_channel(top.channel);
+                voice.set_velocity(top.velocity);
+                let retrigger = voice.is_releasing();
+                voice.set_key(top.key, settings, retrigger);
+            }
+        } else if let Some(voice) = self.voices[index].as_mut() {
+            voice.release();
+        }
+    }
+
     /// Starts a new voice, or reuses an existing one in mono and legato mode.
     #[allow(clippy::too_many_arguments)]
     fn start_voice(
@@ -428,8 +675,18 @@ impl Sushi {
         // The voices that have already died don't need a slot anymore.
         self.free_finished_voices(context, sample_offset);
 
-        match self.params.poly_mode.value() {
-            params::PolyMode::Poly => {
+        let poly_mode = self.params.poly_mode.value();
+        if matches!(poly_mode, PolyMode::Mono | PolyMode::Legato) {
+            self.push_mono_note(MonoNote {
+                voice_id,
+                channel,
+                key,
+                velocity,
+            });
+        }
+
+        match poly_mode {
+            PolyMode::Poly => {
                 // Use a free voice, or steal the oldest one when the limit of
                 // the voices is reached.
                 let (voice_idx, stolen) = self.reserve_voice_slot();
@@ -438,11 +695,12 @@ impl Sushi {
                 // voice's modulation resources.
                 if let Some(stolen) = stolen {
                     terminate_voice(context, sample_offset, &stolen);
+                    self.start_fade(stolen);
                 }
 
                 self.fill_voice_slot(voice_idx, voice_id, channel, key, velocity, settings);
             }
-            params::PolyMode::Mono => {
+            PolyMode::Mono => {
                 // A mono synth only ever has a single voice.
                 if let Some(index) = self.newest_voice_index()
                     && let Some(voice) = self.voices[index].as_mut()
@@ -451,6 +709,8 @@ impl Sushi {
                     // that the old note is over.
                     terminate_voice(context, sample_offset, voice);
                     voice.set_voice_id(voice_id.id_or_fallback(key, channel));
+                    voice.set_channel(channel);
+                    voice.set_velocity(velocity);
                     voice.set_key(key, settings, true);
                     return;
                 }
@@ -465,7 +725,7 @@ impl Sushi {
                     settings,
                 );
             }
-            params::PolyMode::Legato => {
+            PolyMode::Legato => {
                 if let Some(index) = self.newest_voice_index() {
                     let retrigger = self.voices[index]
                         .as_ref()
@@ -476,6 +736,8 @@ impl Sushi {
                         // told that the old note is over.
                         terminate_voice(context, sample_offset, voice);
                         voice.set_voice_id(voice_id.id_or_fallback(key, channel));
+                        voice.set_channel(channel);
+                        voice.set_velocity(velocity);
                         voice.set_key(key, settings, retrigger);
                     }
                     return;
@@ -577,6 +839,7 @@ impl Sushi {
         // modulation resources.
         if let Some(stolen) = stolen {
             terminate_voice(context, sample_offset, &stolen);
+            self.start_fade(stolen);
         }
 
         self.fill_voice_slot(voice_idx, voice_id, channel, key, velocity, settings);
@@ -622,6 +885,16 @@ impl Sushi {
         }
     }
 
+    /// Handles MIDI All Notes Off and All Sound Off. The voices are released
+    /// instead of killed, so their envelopes close without a click.
+    fn all_notes_off(&mut self) {
+        self.release_normal_voices();
+        self.release_arp_voice();
+        self.clear_mono_notes();
+        self.arp.reset();
+        self.sustain = false;
+    }
+
     /// Puts every matching voice into its release stage.
     fn release_voices(&mut self, voice_id: VoiceID, channel: Channel, key: Key) {
         for voice in self.voices.iter_mut().flatten() {
@@ -635,6 +908,53 @@ impl Sushi {
                 if !voice_id.is_wildcard() {
                     return;
                 }
+            }
+        }
+    }
+
+    /// Defers the release of the matching voices until the sustain pedal is
+    /// lifted.
+    fn sustain_voices(&mut self, voice_id: VoiceID, channel: Channel, key: Key) {
+        for voice in self.voices.iter_mut().flatten() {
+            let matches = voice_id == VoiceID::ID(voice.voice_id())
+                || (voice.channel() == channel && voice.key() == key);
+            if matches {
+                voice.sustain();
+                if !voice_id.is_wildcard() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Releases every voice that was held by the sustain pedal. In mono and
+    /// legato mode the voice returns to the most recent key that is still held.
+    fn release_sustained_voices(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        sample_offset: u32,
+        settings: &VoiceSettings,
+    ) {
+        let top = if self.params.poly_mode.value() == PolyMode::Poly {
+            None
+        } else {
+            self.mono_top()
+        };
+
+        for voice in self.voices.iter_mut().flatten() {
+            if !voice.is_sustained() {
+                continue;
+            }
+
+            if let Some(top) = top {
+                terminate_voice(context, sample_offset, voice);
+                voice.set_voice_id(top.voice_id.id_or_fallback(top.key, top.channel));
+                voice.set_channel(top.channel);
+                voice.set_velocity(top.velocity);
+                let retrigger = voice.is_releasing();
+                voice.set_key(top.key, settings, retrigger);
+            } else {
+                voice.release_sustained();
             }
         }
     }
@@ -697,7 +1017,7 @@ impl Plugin for Sushi {
         ..AudioIOLayout::const_default()
     }];
 
-    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type Editor = EguiEditor<SushiEditor>;
@@ -729,6 +1049,19 @@ impl Plugin for Sushi {
         )
     }
 
+    /// Old projects were saved before the Modern/Legacy switch existed. They
+    /// should open in the legacy flavor, while new projects keep the modern
+    /// default. A state without any of the old parameters (for example an
+    /// empty host state) is not an old project and stays modern.
+    fn filter_state(state: &mut PluginState) {
+        if state.params.contains_key("osc1_wave") && !state.params.contains_key("legacy") {
+            state.params.insert(
+                "legacy".to_string(),
+                nice_plug::plugin::ParamValue::Bool(true),
+            );
+        }
+    }
+
     fn activate(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
@@ -755,8 +1088,25 @@ impl Plugin for Sushi {
         self.arp.reset();
         self.arp_voice_id = None;
         self.arp_was_on = false;
+        self.arp_was_playing = false;
+        self.arp_last_position = None;
+        self.pitch_bend = 0.0;
+        self.pitch_bend_target = 0.0;
+        self.mod_wheel = 0.0;
+        self.mod_wheel_target = 0.0;
+        self.sustain = false;
+        self.last_legacy = None;
+        self.clear_mono_notes();
+        self.last_poly_mode = PolyMode::Poly;
+        self.fading_voices = std::array::from_fn(|_| None);
         self.tone_left = 0.0;
         self.tone_right = 0.0;
+        self.character_dc_left = DcBlocker::default();
+        self.character_dc_right = DcBlocker::default();
+        self.character_adaa_left = AdaaTanhAsym::default();
+        self.character_adaa_right = AdaaTanhAsym::default();
+        self.master_adaa_left = AdaaTanh::default();
+        self.master_adaa_right = AdaaTanh::default();
         self.arp_led.store(0, Ordering::Relaxed);
         self.arp_position.store(0, Ordering::Relaxed);
         self.voice_count.store(0, Ordering::Relaxed);
@@ -780,15 +1130,35 @@ impl Plugin for Sushi {
 
         // The limit of the voices is read once per block.
         self.update_voice_limit();
+        let legacy = self.params.legacy.value();
+        if self.last_legacy != Some(legacy) {
+            self.character_adaa_left = AdaaTanhAsym::default();
+            self.character_adaa_right = AdaaTanhAsym::default();
+            self.master_adaa_left = AdaaTanh::default();
+            self.master_adaa_right = AdaaTanh::default();
+            self.character_dc_left = DcBlocker::default();
+            self.character_dc_right = DcBlocker::default();
+            self.last_legacy = Some(legacy);
+        }
 
-        // The transport of the host, which runs the arpeggiator.
-        let bpm = context.transport().tempo.unwrap_or(120.0);
+        // The transport of the host, which runs the arpeggiator. The
+        // fields are copied so the context is free for the event loop.
+        let (bpm, transport_playing, transport_position) = {
+            let transport = context.transport();
+            (
+                transport.tempo.unwrap_or(120.0),
+                transport.playing,
+                transport.pos_beats,
+            )
+        };
         let beats_per_sample = bpm / (60.0 * sample_rate as f64);
+        let block_beats = beats_per_sample * num_samples as f64;
 
         // The macros, read once per block.
         let bright = self.params.macro_bright.smoothed.next_step(steps);
         let motion = self.params.macro_motion.smoothed.next_step(steps);
         let space = self.params.macro_space.smoothed.next_step(steps);
+        let space_wet = space_amount(space);
         let grit = self.params.character.value() == Character::Grit;
 
         let mut settings = self.voice_settings(
@@ -799,7 +1169,19 @@ impl Plugin for Sushi {
                 space,
             },
         );
+        settings.legacy = legacy;
+        if legacy {
+            // The first release applied a per-sample coefficient at the
+            // control rate, which made the glide eight times slower.
+            let glide_ms = self.params.glide.value();
+            settings.glide_step = if glide_ms <= 0.0 {
+                1.0
+            } else {
+                1.0 - (-1.0 / (glide_ms * 0.001 * sample_rate)).exp()
+            };
+        }
         let mut fx_params = self.fx_params();
+        fx_params.legacy = legacy;
 
         // The brightness macro scales the cutoff and the resonance.
         let cutoff_multiplier = 2f32.powf((bright - 0.5) * 4.0);
@@ -817,10 +1199,8 @@ impl Plugin for Sushi {
         // The harsh character adds a bit of drive to the filter.
         settings.character_grit = grit;
 
-        // The tone tilt, whose coefficients are computed once per block.
-        let tone = self.params.tone.smoothed.next_step(steps);
-        let low_gain = 10f32.powf(tone * 6.0 / 20.0);
-        let high_gain = 10f32.powf(-tone * 6.0 / 20.0);
+        // The tone tilt. Its filter coefficient is fixed; the gains follow
+        // the smoothed tone parameter per sample.
         let tilt_coefficient =
             1.0 - (-2.0 * std::f32::consts::PI * TONE_TILT_FREQUENCY / sample_rate).exp();
 
@@ -835,18 +1215,66 @@ impl Plugin for Sushi {
         let arp_length = self.params.arp_length.value().clamp(1, 16) as usize;
         let arp_ratchet = self.params.arp_ratchet.value().clamp(1, 4) as usize;
 
+        // A change of the poly mode invalidates the held keys of the old
+        // mode. The mode is also read here so the note off handling and the
+        // voice allocation agree within one block.
+        let poly_mode = self.params.poly_mode.value();
+        if poly_mode != self.last_poly_mode {
+            // Do not leave voices from the old allocation mode hanging.
+            self.release_normal_voices();
+            self.clear_mono_notes();
+            self.last_poly_mode = poly_mode;
+        }
+
         if arp_on != self.arp_was_on {
             if arp_on {
                 // The arpeggiator was switched on, so the voices of the host
                 // are released. From now on the note offs of the host only go
                 // to the arpeggiator, so the voices would stay stuck forever.
                 self.release_normal_voices();
+                self.clear_mono_notes();
             } else {
                 // The arpeggiator was switched off, so its voice goes away.
                 self.release_arp_voice();
                 self.arp.reset();
+                self.clear_mono_notes();
             }
             self.arp_was_on = arp_on;
+        }
+
+        // If the host reports a transport position, the arpeggiator follows
+        // the host clock and pauses when the transport stops. Hosts without
+        // position information keep the old free-running behaviour.
+        let arp_running = arp_on && (legacy || transport_position.is_none() || transport_playing);
+        if legacy {
+            // The first release did not follow the host transport; the arp
+            // was free running as soon as it was enabled.
+            self.arp_was_playing = arp_on;
+            self.arp_last_position = None;
+        } else if arp_running {
+            let jumped = match (transport_position, self.arp_last_position) {
+                (Some(position), Some(last)) => (position - (last + block_beats)).abs() > 0.01,
+                (Some(_), None) => true,
+                _ => false,
+            };
+
+            if !self.arp_was_playing || jumped {
+                self.release_arp_voice();
+                if let Some(position) = transport_position {
+                    self.arp.resync(position, arp_division);
+                } else {
+                    self.arp.pause();
+                }
+            }
+            self.arp_was_playing = true;
+            self.arp_last_position = transport_position.map(|position| position + block_beats);
+        } else {
+            if self.arp_was_playing {
+                self.release_arp_voice();
+                self.arp.pause();
+            }
+            self.arp_was_playing = false;
+            self.arp_last_position = None;
         }
 
         // The output channels are looked up once, so that the sample loop
@@ -891,10 +1319,49 @@ impl Plugin for Sushi {
                     } => {
                         if arp_on {
                             self.arp.note_off(key.number_or_middle_c());
+                        } else if poly_mode == PolyMode::Poly {
+                            if self.sustain {
+                                self.sustain_voices(voice_id, channel, key);
+                            } else {
+                                self.release_voices(voice_id, channel, key);
+                            }
                         } else {
-                            self.release_voices(voice_id, channel, key);
+                            self.release_mono_note(
+                                context,
+                                sample_idx as u32,
+                                voice_id,
+                                channel,
+                                key,
+                                &settings,
+                            );
                         }
                     }
+                    NoteEvent::MidiPitchBend { value, .. } => {
+                        // A standard +/- 2 semitone bend range.
+                        self.pitch_bend_target = ((value - 0.5) * 4.0).clamp(-2.0, 2.0);
+                    }
+                    NoteEvent::MidiCC { cc, value, .. } => match cc {
+                        1 => {
+                            // Mod wheel: adds to LFO 1. If LFO 1 has no
+                            // destination it becomes a vibrato wheel.
+                            self.mod_wheel_target = value.clamp(0.0, 1.0);
+                        }
+                        64 => {
+                            let was_down = self.sustain;
+                            self.sustain = value >= 0.5;
+                            if was_down && !self.sustain {
+                                self.release_sustained_voices(
+                                    context,
+                                    sample_idx as u32,
+                                    &settings,
+                                );
+                            }
+                        }
+                        // All Sound Off and All Notes Off. Both release the
+                        // voices and clear the held state without allocating.
+                        120 | 123 => self.all_notes_off(),
+                        _ => (),
+                    },
                     NoteEvent::Choke {
                         timing,
                         voice_id,
@@ -906,6 +1373,9 @@ impl Plugin for Sushi {
                             self.arp.reset();
                         } else {
                             self.choke_voices(context, timing, voice_id, channel, key);
+                            if poly_mode != PolyMode::Poly {
+                                self.clear_mono_notes();
+                            }
                         }
                     }
                     _ => (),
@@ -921,20 +1391,38 @@ impl Plugin for Sushi {
                 (self.params.resonance.smoothed.next() + resonance_offset).clamp(0.0, 1.0);
             settings.filter_env_octaves = self.params.filter_env_amount.smoothed.next() * 5.0;
             settings.filter_keytrack = self.params.filter_keytrack.smoothed.next();
-            fx_params.chorus_mix = self.params.chorus_mix.smoothed.next() + space * 0.35;
+            // Pitch bend and the mod wheel are smoothed here so MIDI events
+            // do not step the pitch or the vibrato depth.
+            self.pitch_bend += (self.pitch_bend_target - self.pitch_bend) * 0.01;
+            self.mod_wheel += (self.mod_wheel_target - self.mod_wheel) * 0.01;
+            settings.pitch_bend_semitones = self.pitch_bend;
+            settings.mod_wheel = self.mod_wheel;
+            // Continuous mixer and oscillator settings are smoothed per
+            // sample as well; a block-level step is audible as a zipper.
+            settings.osc1.level = self.params.osc1_level.smoothed.next();
+            settings.osc1.pulse_width = self.params.osc1_pw.smoothed.next();
+            settings.osc2.level = self.params.osc2_level.smoothed.next();
+            settings.osc2.pulse_width = self.params.osc2_pw.smoothed.next();
+            settings.sub_level = self.params.sub_level.smoothed.next();
+            settings.noise_level = self.params.noise_level.smoothed.next();
+            settings.fm_amount = self.params.fm_amount.smoothed.next();
+            settings.filter_drive = self.params.filter_drive.smoothed.next();
+            settings.detune_cents = self.params.detune.smoothed.next();
+            settings.spread = self.params.spread.smoothed.next();
+            fx_params.chorus_mix = self.params.chorus_mix.smoothed.next() + space_wet;
             fx_params.chorus_rate = self.params.chorus_rate.smoothed.next();
             fx_params.chorus_depth = self.params.chorus_depth.smoothed.next();
             fx_params.delay_time_s = self.params.delay_time.smoothed.next() * 0.001;
             fx_params.delay_feedback = self.params.delay_feedback.smoothed.next();
-            fx_params.delay_mix = self.params.delay_mix.smoothed.next() + space * 0.35;
-            fx_params.reverb_mix = self.params.reverb_mix.smoothed.next() + space * 0.35;
+            fx_params.delay_mix = self.params.delay_mix.smoothed.next() + space_wet;
+            fx_params.reverb_mix = self.params.reverb_mix.smoothed.next() + space_wet;
             fx_params.reverb_decay = self.params.reverb_decay.smoothed.next();
             fx_params.chorus_mix = fx_params.chorus_mix.clamp(0.0, 1.0);
             fx_params.delay_mix = fx_params.delay_mix.clamp(0.0, 1.0);
             fx_params.reverb_mix = fx_params.reverb_mix.clamp(0.0, 1.0);
 
             // The arpeggiator plays the next note of its pattern.
-            if arp_on {
+            if arp_running {
                 let tick = self.arp.tick(
                     beats_per_sample,
                     arp_division,
@@ -990,9 +1478,43 @@ impl Plugin for Sushi {
                 right += voice_right;
             }
 
-            // The character saturator, the effect chain and the tone tilt.
-            let (left, right) = self.saturate(left, right, grit);
+            // Stolen voices fade out over a few samples instead of being cut
+            // off at a non-zero sample value.
+            for slot in self.fading_voices.iter_mut() {
+                let Some(fading) = slot else { continue };
+
+                let (voice_left, voice_right) =
+                    fading
+                        .voice
+                        .next_sample(&settings, cutoff, lfo1, lfo2, sample_rate);
+                left += voice_left * fading.gain;
+                right += voice_right * fading.gain;
+
+                fading.gain -= fading.step;
+                if fading.gain <= 0.0 || fading.voice.is_finished() {
+                    *slot = None;
+                }
+            }
+
+            // The character saturator, its DC blocker, the effect chain and
+            // the tone tilt. Only the asymmetric grit character needs the DC
+            // blocker; the symmetric silk character keeps its old low end.
+            let (left, right) = self.saturate(left, right, grit, legacy);
+            let (left, right) = if grit {
+                (
+                    self.character_dc_left.process(left, sample_rate),
+                    self.character_dc_right.process(right, sample_rate),
+                )
+            } else {
+                // Start a later Grit switch from a clean blocker state.
+                self.character_dc_left = DcBlocker::default();
+                self.character_dc_right = DcBlocker::default();
+                (left, right)
+            };
             let (left, right) = self.fx.process(left, right, &fx_params);
+            let tone = self.params.tone.smoothed.next();
+            let low_gain = 10f32.powf(tone * 6.0 / 20.0);
+            let high_gain = 10f32.powf(-tone * 6.0 / 20.0);
             let (mut left, mut right) =
                 self.tone_tilt(left, right, low_gain, high_gain, tilt_coefficient);
 
@@ -1001,8 +1523,16 @@ impl Plugin for Sushi {
             right *= volume;
 
             // Gentle saturation keeps stacked voices from clipping harshly.
-            let left = flush_denormal(left.tanh());
-            let right = flush_denormal(right.tanh());
+            let left = if legacy {
+                flush_denormal(left.tanh())
+            } else {
+                flush_denormal(self.master_adaa_left.process(left))
+            };
+            let right = if legacy {
+                flush_denormal(right.tanh())
+            } else {
+                flush_denormal(self.master_adaa_right.process(right))
+            };
 
             // Feed the editor's oscilloscope, but only while the editor is open.
             if self.editor_state.is_open() {
@@ -1026,7 +1556,23 @@ impl Plugin for Sushi {
         self.voice_count
             .store(self.voices.iter().flatten().count(), Ordering::Relaxed);
 
-        ProcessStatus::Normal
+        // Do not let a host suspend the plugin while a note, an arpeggiator or
+        // an effect tail is still producing sound. Without this, some hosts
+        // cut reverb and delay tails after the last note off.
+        let voices_active = self.voices.iter().any(Option::is_some)
+            || self.fading_voices.iter().any(Option::is_some);
+        let arp_active = arp_running && (self.arp.has_notes() || self.arp.is_sounding());
+        let fx_active = fx_params.chorus_mix > 1e-4
+            || fx_params.delay_mix > 1e-4
+            || fx_params.reverb_mix > 1e-4;
+
+        if voices_active || arp_active {
+            ProcessStatus::KeepAlive
+        } else if fx_active {
+            ProcessStatus::Tail((sample_rate * TAIL_SECONDS) as u32)
+        } else {
+            ProcessStatus::Normal
+        }
     }
 }
 
@@ -1088,11 +1634,95 @@ mod tests {
     }
 
     #[test]
+    fn an_old_host_state_is_migrated_to_the_legacy_flavor() {
+        let mut state = PluginState {
+            version: "0.0.1".to_string(),
+            params: std::collections::BTreeMap::new(),
+            fields: std::collections::BTreeMap::new(),
+        };
+        state.params.insert(
+            "osc1_wave".to_string(),
+            nice_plug::plugin::ParamValue::String("Saw".to_string()),
+        );
+        Sushi::filter_state(&mut state);
+
+        assert!(matches!(
+            state.params.get("legacy"),
+            Some(nice_plug::plugin::ParamValue::Bool(true))
+        ));
+    }
+
+    #[test]
+    fn an_empty_host_state_stays_modern() {
+        let mut state = PluginState {
+            version: String::new(),
+            params: std::collections::BTreeMap::new(),
+            fields: std::collections::BTreeMap::new(),
+        };
+        Sushi::filter_state(&mut state);
+
+        assert!(!state.params.contains_key("legacy"));
+    }
+
+    #[test]
+    fn the_space_macro_scales_the_wet_mix() {
+        assert_eq!(space_amount(0.0), 0.0);
+        assert!((space_amount(0.5) - 0.175).abs() < 1e-6);
+        assert!((space_amount(0.7) - 0.245).abs() < 1e-6);
+        assert!((space_amount(1.0) - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_glide_coefficient_matches_the_requested_time() {
+        let coefficient = glide_coefficient(100.0, SAMPLE_RATE);
+        let updates = (0.1 * SAMPLE_RATE / CONTROL_RATE as f32).round() as usize;
+        let mut level = 0.0;
+
+        // One time constant reaches about 63.2 % of the target.
+        for _ in 0..updates {
+            level += (1.0 - level) * coefficient;
+        }
+
+        assert!(
+            (level - 0.632).abs() < 0.02,
+            "the glide reached {level} after one time constant"
+        );
+    }
+
+    #[test]
+    fn the_mono_note_stack_remembers_the_previous_key() {
+        let mut sushi = Sushi::default();
+        let first = MonoNote {
+            voice_id: VoiceID::Wildcard,
+            channel: Channel::Number(0),
+            key: Key::Number(60),
+            velocity: 0.5,
+        };
+        let second = MonoNote {
+            key: Key::Number(64),
+            velocity: 0.8,
+            ..first
+        };
+
+        sushi.push_mono_note(first);
+        sushi.push_mono_note(second);
+        assert_eq!(sushi.mono_top().map(|note| note.key), Some(Key::Number(64)));
+
+        let released =
+            sushi.remove_mono_note(VoiceID::Wildcard, Channel::Number(0), Key::Number(64));
+        assert_eq!(released.map(|note| note.key), Some(Key::Number(64)));
+        assert_eq!(sushi.mono_top().map(|note| note.key), Some(Key::Number(60)));
+
+        sushi.remove_mono_note(VoiceID::Wildcard, Channel::Number(0), Key::Number(60));
+        assert!(sushi.mono_top().is_none());
+    }
+
+    #[test]
     fn the_saturator_keeps_the_signal_bounded() {
-        let sushi = Sushi::default();
+        let mut sushi = Sushi::default();
 
         for grit in [false, true] {
-            let (left, right) = sushi.saturate(10.0, -10.0, grit);
+            let (left, right) = sushi.saturate(10.0, -10.0, grit, false);
             assert!(left.is_finite() && right.is_finite());
             assert!(left.abs() <= 1.0 && right.abs() <= 1.0);
         }
@@ -1100,10 +1730,10 @@ mod tests {
 
     #[test]
     fn the_grit_character_is_harsher_than_the_silk_character() {
-        let sushi = Sushi::default();
-
-        let (silk, _) = sushi.saturate(0.1, 0.1, false);
-        let (grit, _) = sushi.saturate(0.1, 0.1, true);
+        let mut silk_sushi = Sushi::default();
+        let (silk, _) = silk_sushi.saturate(0.1, 0.1, false, false);
+        let mut grit_sushi = Sushi::default();
+        let (grit, _) = grit_sushi.saturate(0.1, 0.1, true, false);
         assert!(
             grit > silk,
             "the grit character was not louder ({grit} vs {silk})"
@@ -1111,8 +1741,10 @@ mod tests {
 
         // The grit character is a little asymmetric, so the negative half of
         // the wave is driven less hard.
-        let (silk, _) = sushi.saturate(-0.1, -0.1, false);
-        let (grit, _) = sushi.saturate(-0.1, -0.1, true);
+        let mut silk_sushi = Sushi::default();
+        let (silk, _) = silk_sushi.saturate(-0.1, -0.1, false, false);
+        let mut grit_sushi = Sushi::default();
+        let (grit, _) = grit_sushi.saturate(-0.1, -0.1, true, false);
         assert!(
             grit.abs() < silk.abs(),
             "the grit character was not asymmetric ({grit} vs {silk})"
@@ -1120,14 +1752,62 @@ mod tests {
     }
 
     #[test]
-    fn the_saturator_does_not_add_a_dc_offset() {
-        let sushi = Sushi::default();
+    fn the_saturator_keeps_silence_silent() {
+        let mut sushi = Sushi::default();
 
         for grit in [false, true] {
-            let (left, right) = sushi.saturate(0.0, 0.0, grit);
+            let (left, right) = sushi.saturate(0.0, 0.0, grit, false);
             assert_eq!(left, 0.0, "the left channel had an offset");
             assert_eq!(right, 0.0, "the right channel had an offset");
         }
+    }
+
+    #[test]
+    fn the_character_chain_removes_the_dc_of_grit() {
+        let mut sushi = Sushi::default();
+        let mut left = DcBlocker::default();
+        let mut right = DcBlocker::default();
+        let mut sum = 0.0;
+        let mut count = 0.0;
+
+        // A sine through the asymmetric saturator, then through the same DC
+        // blocker that the output uses.
+        for sample in 0..48_000 {
+            let x = (sample as f32 * 440.0 / SAMPLE_RATE * std::f32::consts::TAU).sin() * 0.5;
+            let (saturated_left, saturated_right) = sushi.saturate(x, x, true, false);
+            let output = left.process(saturated_left, SAMPLE_RATE);
+            let _ = right.process(saturated_right, SAMPLE_RATE);
+
+            // Let the highpass settle before measuring the mean.
+            if sample >= 4_800 {
+                sum += output;
+                count += 1.0;
+            }
+        }
+
+        let offset = sum / count;
+        assert!(
+            offset.abs() < 1e-3,
+            "the character chain still had an offset of {offset}"
+        );
+    }
+
+    #[test]
+    fn the_sustain_pedal_marks_the_matching_voice() {
+        let mut sushi = Sushi::default();
+        let settings = VoiceSettings::default();
+        sushi.voices[0] = Some(Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            0,
+            1.0,
+            &settings,
+        ));
+
+        sushi.sustain_voices(VoiceID::Wildcard, Channel::Number(0), Key::Number(60));
+
+        assert!(sushi.voices[0].as_ref().is_some_and(Voice::is_sustained));
     }
 
     #[test]
@@ -1147,6 +1827,48 @@ mod tests {
 
         sushi.release_normal_voices();
         assert!(sushi.voices[0].as_ref().is_some_and(Voice::is_releasing));
+    }
+
+    #[test]
+    fn all_notes_off_releases_the_normal_and_arp_voices() {
+        let mut sushi = Sushi::default();
+        let settings = VoiceSettings::default();
+
+        sushi.voices[0] = Some(Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            0,
+            1.0,
+            &settings,
+        ));
+        sushi.voices[1] = Some(Voice::new(
+            2,
+            Channel::Number(0),
+            Key::Number(64),
+            1,
+            1.0,
+            &settings,
+        ));
+        sushi.arp_voice_id = Some(2);
+        sushi.sustain = true;
+        sushi.arp.note_on(60, 0.5, false);
+        sushi.arp.note_on(64, 0.5, false);
+        assert!(sushi.arp.has_notes());
+        sushi.push_mono_note(MonoNote {
+            voice_id: VoiceID::Wildcard,
+            channel: Channel::Number(0),
+            key: Key::Number(60),
+            velocity: 0.5,
+        });
+
+        sushi.all_notes_off();
+
+        assert!(sushi.voices.iter().flatten().all(Voice::is_releasing));
+        assert_eq!(sushi.arp_voice_id, None);
+        assert!(!sushi.arp.has_notes());
+        assert_eq!(sushi.mono_len, 0);
+        assert!(!sushi.sustain);
     }
 
     #[test]
