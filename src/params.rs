@@ -31,9 +31,9 @@ pub enum FilterMode {
 ///
 /// `TwoPole` uses a single state variable filter. `FourPole` is the original
 /// 24 dB ladder, which is kept bit-identical for old patches and host states.
-/// `FourPoleModern` uses the same ladder topology with a corrected resonance
-/// curve. The first two variants stay at indices 0 and 1, so old host states
-/// keep their original behavior.
+/// `FourPoleModern` uses a zero-delay-feedback four-pole ladder with a
+/// monotonic resonance curve and gain compensation. The first two variants
+/// stay at indices 0 and 1, so old host states keep their original behavior.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FilterSlope {
     #[default]
@@ -90,6 +90,9 @@ pub enum ModSource {
     Macro2,
     #[name = "Macro 3"]
     Macro3,
+    #[name = "Mod Wheel"]
+    ModWheel,
+    Random,
 }
 
 /// The destinations of the modulation matrix.
@@ -107,6 +110,17 @@ pub enum ModDest {
     Drive,
     Pan,
     Volume,
+    #[name = "Osc2 Pitch"]
+    Osc2Pitch,
+    #[name = "Osc2 Fine"]
+    Osc2Fine,
+    #[name = "Sub Level"]
+    SubLevel,
+    #[name = "Noise Level"]
+    NoiseLevel,
+    Detune,
+    #[name = "Filter Env"]
+    FilterEnv,
 }
 
 /// The number of slots of the modulation matrix.
@@ -1085,10 +1099,56 @@ mod tests {
         assert_eq!(ModSource::variants()[1], "LFO 1");
         assert_eq!(ModSource::variants()[3], "Mod Env");
         assert_eq!(ModSource::variants()[7], "Macro 1");
+        assert_eq!(ModSource::variants()[10], "Mod Wheel");
+        assert_eq!(ModSource::variants()[11], "Random");
         assert_eq!(ModDest::variants()[0], "Off");
         assert_eq!(ModDest::variants()[1], "Pitch");
         assert_eq!(ModDest::variants()[2], "Pulse 1");
         assert_eq!(ModDest::variants()[4], "Cutoff");
+        assert_eq!(ModDest::variants()[8], "Volume");
+        assert_eq!(ModDest::variants()[9], "Osc2 Pitch");
+        assert_eq!(ModDest::variants()[10], "Osc2 Fine");
+        assert_eq!(ModDest::variants()[11], "Sub Level");
+        assert_eq!(ModDest::variants()[12], "Noise Level");
+        assert_eq!(ModDest::variants()[13], "Detune");
+        assert_eq!(ModDest::variants()[14], "Filter Env");
+    }
+
+    #[test]
+    fn new_modulation_variants_are_appended() {
+        // The indices are part of the patch and host-state format. Existing
+        // variants must keep their exact positions so old patches keep
+        // sounding the same.
+        assert_eq!(ModSource::to_index(ModSource::Off), 0);
+        assert_eq!(ModSource::to_index(ModSource::Lfo1), 1);
+        assert_eq!(ModSource::to_index(ModSource::Lfo2), 2);
+        assert_eq!(ModSource::to_index(ModSource::ModEnv), 3);
+        assert_eq!(ModSource::to_index(ModSource::AmpEnv), 4);
+        assert_eq!(ModSource::to_index(ModSource::Velocity), 5);
+        assert_eq!(ModSource::to_index(ModSource::Key), 6);
+        assert_eq!(ModSource::to_index(ModSource::Macro1), 7);
+        assert_eq!(ModSource::to_index(ModSource::Macro2), 8);
+        assert_eq!(ModSource::to_index(ModSource::Macro3), 9);
+        assert_eq!(ModSource::to_index(ModSource::ModWheel), 10);
+        assert_eq!(ModSource::to_index(ModSource::Random), 11);
+        assert_eq!(ModSource::variants().len(), 12);
+
+        assert_eq!(ModDest::to_index(ModDest::Off), 0);
+        assert_eq!(ModDest::to_index(ModDest::Pitch), 1);
+        assert_eq!(ModDest::to_index(ModDest::Pulse1), 2);
+        assert_eq!(ModDest::to_index(ModDest::Pulse2), 3);
+        assert_eq!(ModDest::to_index(ModDest::Cutoff), 4);
+        assert_eq!(ModDest::to_index(ModDest::Resonance), 5);
+        assert_eq!(ModDest::to_index(ModDest::Drive), 6);
+        assert_eq!(ModDest::to_index(ModDest::Pan), 7);
+        assert_eq!(ModDest::to_index(ModDest::Volume), 8);
+        assert_eq!(ModDest::to_index(ModDest::Osc2Pitch), 9);
+        assert_eq!(ModDest::to_index(ModDest::Osc2Fine), 10);
+        assert_eq!(ModDest::to_index(ModDest::SubLevel), 11);
+        assert_eq!(ModDest::to_index(ModDest::NoiseLevel), 12);
+        assert_eq!(ModDest::to_index(ModDest::Detune), 13);
+        assert_eq!(ModDest::to_index(ModDest::FilterEnv), 14);
+        assert_eq!(ModDest::variants().len(), 15);
     }
 
     #[test]

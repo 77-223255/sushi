@@ -13,25 +13,34 @@ A compact, mouse-first polyphonic synthesizer.
 ## Sound
 
 - Two band-limited oscillators, sub oscillator, hard sync, phase FM, unison
-- Filter slopes 12 dB / 24 dB OLD (legacy) / 24 dB (new corrected ladder with
-  working resonance), with drive
+- Filter slopes 12 dB / 24 dB OLD (original ladder) / 24 dB (new ZDF ladder
+  with working resonance), with drive
 - ADAA anti-aliased saturation and drive
 - Dual ADSR envelopes, dual LFOs, analog drift
 - 8-slot modulation matrix
 - Arpeggiator with swing, ratchet, gate, length and latch
-- Chorus, ping-pong delay, modulated FDN reverb
-- Modern: precise, high-performance digital DSP; the 48 kHz factory sound is
-  preserved and the reverb damping is sample-rate-correct at other rates
+- Chorus, ping-pong delay, diffused and modulated FDN reverb
+- Modern: precise, high-performance digital path, free to evolve (new ZDF
+  24 dB ladder, diffused FDN reverb, new mod sources/destinations)
 - Legacy: old-school rough, analog-warm path (Freeverb, cascaded SVF, raw tanh)
   with deterministic per-voice component tolerances, slower drift,
-  even-harmonic warmth and a fixed HF loss
+  even-harmonic warmth and a fixed HF loss; old projects keep their patch
+  behavior and open in Legacy
 - Patch JSON and parameter IDs are unchanged; the same patch works in both
-  flavors, and old projects open in Legacy
-- 26 factory presets, 95 patch parameters
+  flavors
+- 29 factory presets, 95 patch parameters
+
+The last three factory presets showcase the new engine: **ZDF ACID** uses the
+zero-delay-feedback 24 dB ladder, **WHEEL MOTION** routes the mod wheel to the
+cutoff without adding pitch vibrato, and **RANDOM PAD** uses the deterministic
+per-note Random source for pan and cutoff.
 
 ## Interface
 
 - Modern: light SH-101-inspired faceplate; Legacy: warm vintage palette, all vertical faders
+- Compact MOD 2.0 table: one header and eight source/dest/amount routes with
+  bipolar bars, MOD ENV and AMP ENV kept visible; Mod Wheel and Random sources,
+  plus Osc2 Pitch/Fine, Sub, Noise, Detune and Filter Env destinations
 - Coarse lane plus a separate fine lane on every fader
 - Click the SUSHI wordmark to switch Modern / Legacy
 - Full-page JSON patch browser

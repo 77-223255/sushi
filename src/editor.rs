@@ -30,7 +30,7 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
-use crate::params::SushiParams;
+use crate::params::{ModDest, ModSource, SushiParams};
 use crate::patch;
 use presets::{PRESETS, Rng};
 use theme::{palette, set_legacy as set_legacy_theme};
@@ -161,6 +161,37 @@ const GROUP_PADDING: f32 = 4.0;
 const TITLE_HEIGHT: f32 = 20.0;
 /// The horizontal gap between two parameter columns.
 const COLUMN_GAP: f32 = 4.0;
+
+// --- The modulation table ---------------------------------------------------
+
+/// The height of the single header of the modulation table, in the design
+/// size of the panel.
+const MOD_HEADER_HEIGHT: f32 = 22.0;
+/// The height of one routing row of the modulation table.
+const MOD_ROW_HEIGHT: f32 = 28.0;
+/// The height of the source and destination fields. It is the click target of
+/// the popups as well.
+const MOD_POPUP_HEIGHT: f32 = 24.0;
+/// The empty margin around the columns of the modulation table.
+const MOD_TABLE_PADDING: f32 = 6.0;
+/// The width of the column that shows the number of a route.
+const MOD_INDEX_WIDTH: f32 = 18.0;
+/// The width of the source column.
+const MOD_SOURCE_WIDTH: f32 = 128.0;
+/// The width of the arrow between the source and the destination.
+const MOD_ARROW_WIDTH: f32 = 16.0;
+/// The width of the destination column.
+const MOD_DEST_WIDTH: f32 = 128.0;
+/// The width of the numeric amount readout.
+const MOD_VALUE_WIDTH: f32 = 44.0;
+/// The gap between two columns of the modulation table.
+const MOD_COLUMN_GAP: f32 = 4.0;
+/// The height of the visible track of an amount bar.
+const MOD_BAR_HEIGHT: f32 = 16.0;
+/// The width of the black handle of an amount bar.
+const MOD_BAR_HANDLE_WIDTH: f32 = 7.0;
+/// How far the handle of an amount bar stays away from the ends of its track.
+const MOD_BAR_INSET: f32 = 2.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
@@ -437,6 +468,9 @@ struct EditorState {
     /// The places of the popup buttons of the last frame.
     #[cfg(test)]
     popup_rects: Vec<egui::Rect>,
+    /// The places of the amount bars of the modulation page of the last frame.
+    #[cfg(test)]
+    amount_rects: Vec<egui::Rect>,
     /// The configuration of the patch browser.
     patch_config: patch::PatchConfig,
     /// Whether the window of the patch browser is open.
@@ -539,6 +573,8 @@ impl SushiEditor {
                 radio_rects: Vec::new(),
                 #[cfg(test)]
                 popup_rects: Vec::new(),
+                #[cfg(test)]
+                amount_rects: Vec::new(),
                 patch_config: patch::PatchConfig::default(),
                 patch_open: false,
                 patch_dir_text: String::new(),
@@ -817,6 +853,14 @@ impl SushiEditor {
         let Some(gui_ctx) = self.gui_ctx.clone() else {
             return;
         };
+        #[cfg(test)]
+        {
+            // The geometry snapshots belong to one frame. Clearing them here
+            // also covers a page switch, where the old page would otherwise
+            // leave its rectangles behind.
+            self.state.popup_rects.clear();
+            self.state.amount_rects.clear();
+        }
         let setter = gui_ctx.param_setter();
 
         self.collect_scope();
@@ -878,8 +922,7 @@ impl SushiEditor {
 
         let mod_page = ctx.state.mod_page;
         if mod_page {
-            row_mod(ui, &layout, 0, 0, &mut ctx);
-            row_mod(ui, &layout, 1, 4, &mut ctx);
+            row_mod(ui, &layout, &mut ctx);
         } else {
             row_a(ui, &layout, &mut ctx);
             row_b(ui, &layout, &mut ctx);
@@ -1267,14 +1310,26 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
 // --- The rows of sections ------------------------------------------------
 
-/// The upper two bands of the modulation page: eight routing slots, four per
-/// band. Each slot keeps the same grammar as a section: a number, a source
-/// field, a destination field and one bipolar amount fader.
-fn row_mod(ui: &mut egui::Ui, layout: &Layout, row: usize, first: usize, ctx: &mut Ctx) {
+/// The upper two bands of the modulation page: one routing table over both
+/// bands and the two envelopes of the sound in a context column on the right.
+///
+/// The table has one header and one line per route: number, source,
+/// destination, a horizontal bipolar amount bar and a numeric readout. There
+/// are no per-slot frames and no repeated captions, so a full page of routes
+/// reads as a list instead of eight small forms. The envelopes sit in the two
+/// original bands, split on the band line, so the bands below them stay at
+/// their exact places.
+fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
-    let row_rect = layout.scale(layout.base_rows[row]);
-    let gap = GROUP_GAP * zoom;
-    let width = (row_rect.width() - 3.0 * gap) / 4.0;
+    let row0 = layout.scale(layout.base_rows[0]);
+    let row1 = layout.scale(layout.base_rows[1]);
+    // The context column is the width of the original AMP ENV section, so its
+    // faders and the envelopes of the normal page share one rhythm.
+    let context = layout.group(1, 2);
+    let table = Rect::from_min_max(
+        row0.left_top(),
+        egui::pos2(context.left() - GROUP_GAP * zoom, row1.bottom()),
+    );
 
     let sources = [
         &ctx.params.mod1_source,
@@ -1337,29 +1392,204 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, row: usize, first: usize, ctx: &m
         "mod8_amount",
     ];
 
-    for index in 0..4 {
-        let slot = first + index;
-        let rect = Rect::from_min_size(
-            egui::pos2(
-                row_rect.left() + index as f32 * (width + gap),
-                row_rect.top(),
-            ),
-            egui::vec2(width, row_rect.height()),
-        );
-        let title = format!("{:02}", slot + 1);
+    let painter = ui.painter_at(table);
+    let header_bottom = table.top() + MOD_HEADER_HEIGHT * zoom;
+    let rows_top = header_bottom;
 
-        group(ui, rect, &title, zoom, |ui, part| match part {
-            Part::Header => {
-                ctx.popup(ui, source_ids[slot], sources[slot], 70.0);
-                ctx.popup(ui, dest_ids[slot], dests[slot], 70.0);
-            }
-            Part::Body => {
-                column_row_fixed(ui, amount_ids[slot], 1, 0.0, 60.0, zoom, |_, ui| {
-                    ctx.float(ui, amount_ids[slot], "Amt", amounts[slot], &Knob::bipolar());
-                });
-            }
-        });
+    // One header: the blue name of the table and a quiet column legend. The
+    // legend is a caption, so 8 pt is its floor, not a setting of a value.
+    painter.text(
+        egui::pos2(
+            table.left() + MOD_TABLE_PADDING * zoom,
+            (table.top() + header_bottom) * 0.5,
+        ),
+        Align2::LEFT_CENTER,
+        "MODULATION",
+        FontId::new(font_size(13.0, zoom), bold()),
+        palette().title_blue,
+    );
+    painter.text(
+        egui::pos2(
+            table.right() - MOD_TABLE_PADDING * zoom,
+            (table.top() + header_bottom) * 0.5,
+        ),
+        Align2::RIGHT_CENTER,
+        "SOURCE / DEST / AMOUNT",
+        FontId::new(font_size(8.0, zoom), bold()),
+        palette().title_blue,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(table.left(), header_bottom),
+            egui::pos2(table.right(), header_bottom),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+
+    // The column positions. The bar fills the space before the right-aligned
+    // value, so its travel grows with the panel instead of shrinking into a
+    // caption.
+    let left = table.left() + MOD_TABLE_PADDING * zoom;
+    let index_x = left;
+    let source_x = index_x + (MOD_INDEX_WIDTH + MOD_COLUMN_GAP) * zoom;
+    let arrow_x = source_x + (MOD_SOURCE_WIDTH + MOD_COLUMN_GAP) * zoom;
+    let dest_x = arrow_x + (MOD_ARROW_WIDTH + MOD_COLUMN_GAP) * zoom;
+    let bar_x = dest_x + (MOD_DEST_WIDTH + MOD_COLUMN_GAP) * zoom;
+    let value_right = table.right() - MOD_TABLE_PADDING * zoom;
+    // The bar takes all the space between the destination and the value
+    // column. The panel has a fixed minimum width, so this stays positive at
+    // every zoom; the clamp only keeps a malformed layout from producing a
+    // negative rectangle.
+    let bar_width = (value_right - MOD_VALUE_WIDTH * zoom - bar_x).max(0.0);
+
+    for slot in 0..crate::params::MOD_SLOTS {
+        let top = rows_top + slot as f32 * MOD_ROW_HEIGHT * zoom;
+        let row_height = MOD_ROW_HEIGHT * zoom;
+        let source = sources[slot].value();
+        let dest = dests[slot].value();
+        let amount = amounts[slot].value();
+        let active = source != ModSource::Off || dest != ModDest::Off;
+        // An untouched route keeps its place, but it prints nothing: no
+        // repeated "Off" and no row of zeros. The amount is silent when the
+        // rounded readout is zero, so a tiny value cannot print a bare "0".
+        let silent =
+            source == ModSource::Off && dest == ModDest::Off && (amount * 100.0).round() == 0.0;
+
+        painter.text(
+            egui::pos2(
+                index_x + MOD_INDEX_WIDTH * 0.5 * zoom,
+                top + row_height * 0.5,
+            ),
+            Align2::CENTER_CENTER,
+            format!("{:02}", slot + 1),
+            FontId::new(font_size(8.0, zoom), bold()),
+            palette().title_blue,
+        );
+
+        if active {
+            painter.text(
+                egui::pos2(
+                    arrow_x + MOD_ARROW_WIDTH * 0.5 * zoom,
+                    top + row_height * 0.5,
+                ),
+                Align2::CENTER_CENTER,
+                ">",
+                FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
+                palette().title_blue,
+            );
+        }
+
+        if !silent {
+            painter.text(
+                egui::pos2(value_right, top + row_height * 0.5),
+                Align2::RIGHT_CENTER,
+                format_amount(amount),
+                FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
+                palette().text,
+            );
+        }
+
+        let source_selected = if source == ModSource::Off {
+            Some("")
+        } else {
+            Some(ModSource::variants()[ModSource::to_index(source)])
+        };
+        let dest_selected = if dest == ModDest::Off {
+            Some("")
+        } else {
+            Some(ModDest::variants()[ModDest::to_index(dest)])
+        };
+
+        let source_cell = Rect::from_min_size(
+            egui::pos2(source_x, top),
+            egui::vec2(MOD_SOURCE_WIDTH * zoom, row_height),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("sushi-mod-source", slot))
+                .max_rect(source_cell)
+                .layout(EguiLayout::left_to_right(Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ui.spacing_mut().interact_size.y = MOD_POPUP_HEIGHT * zoom;
+                ui.style_mut().override_font_id = Some(FontId::new(
+                    font_size(10.0, zoom),
+                    egui::FontFamily::Proportional,
+                ));
+                ctx.popup_with_text(
+                    ui,
+                    source_ids[slot],
+                    sources[slot],
+                    MOD_SOURCE_WIDTH - MOD_COLUMN_GAP,
+                    source_selected,
+                );
+            },
+        );
+
+        let dest_cell = Rect::from_min_size(
+            egui::pos2(dest_x, top),
+            egui::vec2(MOD_DEST_WIDTH * zoom, row_height),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("sushi-mod-dest", slot))
+                .max_rect(dest_cell)
+                .layout(EguiLayout::left_to_right(Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ui.spacing_mut().interact_size.y = MOD_POPUP_HEIGHT * zoom;
+                ui.style_mut().override_font_id = Some(FontId::new(
+                    font_size(10.0, zoom),
+                    egui::FontFamily::Proportional,
+                ));
+                ctx.popup_with_text(
+                    ui,
+                    dest_ids[slot],
+                    dests[slot],
+                    MOD_DEST_WIDTH - MOD_COLUMN_GAP,
+                    dest_selected,
+                );
+            },
+        );
+
+        let bar_cell =
+            Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(bar_width, row_height));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("sushi-mod-amount", slot))
+                .max_rect(bar_cell)
+                .layout(EguiLayout::top_down(Align::Min)),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ctx.amount_bar(ui, amount_ids[slot], slot, amounts[slot]);
+            },
+        );
+
+        painter.line_segment(
+            [
+                egui::pos2(table.left(), top + row_height),
+                egui::pos2(table.right(), top + row_height),
+            ],
+            Stroke::new(1.0, palette().rule),
+        );
     }
+
+    // One quiet divider between the table and the context column. It runs
+    // through the band gap, so the column still reads as two envelopes.
+    ui.painter().line_segment(
+        [
+            egui::pos2(context.left() - GROUP_GAP * 0.5 * zoom, table.top()),
+            egui::pos2(context.left() - GROUP_GAP * 0.5 * zoom, table.bottom()),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+
+    let mod_env = Rect::from_min_max(
+        egui::pos2(context.left(), row0.top()),
+        egui::pos2(context.right(), row0.bottom()),
+    );
+    envelope_group(ui, mod_env, zoom, ctx, &EnvelopeSpec::mod_env(ctx.params));
+    envelope_group(ui, context, zoom, ctx, &EnvelopeSpec::amp_env(ctx.params));
 }
 
 /// The first row: the two oscillators, the pulse widths and the source mixer.
@@ -1563,68 +1793,79 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     })
                 }
             }),
-            1 => group(ui, rect, "MOD ENV", zoom, |ui, part| match part {
-                Part::Header => {}
-                Part::Body => column_row_fixed(ui, "fe", 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "fe_attack",
-                            "A",
-                            &p.fe_attack,
-                            &Knob::logarithmic(0.0, 4_000.0, 1),
-                        ),
-                        1 => ctx.float(
-                            ui,
-                            "fe_decay",
-                            "D",
-                            &p.fe_decay,
-                            &Knob::logarithmic(0.0, 4_000.0, 1),
-                        ),
-                        2 => ctx.float(ui, "fe_sustain", "S", &p.fe_sustain, &Knob::percent()),
-                        3 => ctx.float(
-                            ui,
-                            "fe_release",
-                            "R",
-                            &p.fe_release,
-                            &Knob::logarithmic(0.0, 4_000.0, 1),
-                        ),
-                        _ => {}
-                    }
-                }),
-            }),
-            _ => group(ui, rect, "AMP ENV", zoom, |ui, part| match part {
-                Part::Header => {}
-                Part::Body => column_row_fixed(ui, "ae", 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
-                    let p = ctx.params;
-                    match index {
-                        0 => ctx.float(
-                            ui,
-                            "ae_attack",
-                            "A",
-                            &p.ae_attack,
-                            &Knob::logarithmic(0.0, 4_000.0, 1),
-                        ),
-                        1 => ctx.float(
-                            ui,
-                            "ae_decay",
-                            "D",
-                            &p.ae_decay,
-                            &Knob::logarithmic(0.0, 4_000.0, 1),
-                        ),
-                        2 => ctx.float(ui, "ae_sustain", "S", &p.ae_sustain, &Knob::percent()),
-                        3 => ctx.float(
-                            ui,
-                            "ae_release",
-                            "R",
-                            &p.ae_release,
-                            &Knob::logarithmic(0.0, 8_000.0, 1),
-                        ),
-                        _ => {}
-                    }
-                }),
-            }),
+            1 => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::mod_env(p)),
+            _ => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::amp_env(p)),
+        }
+    });
+}
+
+/// The parameters and the captions of one envelope. Keeping them together
+/// lets the normal panel and the modulation page use one layout function
+/// without a long argument list.
+struct EnvelopeSpec<'a> {
+    title: &'static str,
+    column: &'static str,
+    ids: [&'static str; 4],
+    params: [&'a FloatParam; 4],
+    release_max: f32,
+}
+
+impl<'a> EnvelopeSpec<'a> {
+    /// The filter envelope of the normal panel and of the matrix page.
+    fn mod_env(params: &'a SushiParams) -> Self {
+        Self {
+            title: "MOD ENV",
+            column: "fe",
+            ids: ["fe_attack", "fe_decay", "fe_sustain", "fe_release"],
+            params: [
+                &params.fe_attack,
+                &params.fe_decay,
+                &params.fe_sustain,
+                &params.fe_release,
+            ],
+            release_max: 4_000.0,
+        }
+    }
+
+    /// The amplifier envelope of the normal panel and of the matrix page.
+    fn amp_env(params: &'a SushiParams) -> Self {
+        Self {
+            title: "AMP ENV",
+            column: "ae",
+            ids: ["ae_attack", "ae_decay", "ae_sustain", "ae_release"],
+            params: [
+                &params.ae_attack,
+                &params.ae_decay,
+                &params.ae_sustain,
+                &params.ae_release,
+            ],
+            release_max: 8_000.0,
+        }
+    }
+}
+
+/// Draws one of the two envelopes: four A/D/S/R faders in the same geometry
+/// as every other section. The normal panel and the modulation page both use
+/// it, so the faders return to the page with the exact height and pitch that
+/// they have on the panel.
+fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec: &EnvelopeSpec) {
+    group(ui, rect, spec.title, zoom, |ui, part| match part {
+        Part::Header => {}
+        Part::Body => {
+            column_row_fixed(ui, spec.column, 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
+                let knob = match index {
+                    0 | 1 => Knob::logarithmic(0.0, 4_000.0, 1),
+                    2 => Knob::percent(),
+                    _ => Knob::logarithmic(0.0, spec.release_max, 1),
+                };
+                let label = match index {
+                    0 => "A",
+                    1 => "D",
+                    2 => "S",
+                    _ => "R",
+                };
+                ctx.float(ui, spec.ids[index], label, spec.params[index], &knob);
+            });
         }
     });
 }
@@ -2209,6 +2450,144 @@ impl<'a, 'b> Ctx<'a, 'b> {
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
+    /// Draws the horizontal bipolar amount of one route of the modulation
+    /// table. It is the SH-101 bender bar turned on its side: a pale fill, a
+    /// centre tick and a black handle. Drag changes the amount, Shift drags
+    /// in fine steps, a right click opens the numeric editor and a double
+    /// click puts the amount back to zero.
+    fn amount_bar(&mut self, ui: &mut egui::Ui, id: &'static str, slot: usize, param: &FloatParam) {
+        #[cfg(test)]
+        self.state.count(Widget::Slider);
+
+        let zoom = self.zoom;
+        let (rect, mut response) =
+            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        #[cfg(test)]
+        self.state.amount_rects.push(rect);
+
+        let painter = ui.painter_at(rect);
+        let track = Rect::from_center_size(
+            rect.center(),
+            egui::vec2(rect.width(), MOD_BAR_HEIGHT * zoom),
+        );
+        painter.rect_filled(track, CornerRadius::ZERO, palette().track);
+        painter.rect_stroke(
+            track,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, palette().rule),
+            egui::StrokeKind::Inside,
+        );
+
+        let (start, end) = amount_bounds(rect, zoom);
+        let centre = (start + end) * 0.5;
+        let value = param.value();
+        let handle_x = amount_to_x(value, rect, zoom);
+        let fill = Rect::from_min_max(
+            egui::pos2(centre.min(handle_x), track.top() + zoom),
+            egui::pos2(centre.max(handle_x), track.bottom() - zoom),
+        );
+        painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
+        painter.line_segment(
+            [
+                egui::pos2(centre, track.top() + zoom),
+                egui::pos2(centre, track.bottom() - zoom),
+            ],
+            Stroke::new(1.0, palette().rule),
+        );
+        let handle = Rect::from_center_size(
+            egui::pos2(handle_x, track.center().y),
+            egui::vec2(MOD_BAR_HANDLE_WIDTH * zoom, (MOD_BAR_HEIGHT - 4.0) * zoom),
+        );
+        let live = response.hovered() || response.dragged();
+        painter.rect_filled(
+            handle,
+            CornerRadius::ZERO,
+            if live {
+                palette().title_blue
+            } else {
+                palette().handle
+            },
+        );
+
+        let drag_id = ui.scope_id().with("sushi-amount-drag");
+        let mut drag: AmountDrag = ui
+            .memory(|memory| memory.data.get_temp(drag_id))
+            .unwrap_or_default();
+        let (pressed, primary_down, shift) = ui.input(|input| {
+            (
+                input.pointer.primary_pressed(),
+                input.pointer.primary_down(),
+                input.modifiers.shift,
+            )
+        });
+        let on_bar = response.hovered() || response.is_pointer_button_down_on();
+        if (response.drag_started() || pressed) && on_bar && !drag.started {
+            let pointer = response
+                .interact_pointer_pos()
+                .or_else(|| ui.input(|input| input.pointer.hover_pos()));
+            drag = AmountDrag {
+                started: true,
+                base: value,
+                start_x: pointer.map_or(rect.center().x, |pos| pos.x),
+                fine: shift,
+            };
+            ui.memory_mut(|memory| memory.data.insert_temp(drag_id, drag));
+        }
+        if response.drag_stopped() || (!primary_down && drag.started) {
+            drag = AmountDrag::default();
+            ui.memory_mut(|memory| memory.data.insert_temp(drag_id, drag));
+        }
+
+        let pointer = response.interact_pointer_pos();
+        let mut value = param.value();
+        if drag.started
+            && let Some(pointer) = pointer
+            && (response.dragged_by(egui::PointerButton::Primary)
+                || (response.is_pointer_button_down_on() && primary_down))
+        {
+            let next = if drag.fine {
+                // A full width of the bar trims ten percent of the range,
+                // like the fine rail of a fader.
+                let travel = amount_travel(rect, zoom);
+                let trim = (pointer.x - drag.start_x) / travel * 2.0 * FINE_TRIM_RANGE;
+                (drag.base + trim).clamp(-1.0, 1.0)
+            } else {
+                amount_from_x(pointer.x, rect, zoom)
+            };
+            if next != value {
+                value = next;
+                response.mark_changed();
+            }
+        }
+
+        // A double click resets the amount to zero. The reset is done after
+        // the value of the click, so that it wins.
+        let reset = response.double_clicked();
+        if self.begin_gesture(id, &response, ui) {
+            self.setter.begin_set_parameter(param);
+        }
+        if response.changed() {
+            self.setter.set_parameter(param, value);
+            self.state.dirty = true;
+        }
+        if reset {
+            self.reset_to_default(id, param);
+        }
+        if self.end_gesture(id, &response, ui) {
+            self.setter.end_set_parameter(param);
+        }
+
+        self.value_popup_float(ui, id, "Amount", param, &Knob::bipolar(), &response);
+        let text = format_amount(param.value());
+        if response.hovered() || response.dragged() {
+            *self.readout() = Some((format!("MOD {} AMOUNT", slot + 1), format!("{text}%")));
+        }
+        response = response.on_hover_text(format!(
+            "{text}%\nDrag; Shift for fine\nRight-click to type\nDouble-click to reset"
+        ));
+        response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    }
+
     /// A small popup that edits the value of a continuous parameter. It opens
     /// on a secondary click on the slider and replaces the old numeric field.
     fn value_popup_float(
@@ -2372,15 +2751,32 @@ impl<'a, 'b> Ctx<'a, 'b> {
         param: &EnumParam<T>,
         width: f32,
     ) {
+        self.popup_with_text(ui, id, param, width, None);
+    }
+
+    /// The same popup, but with a text that can differ from the value. The
+    /// modulation table uses an empty text for the `Off` state, so that eight
+    /// empty routes do not print the word "Off" sixteen times.
+    fn popup_with_text<T: Enum + PartialEq + Copy + 'static>(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        param: &EnumParam<T>,
+        width: f32,
+        selected: Option<&str>,
+    ) {
         #[cfg(test)]
         self.state.count(Widget::Popup);
 
         let current = param.value();
         let variants = T::variants();
+        let selected_text = selected
+            .map(str::to_owned)
+            .unwrap_or_else(|| variants[T::to_index(current)].to_string());
 
         let response = egui::ComboBox::from_id_salt(id)
             .width(width * self.zoom)
-            .selected_text(variants[T::to_index(current)])
+            .selected_text(selected_text)
             .truncate()
             .show_ui(ui, |ui| {
                 for (index, name) in variants.iter().enumerate() {
@@ -3350,6 +3746,45 @@ struct SliderDrag {
     start_y: f32,
 }
 
+/// The drag state of an amount bar. The coarse mode follows the pointer
+/// absolutely; the fine mode trims around the value at the start of the drag.
+#[derive(Debug, Clone, Copy, Default)]
+struct AmountDrag {
+    started: bool,
+    base: f32,
+    start_x: f32,
+    fine: bool,
+}
+
+/// The left and right centres of the handle of an amount bar. The travel
+/// between them is the useful length of the bar.
+fn amount_bounds(rect: Rect, zoom: f32) -> (f32, f32) {
+    let inset = MOD_BAR_INSET * zoom;
+    let handle = MOD_BAR_HANDLE_WIDTH * zoom;
+    (
+        rect.left() + inset + handle * 0.5,
+        rect.right() - inset - handle * 0.5,
+    )
+}
+
+/// The horizontal travel of the handle of an amount bar.
+fn amount_travel(rect: Rect, zoom: f32) -> f32 {
+    let (start, end) = amount_bounds(rect, zoom);
+    (end - start).max(1.0)
+}
+
+/// The x position of the handle for an amount in `-1..1`.
+fn amount_to_x(value: f32, rect: Rect, zoom: f32) -> f32 {
+    let (start, end) = amount_bounds(rect, zoom);
+    start + (value.clamp(-1.0, 1.0) + 1.0) * 0.5 * (end - start)
+}
+
+/// The amount in `-1..1` at an x position on an amount bar.
+fn amount_from_x(x: f32, rect: Rect, zoom: f32) -> f32 {
+    let (start, end) = amount_bounds(rect, zoom);
+    ((x - start) / (end - start)).clamp(0.0, 1.0) * 2.0 - 1.0
+}
+
 /// The geometry of one two-lane fader. The thumb width is a ratio of the
 /// inner lane width and the thumb is always centered in that lane, so the
 /// blank margins are identical by construction no matter how wide the panel
@@ -3624,6 +4059,17 @@ fn format_number(value: f32, decimals: usize) -> String {
         text = "0".to_string();
     }
     text
+}
+
+/// Formats a bipolar amount as a signed whole percentage. Zero has no sign,
+/// so an empty route stays quiet.
+fn format_amount(value: f32) -> String {
+    let percent = (value * 100.0).round();
+    if percent == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{percent:+.0}")
+    }
 }
 
 /// The meter of the header that shows how many voices are playing. The lights
@@ -4292,6 +4738,36 @@ mod tests {
     /// Waits long enough for the window of the double click to pass.
     fn wait() -> Vec<egui::RawInput> {
         vec![input(vec![]); 25]
+    }
+
+    /// Drags the primary pointer from one position to another. The modifiers
+    /// are installed with an explicit event, because a bare pointer event does
+    /// not change the modifier state of the context. The final frame puts the
+    /// modifiers back, so that one test cannot leak Shift into the next.
+    fn drag(start: egui::Pos2, end: egui::Pos2, modifiers: egui::Modifiers) -> Vec<egui::RawInput> {
+        vec![
+            input(vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::PointerMoved(start),
+            ]),
+            input(vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }]),
+            input(vec![egui::Event::PointerMoved(end)]),
+            input(vec![egui::Event::PointerMoved(end)]),
+            input(vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            }]),
+            input(vec![egui::Event::ModifiersChanged(
+                egui::Modifiers::default(),
+            )]),
+        ]
     }
 
     /// The index of the slider of the cutoff in the list of the sliders of a
@@ -4981,10 +5457,28 @@ mod tests {
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 34, "unexpected number of matrix sliders");
+        assert_eq!(
+            counts.sliders, 42,
+            "the matrix needs eight bars and eight envelope faders"
+        );
         assert_eq!(counts.popups, 23, "unexpected number of matrix popups");
+        assert_eq!(
+            editor.state.popup_rects.len(),
+            counts.popups,
+            "the matrix page left stale popup rectangles behind"
+        );
         assert_eq!(counts.checks, 2);
         assert_eq!(counts.radios, 1);
+        assert_eq!(
+            editor.state.amount_rects.len(),
+            8,
+            "the matrix needs eight amount bars"
+        );
+        assert_eq!(
+            slider_rects(&ctx, &output).len(),
+            34,
+            "the matrix lost a vertical fader"
+        );
 
         // The two upper bands now show eight routes; the performance and
         // output bands have not moved.
@@ -5000,6 +5494,401 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert_eq!(editor.state.counts.sliders, 56);
         assert_eq!(editor.state.counts.popups, 11);
+        assert_eq!(
+            editor.state.popup_rects.len(),
+            editor.state.counts.popups,
+            "the normal page left stale popup rectangles behind"
+        );
+    }
+
+    #[test]
+    fn the_matrix_page_is_one_compact_table_with_both_envelopes() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.mod_page = true;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let all_texts = texts(&output);
+        let names: Vec<String> = all_texts.iter().map(|(text, _)| text.clone()).collect();
+        let table: Vec<&String> = all_texts
+            .iter()
+            .filter(|(_, pos)| pos.x < 656.0 && pos.y < 318.0)
+            .map(|(text, _)| text)
+            .collect();
+
+        // One header, eight numbered routes, and both envelopes at once.
+        assert_eq!(
+            names.iter().filter(|text| *text == "MODULATION").count(),
+            1,
+            "the table has no single header: {names:?}"
+        );
+        for route in ["01", "02", "03", "04", "05", "06", "07", "08"] {
+            assert!(names.contains(&route.to_string()), "missing route {route}");
+        }
+        assert!(
+            names.contains(&"MOD ENV".to_string()),
+            "the modulation page lost MOD ENV: {names:?}"
+        );
+        assert!(
+            names.contains(&"AMP ENV".to_string()),
+            "the modulation page lost AMP ENV: {names:?}"
+        );
+
+        // The empty state prints no value: no "Off" sixteen times, no "AMT"
+        // captions and no row of zeros.
+        assert_eq!(
+            table.iter().filter(|text| ***text == "Off").count(),
+            0,
+            "the empty matrix repeats Off: {names:?}"
+        );
+        assert_eq!(
+            table.iter().filter(|text| ***text == "AMT").count(),
+            0,
+            "the matrix repeats the AMT caption: {names:?}"
+        );
+        assert_eq!(
+            table.iter().filter(|text| ***text == "0").count(),
+            0,
+            "the empty matrix prints a row of zeros: {names:?}"
+        );
+
+        // Every route has a bar whose travel is much longer than the old
+        // 82 px fader.
+        let zoom = zoom_of(&ctx);
+        assert_eq!(editor.state.amount_rects.len(), 8);
+        for rect in &editor.state.amount_rects {
+            assert!(
+                amount_travel(*rect, zoom) > 200.0 * zoom,
+                "the amount bar is too short: {rect:?}"
+            );
+        }
+
+        // Eight envelope faders are back: four in each of the two upper bands,
+        // with the height of the envelope faders of the normal panel.
+        let sliders = slider_rects(&ctx, &output);
+        let envelopes: Vec<egui::Rect> = sliders
+            .into_iter()
+            .filter(|rect| rect.center().y < 318.0 * zoom && rect.left() >= 664.0 * zoom)
+            .collect();
+        assert_eq!(envelopes.len(), 8, "unexpected envelope faders");
+        assert_eq!(
+            envelopes
+                .iter()
+                .filter(|rect| rect.center().y < 187.0 * zoom)
+                .count(),
+            4,
+            "MOD ENV does not have four faders in the upper band"
+        );
+        assert_eq!(
+            envelopes
+                .iter()
+                .filter(|rect| rect.center().y > 195.0 * zoom)
+                .count(),
+            4,
+            "AMP ENV does not have four faders in the lower band"
+        );
+        for rect in envelopes {
+            assert!(
+                rect.height() > 75.0 * zoom && rect.height() < 90.0 * zoom,
+                "an envelope fader lost its height: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_amount_that_rounds_to_zero_stays_silent() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.mod_page = true;
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_amount, 0.001);
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let table: Vec<String> = texts(&output)
+            .into_iter()
+            .filter(|(_, pos)| pos.x < 656.0 && pos.y < 318.0)
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(format_amount(0.001), "0");
+        assert!(
+            !table.iter().any(|text| text == "0"),
+            "an amount of 0.001 printed a misleading zero: {table:?}"
+        );
+    }
+
+    #[test]
+    fn the_matrix_page_keeps_the_lower_bands_in_place() {
+        let titles = ["LFO 1", "LFO 2", "ARP", "VOICE", "FX", "MACROS", "VCA"];
+
+        let (ctx, mut editor, _params) = make_editor();
+        let normal = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let normal: Vec<(String, egui::Pos2)> = texts(&normal)
+            .into_iter()
+            .filter(|(text, _)| titles.contains(&text.as_str()))
+            .collect();
+        assert_eq!(normal.len(), titles.len());
+
+        editor.state.mod_page = true;
+        let matrix = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        for (title, position) in normal {
+            let (_, other) = texts(&matrix)
+                .into_iter()
+                .find(|(text, _)| *text == title)
+                .unwrap_or_else(|| panic!("the matrix page has no {title}"));
+            assert_eq!(
+                other, position,
+                "the matrix page moved the lower band section {title}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_matrix_popups_keep_a_compact_click_target() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.mod_page = true;
+        editor.state.popup_rects.clear();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let zoom = zoom_of(&ctx);
+        assert_eq!(editor.state.popup_rects.len(), 23);
+        for rect in editor.state.popup_rects.iter().take(16) {
+            assert!(
+                (rect.height() - 24.0 * zoom).abs() < 1.0,
+                "a matrix popup is not 24 px tall: {rect:?}"
+            );
+            assert!(
+                rect.width() >= 120.0 * zoom && rect.width() <= 128.0 * zoom,
+                "a matrix popup has the wrong width: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_modulation_names_fit_the_matrix_popup() {
+        let (ctx, _editor, _params) = make_editor();
+        // Fonts are only laid out after the first frame of the context.
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let painter = egui::Painter::new(
+            ctx.clone(),
+            egui::LayerId::background(),
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0)),
+        );
+        let font = FontId::new(font_size(10.0, 1.0), egui::FontFamily::Proportional);
+        // The source and destination popups are 124 px wide after the column
+        // gap. The longer new names still fit without being cut off.
+        let width = MOD_SOURCE_WIDTH - MOD_COLUMN_GAP;
+        for name in ModSource::variants().iter().chain(ModDest::variants()) {
+            let text_width = text_width(&painter, name, &font);
+            assert!(
+                text_width <= width,
+                "the modulation name {name:?} is {text_width} px wide and does not fit in {width} px"
+            );
+        }
+    }
+
+    #[test]
+    fn dragging_the_amount_bar_sets_the_route_in_one_gesture() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.mod_page = true;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let rect = editor.state.amount_rects[0];
+        let zoom = zoom_of(&ctx);
+        let travel = amount_travel(rect, zoom);
+        let start = egui::pos2(rect.center().x - travel * 0.1, rect.center().y);
+        let end = egui::pos2(rect.center().x + travel * 0.35, rect.center().y);
+
+        GESTURES.with(|gestures| gestures.set(0));
+        SETS.with(|sets| sets.set(0));
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(start, end, egui::Modifiers::default()),
+        );
+
+        let amount = params.mod1_amount.value();
+        assert!(
+            amount > 0.6,
+            "the amount bar did not follow the drag: {amount}"
+        );
+        assert_eq!(
+            GESTURES.with(|gestures| gestures.get()),
+            2,
+            "the amount bar did not open and close exactly one gesture"
+        );
+        assert!(
+            SETS.with(|sets| sets.get()) >= 2,
+            "the amount was not set while dragging"
+        );
+        assert!(editor.state.dirty, "the drag did not mark the sound dirty");
+        let (label, value) = editor
+            .state
+            .readout
+            .clone()
+            .expect("the amount bar has no readout");
+        assert_eq!(label, "MOD 1 AMOUNT");
+        assert!(value.ends_with('%'), "the readout lost its unit: {value}");
+
+        // A double click on the bar puts the amount back to zero.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+        assert!(
+            params.mod1_amount.value().abs() < 1.0e-4,
+            "the amount bar was not reset: {}",
+            params.mod1_amount.value()
+        );
+    }
+
+    #[test]
+    fn shift_dragging_the_amount_bar_is_fine() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.mod_page = true;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let rect = editor.state.amount_rects[0];
+        let zoom = zoom_of(&ctx);
+        let travel = amount_travel(rect, zoom);
+        let start = rect.center();
+        let end = start + egui::vec2(travel * 0.15, 0.0);
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        setter.set_parameter(&params.mod1_amount, 0.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(start, end, egui::Modifiers::default()),
+        );
+        let coarse = params.mod1_amount.value();
+        assert!(coarse > 0.2, "the coarse drag was too small: {coarse}");
+
+        setter.set_parameter(&params.mod1_amount, 0.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(
+                start,
+                end,
+                egui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+        );
+        let fine = params.mod1_amount.value();
+        assert!(fine > 0.0, "the fine drag did not move: {fine}");
+        assert!(
+            fine < coarse / 3.0,
+            "the fine drag was not fine: {fine} instead of {coarse}"
+        );
+    }
+
+    #[test]
+    fn the_amount_bar_accepts_a_typed_value() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.mod_page = true;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let pos = editor.state.amount_rects[0].center();
+
+        // Open the numeric editor with a secondary click.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(pos)]),
+                input(vec![
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ]),
+                input(vec![]),
+                input(vec![]),
+            ],
+        );
+
+        // Type a signed percentage, the same unit as the readout.
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            events.push(egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        for character in "50".chars() {
+            events.push(egui::Event::Text(character.to_string()));
+        }
+        events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        run_frames(&ctx, &mut editor, vec![input(events), input(vec![])]);
+
+        assert!(
+            (params.mod1_amount.value() - 0.5).abs() < 1.0e-3,
+            "the typed amount was not applied: {}",
+            params.mod1_amount.value()
+        );
+    }
+
+    #[test]
+    fn a_matrix_source_popup_sets_the_route() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.mod_page = true;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The empty source field of the first route. Its popup has no selected
+        // text, but it is still a full click target.
+        let button = editor.state.popup_rects[0].center();
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(button)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                // The list of choices is only painted from the next frame on.
+                input(vec![]),
+            ],
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, item) = texts(&output)
+            .into_iter()
+            .find(|(text, pos)| text == "LFO 1" && pos.y < 318.0)
+            .expect("the source popup has no LFO 1");
+        run_frames(&ctx, &mut editor, click(item + egui::vec2(2.0, 2.0)));
+
+        assert_eq!(params.mod1_source.value(), ModSource::Lfo1);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"LFO 1".to_string()),
+            "the chosen source is not shown in the table: {names:?}"
+        );
     }
 
     #[test]
@@ -5013,6 +5902,35 @@ mod tests {
                     let setter = gui_ctx.param_setter();
                     setter.set_parameter(&params.legacy, legacy);
                     editor.state.mod_page = mod_page;
+                    if mod_page {
+                        // Fill the table with the longest names, a full spread
+                        // of amounts and a sign at both ends, so the overlap
+                        // check is about the real page and not an empty one.
+                        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+                        setter.set_parameter(&params.mod1_dest, ModDest::Resonance);
+                        setter.set_parameter(&params.mod1_amount, 0.62);
+                        setter.set_parameter(&params.mod2_source, ModSource::Lfo2);
+                        setter.set_parameter(&params.mod2_dest, ModDest::Pulse2);
+                        setter.set_parameter(&params.mod2_amount, -0.38);
+                        setter.set_parameter(&params.mod3_source, ModSource::ModEnv);
+                        setter.set_parameter(&params.mod3_dest, ModDest::Cutoff);
+                        setter.set_parameter(&params.mod3_amount, 1.0);
+                        setter.set_parameter(&params.mod4_source, ModSource::AmpEnv);
+                        setter.set_parameter(&params.mod4_dest, ModDest::Volume);
+                        setter.set_parameter(&params.mod4_amount, -0.5);
+                        setter.set_parameter(&params.mod5_source, ModSource::Velocity);
+                        setter.set_parameter(&params.mod5_dest, ModDest::Drive);
+                        setter.set_parameter(&params.mod5_amount, 0.12);
+                        setter.set_parameter(&params.mod6_source, ModSource::Key);
+                        setter.set_parameter(&params.mod6_dest, ModDest::Pan);
+                        setter.set_parameter(&params.mod6_amount, -0.75);
+                        setter.set_parameter(&params.mod7_source, ModSource::Macro1);
+                        setter.set_parameter(&params.mod7_dest, ModDest::Pulse1);
+                        setter.set_parameter(&params.mod7_amount, 0.99);
+                        setter.set_parameter(&params.mod8_source, ModSource::Macro3);
+                        setter.set_parameter(&params.mod8_dest, ModDest::Pitch);
+                        setter.set_parameter(&params.mod8_amount, -1.0);
+                    }
                     let output = run_frames(
                         &ctx,
                         &mut editor,
@@ -5024,6 +5942,7 @@ mod tests {
 
                     let texts = text_shapes(&output);
                     let sliders = slider_rects(&ctx, &output);
+                    let amount_bars = editor.state.amount_rects.clone();
                     for (text, pos, size) in &texts {
                         let rect = Rect::from_min_size(*pos, *size);
                         for slider in &sliders {
@@ -5034,9 +5953,22 @@ mod tests {
 (mod={mod_page}, legacy={legacy}): {rect:?} / {slider:?}"
                             );
                         }
+                        for bar in &amount_bars {
+                            let overlap = rect.intersect(*bar);
+                            assert!(
+                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                                "the text {text:?} is covered by an amount bar at {percent}% \
+(mod={mod_page}, legacy={legacy}): {rect:?} / {bar:?}"
+                            );
+                        }
                         for popup in &editor.state.popup_rects {
                             // The selected text lives inside its own popup button.
                             if popup.contains(rect.center()) {
+                                assert!(
+                                    popup.expand(zoom).contains_rect(rect),
+                                    "the text {text:?} is clipped by its popup at {percent}% \
+(mod={mod_page}, legacy={legacy}): {rect:?} / {popup:?}"
+                                );
                                 continue;
                             }
                             let overlap = rect.expand(4.0 * zoom).intersect(*popup);
@@ -5075,6 +6007,25 @@ mod tests {
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
         );
         assert_the_widgets_fit(&ctx, &output, panel);
+
+        // The horizontal bars are not vertical sliders, so they are checked
+        // here: inside the panel and away from the texts, including the value
+        // column on their right.
+        let texts = text_shapes(&output);
+        for bar in &editor.state.amount_rects {
+            assert!(
+                panel.contains_rect(*bar),
+                "an amount bar is outside of the panel: {bar:?}"
+            );
+            for (text, pos, size) in &texts {
+                let rect = Rect::from_min_size(*pos, *size);
+                let overlap = rect.intersect(*bar);
+                assert!(
+                    overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                    "the text {text:?} is covered by an amount bar: {rect:?} / {bar:?}"
+                );
+            }
+        }
     }
 
     #[test]

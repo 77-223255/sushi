@@ -30,6 +30,27 @@ const PAN_RANGE: f32 = 1.0;
 /// is `1 + modulation`, so that a modulation of zero leaves the voice alone.
 const VOLUME_RANGE: f32 = 1.0;
 
+/// The range of the coarse pitch modulation of the second oscillator at full
+/// amount, in semitones.
+const OSC2_PITCH_RANGE: f32 = 12.0;
+
+/// The range of the fine pitch modulation of the second oscillator at full
+/// amount, in cents.
+const OSC2_FINE_RANGE: f32 = 100.0;
+
+/// The range of the sub oscillator level modulation at full amount.
+const SUB_LEVEL_RANGE: f32 = 1.0;
+
+/// The range of the noise level modulation at full amount.
+const NOISE_LEVEL_RANGE: f32 = 0.5;
+
+/// The range of the unison detune modulation at full amount, in cents.
+const DETUNE_RANGE: f32 = 50.0;
+
+/// The range of the filter envelope amount modulation at full amount, in
+/// octaves.
+const FILTER_ENV_RANGE: f32 = 5.0;
+
 /// The number of semitones around the middle C that the key source covers.
 /// Two octaves up and down fill the whole range of the source.
 const KEY_RANGE: f32 = 24.0;
@@ -55,6 +76,11 @@ pub struct ModSources {
     pub macro2: f32,
     /// The value of the third macro, `0..1`.
     pub macro3: f32,
+    /// The smoothed position of the mod wheel, `0..1`.
+    pub mod_wheel: f32,
+    /// A deterministic per-voice value, `-1..1`. It stays the same for the
+    /// life of a note.
+    pub random: f32,
 }
 
 /// The modulation of the destinations of the matrix.
@@ -76,6 +102,18 @@ pub struct Modulation {
     pub pan: f32,
     /// The gain of the voice.
     pub volume: f32,
+    /// The offset of the coarse pitch of the second oscillator, in semitones.
+    pub osc2_pitch_semitones: f32,
+    /// The offset of the fine pitch of the second oscillator, in semitones.
+    pub osc2_fine_semitones: f32,
+    /// The additive offset of the sub oscillator level.
+    pub sub_level: f32,
+    /// The additive offset of the noise level.
+    pub noise_level: f32,
+    /// The additive offset of the unison detune, in cents.
+    pub detune_cents: f32,
+    /// The additive offset of the filter envelope amount, in octaves.
+    pub filter_env_octaves: f32,
 }
 
 impl Default for Modulation {
@@ -90,6 +128,12 @@ impl Default for Modulation {
             pan: 0.0,
             // Without a modulation the voice keeps its level.
             volume: 1.0,
+            osc2_pitch_semitones: 0.0,
+            osc2_fine_semitones: 0.0,
+            sub_level: 0.0,
+            noise_level: 0.0,
+            detune_cents: 0.0,
+            filter_env_octaves: 0.0,
         }
     }
 }
@@ -117,6 +161,8 @@ fn source_value(source: ModSource, sources: &ModSources) -> f32 {
         ModSource::Macro1 => sources.macro1,
         ModSource::Macro2 => sources.macro2,
         ModSource::Macro3 => sources.macro3,
+        ModSource::ModWheel => sources.mod_wheel,
+        ModSource::Random => sources.random,
     }
 }
 
@@ -147,6 +193,12 @@ pub fn evaluate(slots: &[ModSlot; MOD_SLOTS], sources: &ModSources) -> Modulatio
             ModDest::Drive => modulation.drive += value * DRIVE_RANGE,
             ModDest::Pan => modulation.pan += value * PAN_RANGE,
             ModDest::Volume => volume_offset += value * VOLUME_RANGE,
+            ModDest::Osc2Pitch => modulation.osc2_pitch_semitones += value * OSC2_PITCH_RANGE,
+            ModDest::Osc2Fine => modulation.osc2_fine_semitones += value * OSC2_FINE_RANGE / 100.0,
+            ModDest::SubLevel => modulation.sub_level += value * SUB_LEVEL_RANGE,
+            ModDest::NoiseLevel => modulation.noise_level += value * NOISE_LEVEL_RANGE,
+            ModDest::Detune => modulation.detune_cents += value * DETUNE_RANGE,
+            ModDest::FilterEnv => modulation.filter_env_octaves += value * FILTER_ENV_RANGE,
         }
     }
 
@@ -182,6 +234,8 @@ mod tests {
             macro1: 1.0,
             macro2: 1.0,
             macro3: 1.0,
+            mod_wheel: 1.0,
+            random: 1.0,
         };
 
         let modulation = evaluate(&slots, &sources);
@@ -193,6 +247,12 @@ mod tests {
         assert_eq!(modulation.drive, 0.0);
         assert_eq!(modulation.pan, 0.0);
         assert_eq!(modulation.volume, 1.0);
+        assert_eq!(modulation.osc2_pitch_semitones, 0.0);
+        assert_eq!(modulation.osc2_fine_semitones, 0.0);
+        assert_eq!(modulation.sub_level, 0.0);
+        assert_eq!(modulation.noise_level, 0.0);
+        assert_eq!(modulation.detune_cents, 0.0);
+        assert_eq!(modulation.filter_env_octaves, 0.0);
     }
 
     #[test]
@@ -295,5 +355,92 @@ mod tests {
 
         let modulation = evaluate(&slots, &sources);
         assert!((modulation.volume - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_new_sources_read_their_own_values() {
+        let sources = ModSources {
+            mod_wheel: 0.75,
+            random: -0.5,
+            ..ModSources::default()
+        };
+
+        assert_eq!(source_value(ModSource::ModWheel, &sources), 0.75);
+        assert_eq!(source_value(ModSource::Random, &sources), -0.5);
+    }
+
+    #[test]
+    fn the_new_destinations_reach_their_full_ranges() {
+        let destinations = [
+            (ModDest::Osc2Pitch, 12.0),
+            (ModDest::Osc2Fine, 1.0),
+            (ModDest::SubLevel, 1.0),
+            (ModDest::NoiseLevel, 0.5),
+            (ModDest::Detune, 50.0),
+            (ModDest::FilterEnv, 5.0),
+        ];
+
+        for (dest, expected) in destinations {
+            let slots = matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest,
+                amount: 1.0,
+            });
+            let sources = ModSources {
+                macro1: 1.0,
+                ..ModSources::default()
+            };
+            let modulation = evaluate(&slots, &sources);
+            let value = match dest {
+                ModDest::Osc2Pitch => modulation.osc2_pitch_semitones,
+                ModDest::Osc2Fine => modulation.osc2_fine_semitones,
+                ModDest::SubLevel => modulation.sub_level,
+                ModDest::NoiseLevel => modulation.noise_level,
+                ModDest::Detune => modulation.detune_cents,
+                ModDest::FilterEnv => modulation.filter_env_octaves,
+                _ => unreachable!(),
+            };
+            assert!(
+                (value - expected).abs() < 1e-4,
+                "{dest:?} reached {value} instead of {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_modulations_are_bipolar() {
+        let slots = matrix(ModSlot {
+            source: ModSource::Macro1,
+            dest: ModDest::Osc2Pitch,
+            amount: -0.5,
+        });
+        let sources = ModSources {
+            macro1: 0.5,
+            ..ModSources::default()
+        };
+
+        let modulation = evaluate(&slots, &sources);
+        assert!((modulation.osc2_pitch_semitones + 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_off_source_does_not_leak_the_new_sources() {
+        // The raw source values are not neutral, but an off slot must not
+        // read them.
+        let sources = ModSources {
+            mod_wheel: 1.0,
+            random: 1.0,
+            ..ModSources::default()
+        };
+        let slots = matrix(ModSlot {
+            source: ModSource::Off,
+            dest: ModDest::Osc2Pitch,
+            amount: 1.0,
+        });
+
+        let modulation = evaluate(&slots, &sources);
+        assert_eq!(modulation.osc2_pitch_semitones, 0.0);
+        assert_eq!(modulation.sub_level, 0.0);
+        assert_eq!(modulation.filter_env_octaves, 0.0);
     }
 }

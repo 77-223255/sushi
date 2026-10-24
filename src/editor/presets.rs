@@ -793,6 +793,116 @@ pub const PRESETS: &[Preset] = &[
             "volume": 0.6
         }"#,
     },
+    Preset {
+        name: "ZDF ACID",
+        json: r#"{
+            "macro_space": 0.0,
+            "osc1_wave": "Saw",
+            "osc1_level": 0.8,
+            "osc2_wave": "Pulse",
+            "osc2_pw": 0.32,
+            "osc2_level": 0.45,
+            "poly_mode": "Legato",
+            "glide": 55.0,
+            "filter_mode": "Lowpass",
+            "filter_slope": "24 dB NEW",
+            "cutoff": 260.0,
+            "resonance": 0.72,
+            "filter_env_amount": 0.72,
+            "filter_drive": 0.42,
+            "fe_attack": 1.0,
+            "fe_decay": 190.0,
+            "fe_sustain": 0.08,
+            "fe_release": 140.0,
+            "ae_attack": 1.0,
+            "ae_decay": 380.0,
+            "ae_sustain": 0.62,
+            "ae_release": 160.0,
+            "delay_time": 280.0,
+            "delay_feedback": 0.28,
+            "delay_mix": 0.18,
+            "character": "Grit",
+            "tone": 0.12,
+            "volume": 0.62
+        }"#,
+    },
+    Preset {
+        name: "WHEEL MOTION",
+        json: r#"{
+            "macro_space": 0.0,
+            "osc1_wave": "Saw",
+            "osc1_level": 0.7,
+            "osc2_wave": "Saw",
+            "osc2_fine": 7.0,
+            "osc2_level": 0.45,
+            "unison": 2,
+            "detune": 8.0,
+            "spread": 0.45,
+            "poly_mode": "Legato",
+            "glide": 35.0,
+            "cutoff": 900.0,
+            "resonance": 0.28,
+            "filter_env_amount": 0.3,
+            "filter_drive": 0.18,
+            "fe_attack": 8.0,
+            "fe_decay": 500.0,
+            "fe_sustain": 0.35,
+            "fe_release": 400.0,
+            "ae_attack": 20.0,
+            "ae_decay": 800.0,
+            "ae_sustain": 0.8,
+            "ae_release": 600.0,
+            "chorus_mix": 0.28,
+            "chorus_depth": 0.4,
+            "reverb_mix": 0.22,
+            "reverb_decay": 0.65,
+            "mod1_source": "Mod Wheel",
+            "mod1_dest": "Cutoff",
+            "mod1_amount": 0.65,
+            "velocity": 0.55,
+            "tone": 0.05,
+            "volume": 0.62
+        }"#,
+    },
+    Preset {
+        name: "RANDOM PAD",
+        json: r#"{
+            "macro_space": 0.0,
+            "osc1_wave": "Saw",
+            "osc1_level": 0.55,
+            "osc2_wave": "Triangle",
+            "osc2_octave": -1,
+            "osc2_level": 0.45,
+            "unison": 3,
+            "detune": 16.0,
+            "spread": 0.8,
+            "filter_mode": "Lowpass",
+            "cutoff": 1600.0,
+            "resonance": 0.18,
+            "filter_env_amount": 0.18,
+            "fe_attack": 800.0,
+            "fe_decay": 1600.0,
+            "fe_sustain": 0.45,
+            "fe_release": 1800.0,
+            "ae_attack": 1400.0,
+            "ae_decay": 1800.0,
+            "ae_sustain": 0.85,
+            "ae_release": 2400.0,
+            "chorus_mix": 0.3,
+            "chorus_depth": 0.5,
+            "reverb_mix": 0.5,
+            "reverb_decay": 0.82,
+            "mod1_source": "Random",
+            "mod1_dest": "Pan",
+            "mod1_amount": 0.55,
+            "mod2_source": "Random",
+            "mod2_dest": "Cutoff",
+            "mod2_amount": 0.22,
+            "drift": 0.22,
+            "tone": -0.08,
+            "volume": 0.6
+        }"#,
+    },
 ];
 
 /// Writes the preset with the given index into the host.
@@ -899,17 +1009,24 @@ pub fn mutate(params: &SushiParams, setter: &ParamSetter, rng: &mut Rng) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{ArpPattern, FilterSlope, NoteDiv, Waveform};
+    use crate::params::{
+        ArpPattern, FilterSlope, LfoTarget, ModDest, ModSource, NoteDiv, Waveform,
+    };
     use crate::patch::test_support::setter;
 
     #[test]
-    fn there_are_twenty_six_presets_with_short_names() {
-        assert_eq!(PRESETS.len(), 26);
+    fn there_are_twenty_nine_presets_with_short_names() {
+        assert_eq!(PRESETS.len(), 29);
         for preset in PRESETS {
             assert!(!preset.name.is_empty());
             assert!(preset.name.len() <= 18, "{}", preset.name);
             assert!(preset.name.is_ascii(), "{}", preset.name);
         }
+
+        // The showcase presets are appended, so the indices of the original
+        // presets stay stable.
+        let showcase: Vec<&str> = PRESETS[26..].iter().map(|preset| preset.name).collect();
+        assert_eq!(showcase, ["ZDF ACID", "WHEEL MOTION", "RANDOM PAD"]);
     }
 
     #[test]
@@ -946,18 +1063,26 @@ mod tests {
     }
 
     #[test]
-    fn the_factory_24_db_presets_keep_the_old_ladder() {
+    fn the_original_presets_keep_the_old_ladder() {
         let params = SushiParams::default();
         let setter = setter();
         let mut checked = 0;
 
-        for (index, preset) in PRESETS.iter().enumerate() {
+        // The first 26 presets existed before the ZDF ladder was added. None
+        // of them may silently move to the new ladder.
+        for (index, preset) in PRESETS[..26].iter().enumerate() {
             let document: Value = serde_json::from_str(preset.json)
                 .unwrap_or_else(|error| panic!("the preset {} is broken: {error}", preset.name));
             let uses_old_four_pole =
                 document.get("filter_slope").and_then(Value::as_str) == Some("24 dB");
 
             apply(&params, &setter, index);
+            assert_ne!(
+                params.filter_slope.value(),
+                FilterSlope::FourPoleModern,
+                "the original preset {} uses the new ladder",
+                preset.name
+            );
             if uses_old_four_pole {
                 checked += 1;
                 assert_eq!(
@@ -966,17 +1091,73 @@ mod tests {
                     "the preset {} lost its old ladder",
                     preset.name
                 );
-            } else {
-                assert_ne!(
-                    params.filter_slope.value(),
-                    FilterSlope::FourPoleModern,
-                    "the preset {} uses the new ladder",
-                    preset.name
-                );
             }
         }
 
         assert_eq!(checked, 7, "the number of old four-pole presets changed");
+    }
+
+    #[test]
+    fn the_zdf_acid_preset_uses_the_modern_ladder() {
+        let params = SushiParams::default();
+        let setter = setter();
+        let index = PRESETS
+            .iter()
+            .position(|preset| preset.name == "ZDF ACID")
+            .expect("the preset is missing");
+
+        apply(&params, &setter, index);
+
+        assert_eq!(params.filter_slope.value(), FilterSlope::FourPoleModern);
+        assert!(params.cutoff.value() <= 500.0);
+        assert!(params.resonance.value() >= 0.5);
+
+        let document: Value = serde_json::from_str(PRESETS[index].json).unwrap();
+        assert_eq!(document["filter_slope"], "24 dB NEW");
+    }
+
+    #[test]
+    fn the_wheel_motion_preset_routes_the_mod_wheel_to_cutoff() {
+        let params = SushiParams::default();
+        let setter = setter();
+        let index = PRESETS
+            .iter()
+            .position(|preset| preset.name == "WHEEL MOTION")
+            .expect("the preset is missing");
+
+        apply(&params, &setter, index);
+
+        assert_eq!(params.mod1_source.value(), ModSource::ModWheel);
+        assert_eq!(params.mod1_dest.value(), ModDest::Cutoff);
+        assert!(params.mod1_amount.value() > 0.0);
+
+        // The matrix owns the wheel, so the built-in wheel-to-vibrato path
+        // stays out of the way.
+        assert_eq!(params.lfo1_target.value(), LfoTarget::Off);
+        assert_eq!(params.lfo1_amount.value(), 0.0);
+    }
+
+    #[test]
+    fn the_random_pad_preset_uses_the_random_source() {
+        let params = SushiParams::default();
+        let setter = setter();
+        let index = PRESETS
+            .iter()
+            .position(|preset| preset.name == "RANDOM PAD")
+            .expect("the preset is missing");
+
+        apply(&params, &setter, index);
+
+        assert_eq!(params.mod1_source.value(), ModSource::Random);
+        assert_eq!(params.mod1_dest.value(), ModDest::Pan);
+        assert!(params.mod1_amount.value() != 0.0);
+
+        assert_eq!(params.mod2_source.value(), ModSource::Random);
+        assert_eq!(params.mod2_dest.value(), ModDest::Cutoff);
+        assert!(params.mod2_amount.value() != 0.0);
+
+        assert!(params.ae_attack.value() >= 500.0);
+        assert!(params.reverb_mix.value() > 0.0);
     }
 
     #[test]
@@ -1030,6 +1211,9 @@ mod tests {
             ("MELLOTRON FLUTE", 0.0),
             ("JUNO BASS", 0.0),
             ("PROPHET KEYS", 0.0),
+            ("ZDF ACID", 0.0),
+            ("WHEEL MOTION", 0.0),
+            ("RANDOM PAD", 0.0),
         ];
 
         for (name, space) in expected {

@@ -5,10 +5,12 @@ use nice_plug::util;
 use std::f32::consts::PI;
 
 use super::adsr::{Adsr, EnvCoeffs};
-use super::filter::{Ladder, Svf};
+use super::filter::{Ladder, LadderModern, Svf};
 use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
-use crate::params::{FilterMode, FilterSlope, LfoTarget, MOD_SLOTS, ModSlot, Waveform};
+use crate::params::{
+    FilterMode, FilterSlope, LfoTarget, MOD_SLOTS, ModDest, ModSlot, ModSource, Waveform,
+};
 
 /// The maximum number of unison voices per oscillator.
 pub const MAX_UNISON: usize = 4;
@@ -87,9 +89,8 @@ fn unison_offset(index: usize, count: usize) -> f32 {
     }
 }
 
-/// Whether these settings run the nonlinear ladder instead of the cascaded
-/// SVF. Only the modern four-pole lowpass uses it, in both the old and the
-/// corrected flavor.
+/// Whether these settings run a ladder instead of the cascaded SVF. Only the
+/// modern four-pole lowpass uses one, in either the old or the new flavor.
 #[inline]
 fn uses_ladder(settings: &VoiceSettings) -> bool {
     !settings.legacy
@@ -100,9 +101,9 @@ fn uses_ladder(settings: &VoiceSettings) -> bool {
         && settings.filter_mode == FilterMode::Lowpass
 }
 
-/// Whether the ladder should use the corrected resonance curve. This is only
-/// true for the `24 dB` option in the modern flavor; `24 dB OLD` keeps the
-/// original curve.
+/// Whether the ladder should use the zero-delay-feedback topology. This is
+/// only true for the `24 dB` option in the modern flavor; `24 dB OLD` keeps
+/// the original one-sample-delayed ladder.
 #[inline]
 fn uses_modern_ladder(settings: &VoiceSettings) -> bool {
     uses_ladder(settings) && settings.filter_slope == FilterSlope::FourPoleModern
@@ -339,6 +340,8 @@ pub struct Voice {
     filter_right2: Svf,
     ladder_left: Ladder,
     ladder_right: Ladder,
+    modern_ladder_left: LadderModern,
+    modern_ladder_right: LadderModern,
     dc_left: DcBlocker,
     dc_right: DcBlocker,
     /// The fixed top-end loss of the legacy flavor, after the DC blockers.
@@ -380,6 +383,13 @@ pub struct Voice {
     drift_rng: u32,
     /// The random number generator of the phases of the oscillators.
     phase_rng: u32,
+    /// The random number generator of the Random modulation source. It is
+    /// separate from the drift and phase streams, so the new source cannot
+    /// change an existing sound.
+    random_rng: u32,
+    /// The deterministic value of the Random modulation source, `-1..1`. It
+    /// stays the same for the life of a note.
+    random_value: f32,
     /// The deterministic pitch tolerance of a legacy voice, in semitones.
     pitch_tolerance: f32,
     /// The deterministic gain tolerance of a legacy voice, as a linear
@@ -390,6 +400,11 @@ pub struct Voice {
     /// The modulation of the destinations of the modulation matrix. It is
     /// refreshed at the control rate.
     modulation: Modulation,
+    /// Whether the matrix contains a live Mod Wheel route. When it does, the
+    /// wheel belongs to the matrix and the built-in wheel-to-LFO-1 coupling is
+    /// switched off. Cached at the control rate, so the sample path only reads
+    /// a bool.
+    mod_wheel_routed: bool,
     /// The flavor used by the previous sample. A switch clears the filter
     /// state that belongs to the other topology.
     last_legacy: bool,
@@ -397,6 +412,10 @@ pub struct Voice {
     /// the filter path that becomes active, so that it never runs with stale
     /// or default coefficients while waiting for the next control tick.
     last_ladder_mode: bool,
+    /// Whether the active ladder was the zero-delay-feedback one. The old and
+    /// new ladders are separate filters, so a switch between them has to
+    /// prepare the newly active one as well.
+    last_modern_ladder: bool,
     /// The cutoff that the last control tick used by the filter, in Hz.
     current_cutoff: f32,
     /// The resonance that the last control tick used by the filter, `0..1`.
@@ -438,6 +457,17 @@ impl Voice {
             phase_rng = 0x2545_F491;
         }
 
+        // The Random modulation source uses its own deterministic stream. The
+        // drift and phase streams above stay untouched, and the value is
+        // stable until the note is retriggered.
+        let mut random_rng = 0xD1B5_4A32
+            ^ (internal_voice_id as u32).wrapping_mul(0x85EB_CA6B)
+            ^ ((internal_voice_id >> 32) as u32).wrapping_mul(0x9E37_79B9);
+        if random_rng == 0 {
+            random_rng = 0x6C8E_9CF5;
+        }
+        let random_value = next_random(&mut random_rng);
+
         // The component tolerances are fixed for the life of the voice. They
         // use their own hash, so the existing drift and phase streams stay
         // untouched. The modern flavor has no tolerances at all.
@@ -472,6 +502,8 @@ impl Voice {
             filter_right2: Svf::new(),
             ladder_left: Ladder::new(),
             ladder_right: Ladder::new(),
+            modern_ladder_left: LadderModern::new(),
+            modern_ladder_right: LadderModern::new(),
             dc_left: DcBlocker::default(),
             dc_right: DcBlocker::default(),
             hf_left: LegacyHfShelf::default(),
@@ -491,12 +523,16 @@ impl Voice {
             drift_value: 0.0,
             drift_rng,
             phase_rng,
+            random_rng,
+            random_value,
             pitch_tolerance,
             gain_tolerance,
             cutoff_tolerance,
             modulation: Modulation::default(),
+            mod_wheel_routed: has_mod_wheel_route(&settings.mod_slots),
             last_legacy: settings.legacy,
             last_ladder_mode: uses_ladder(settings),
+            last_modern_ladder: uses_modern_ladder(settings),
             current_cutoff: 1_000.0,
             current_resonance: settings.resonance.clamp(0.0, 1.0),
         };
@@ -577,6 +613,9 @@ impl Voice {
             self.amp_env.gate_on();
             self.filter_env.gate_on();
             self.releasing = false;
+            // A retriggered note gets a fresh Random value. A legato or gliding
+            // note keeps the value of the note that is already sounding.
+            self.random_value = next_random(&mut self.random_rng);
         }
 
         let unison = settings.unison.clamp(1, MAX_UNISON);
@@ -628,6 +667,8 @@ impl Voice {
             self.filter_right2.set(self.g, self.k);
             self.ladder_left.reset();
             self.ladder_right.reset();
+            self.modern_ladder_left.reset();
+            self.modern_ladder_right.reset();
             self.hf_left.reset();
             self.hf_right.reset();
             if settings.legacy {
@@ -651,18 +692,26 @@ impl Voice {
         let amp = self.amp_env.next(&settings.amp_env);
         self.filter_env_level = self.filter_env.next(&settings.filter_env);
 
-        // The LFO destinations.
-        let (pitch_semitones, filter_octaves, amp_scale, pulse_width_offset) =
-            lfo_modulation(settings, lfo1, lfo2);
-
-        // The drift.
-        self.update_drift(sample_rate, settings.legacy);
-
         // The control rate. The pitch, the filter and the modulation matrix
         // are updated every eighth sample only, which saves a lot of CPU
         // time.
         self.control_counter = (self.control_counter + 1) % CONTROL_RATE;
-        if self.control_counter == 0 {
+        let control_tick = self.control_counter == 0;
+        if control_tick {
+            // The Mod Wheel has two possible paths. As soon as the matrix has
+            // a live wheel route, that route owns the wheel and the built-in
+            // wheel-to-LFO-1 coupling must stay out of its way.
+            self.mod_wheel_routed = has_mod_wheel_route(&settings.mod_slots);
+        }
+
+        // The LFO destinations.
+        let (pitch_semitones, filter_octaves, amp_scale, pulse_width_offset) =
+            lfo_modulation(settings, lfo1, lfo2, self.mod_wheel_routed);
+
+        // The drift.
+        self.update_drift(sample_rate, settings.legacy);
+
+        if control_tick {
             // The modulation matrix. Its sources are read at the control
             // rate as well, which is fast enough for the ear.
             self.modulation = evaluate(
@@ -685,6 +734,7 @@ impl Voice {
         // coefficients here. Otherwise it would run with stale or default
         // coefficients for up to seven samples.
         let ladder_mode = uses_ladder(settings);
+        let modern_ladder = ladder_mode && uses_modern_ladder(settings);
         if ladder_mode != self.last_ladder_mode {
             self.last_ladder_mode = ladder_mode;
             self.filter_left = Svf::new();
@@ -697,25 +747,15 @@ impl Voice {
             self.filter_right2.set(self.g, self.k);
             self.ladder_left.reset();
             self.ladder_right.reset();
+            self.modern_ladder_left.reset();
+            self.modern_ladder_right.reset();
+            self.last_modern_ladder = modern_ladder;
             if ladder_mode {
-                if uses_modern_ladder(settings) {
-                    self.ladder_left.set_modern(
-                        self.current_cutoff,
-                        self.current_resonance,
-                        sample_rate,
-                    );
-                    self.ladder_right.set_modern(
-                        self.current_cutoff,
-                        self.current_resonance,
-                        sample_rate,
-                    );
-                } else {
-                    self.ladder_left
-                        .set(self.current_cutoff, self.current_resonance, sample_rate);
-                    self.ladder_right
-                        .set(self.current_cutoff, self.current_resonance, sample_rate);
-                }
+                self.reset_and_prepare_ladder(modern_ladder, sample_rate);
             }
+        } else if ladder_mode && modern_ladder != self.last_modern_ladder {
+            self.last_modern_ladder = modern_ladder;
+            self.reset_and_prepare_ladder(modern_ladder, sample_rate);
         }
 
         let unison = self.unison;
@@ -747,14 +787,20 @@ impl Voice {
         );
 
         // The sub oscillator is one octave below VCO 1 and stays in the
-        // centre of the image.
-        let sub = self.sub_osc.next(self.sub_delta, Waveform::Square, 0.5) * settings.sub_level;
+        // centre of the image. The matrix adds to its level, so the final
+        // level is kept inside the parameter range. The base level is read
+        // every sample, as it was before the matrix had this destination, so
+        // its smoothing is unchanged.
+        let sub_level = (settings.sub_level + self.modulation.sub_level).clamp(0.0, 1.0);
+        let sub = self.sub_osc.next(self.sub_delta, Waveform::Square, 0.5) * sub_level;
         left += sub;
         right += sub;
 
         // The noise generator is shared by both channels. It is kept at half
-        // scale, so that it doesn't dominate the mix.
-        let noise = self.noise.next() * settings.noise_level * 0.5;
+        // scale, so that it doesn't dominate the mix. Its modulated level is
+        // clamped as well.
+        let noise_level = (settings.noise_level + self.modulation.noise_level).clamp(0.0, 1.0);
+        let noise = self.noise.next() * noise_level * 0.5;
         left += noise;
         right += noise;
 
@@ -788,10 +834,17 @@ impl Voice {
         // the transparent cascaded SVF so they can still provide highpass,
         // bandpass and notch outputs.
         let (left, right) = if ladder_mode {
-            (
-                self.ladder_left.process(left, drive),
-                self.ladder_right.process(right, drive),
-            )
+            if modern_ladder {
+                (
+                    self.modern_ladder_left.process(left, drive),
+                    self.modern_ladder_right.process(right, drive),
+                )
+            } else {
+                (
+                    self.ladder_left.process(left, drive),
+                    self.ladder_right.process(right, drive),
+                )
+            }
         } else {
             let left = self.filter_left.process_prepared(
                 left,
@@ -871,6 +924,29 @@ impl Voice {
             macro1: settings.macro1,
             macro2: settings.macro2,
             macro3: settings.macro3,
+            mod_wheel: settings.mod_wheel,
+            random: self.random_value,
+        }
+    }
+
+    /// Clears the state of the newly active ladder and prepares its
+    /// coefficients. Called when the slope changes between two control ticks,
+    /// so the first sample already uses the right topology and cutoff.
+    fn reset_and_prepare_ladder(&mut self, modern: bool, sample_rate: f32) {
+        if modern {
+            self.modern_ladder_left.reset();
+            self.modern_ladder_right.reset();
+            self.modern_ladder_left
+                .set(self.current_cutoff, self.current_resonance, sample_rate);
+            self.modern_ladder_right
+                .set(self.current_cutoff, self.current_resonance, sample_rate);
+        } else {
+            self.ladder_left.reset();
+            self.ladder_right.reset();
+            self.ladder_left
+                .set(self.current_cutoff, self.current_resonance, sample_rate);
+            self.ladder_right
+                .set(self.current_cutoff, self.current_resonance, sample_rate);
         }
     }
 
@@ -900,7 +976,10 @@ impl Voice {
         // The filter.
         let key = self.key.number_or_middle_c() as f32;
         let drift_filter = self.drift_value * settings.drift_amount * DRIFT_CUTOFF;
-        let mut octaves = settings.filter_env_octaves * self.filter_env_level
+        // The matrix offsets the amount of the filter envelope, before the
+        // envelope level scales it.
+        let filter_env_octaves = settings.filter_env_octaves + self.modulation.filter_env_octaves;
+        let mut octaves = filter_env_octaves * self.filter_env_level
             + settings.filter_keytrack * (key - 60.0) / 12.0
             + settings.velocity_amount * self.velocity_raw * 1.5
             + filter_octaves
@@ -926,8 +1005,8 @@ impl Voice {
 
         if uses_ladder(settings) {
             if uses_modern_ladder(settings) {
-                self.ladder_left.set_modern(cutoff, resonance, sample_rate);
-                self.ladder_right.set_modern(cutoff, resonance, sample_rate);
+                self.modern_ladder_left.set(cutoff, resonance, sample_rate);
+                self.modern_ladder_right.set(cutoff, resonance, sample_rate);
             } else {
                 self.ladder_left.set(cutoff, resonance, sample_rate);
                 self.ladder_right.set(cutoff, resonance, sample_rate);
@@ -943,10 +1022,14 @@ impl Voice {
             self.unison = unison;
         }
         let frequency1 = base_frequency * 2f32.powf(settings.osc1.semitones / 12.0);
-        let frequency2 = base_frequency * 2f32.powf(settings.osc2.semitones / 12.0);
+        let osc2_semitones = settings.osc2.semitones
+            + self.modulation.osc2_pitch_semitones
+            + self.modulation.osc2_fine_semitones;
+        let frequency2 = base_frequency * 2f32.powf(osc2_semitones / 12.0);
+        let detune_cents = settings.detune_cents + self.modulation.detune_cents;
         for index in 0..unison {
             let offset = unison_offset(index, unison);
-            let ratio = unison_detune_ratio(settings.detune_cents, offset);
+            let ratio = unison_detune_ratio(detune_cents, offset);
             self.phase_delta1[index] = (frequency1 * ratio / sample_rate).clamp(0.0, 0.5);
             self.phase_delta2[index] = (frequency2 * ratio / sample_rate).clamp(0.0, 0.5);
         }
@@ -1140,12 +1223,29 @@ fn render_oscillators(
     }
 }
 
+/// Whether the modulation matrix contains a Mod Wheel route that actually
+/// does something. A wheel route with an Off destination or a zero amount
+/// leaves the built-in wheel behavior untouched.
+#[inline]
+fn has_mod_wheel_route(slots: &[ModSlot; MOD_SLOTS]) -> bool {
+    slots.iter().any(|slot| {
+        slot.source == ModSource::ModWheel && slot.dest != ModDest::Off && slot.amount != 0.0
+    })
+}
+
 /// Calculates the modulation of the two global LFOs.
 ///
 /// Returns the pitch offset in semitones, the filter offset in octaves, the
-/// amplitude scale and the pulse width offset.
+/// amplitude scale and the pulse width offset. `mod_wheel_routed` disables
+/// the built-in wheel-to-LFO-1 coupling when the matrix already routes the
+/// wheel.
 #[inline]
-fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, f32, f32) {
+fn lfo_modulation(
+    settings: &VoiceSettings,
+    lfo1: f32,
+    lfo2: f32,
+    mod_wheel_routed: bool,
+) -> (f32, f32, f32, f32) {
     let mut pitch_semitones = 0.0;
     let mut filter_octaves = 0.0;
     let mut amp_scale = 1.0;
@@ -1155,7 +1255,7 @@ fn lfo_modulation(settings: &VoiceSettings, lfo1: f32, lfo2: f32) -> (f32, f32, 
     // as a conventional vibrato wheel.
     let mut lfo1_target = settings.lfo1_target;
     let mut lfo1_amount = settings.lfo1_amount;
-    if settings.mod_wheel > 1e-4 {
+    if !mod_wheel_routed && settings.mod_wheel > 1e-4 {
         lfo1_amount = (lfo1_amount + settings.mod_wheel).clamp(0.0, 1.0);
         if lfo1_target == LfoTarget::Off {
             lfo1_target = LfoTarget::Pitch;
@@ -1209,10 +1309,15 @@ mod tests {
 
     /// The frequency of the voice, measured by its zero crossings.
     fn measure_frequency(voice: &mut Voice, settings: &VoiceSettings) -> f32 {
+        measure_frequency_with_lfo(voice, settings, 0.0)
+    }
+
+    /// The frequency of the voice with a fixed value of the first LFO.
+    fn measure_frequency_with_lfo(voice: &mut Voice, settings: &VoiceSettings, lfo1: f32) -> f32 {
         let mut crossings = 0;
         let mut previous = 0.0;
         for _ in 0..(SAMPLE_RATE as usize * 2) {
-            let (left, _) = voice.next_sample(settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (left, _) = voice.next_sample(settings, 8_000.0, lfo1, 0.0, SAMPLE_RATE);
             if previous < 0.0 && left >= 0.0 {
                 crossings += 1;
             }
@@ -1384,8 +1489,52 @@ mod tests {
             ..VoiceSettings::default()
         };
 
-        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0);
+        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0, false);
         assert!(pitch > 0.0, "the mod wheel did not bend the pitch");
+    }
+
+    #[test]
+    fn a_mod_wheel_route_takes_over_from_the_built_in_vibrato() {
+        let coupled_settings = VoiceSettings {
+            mod_wheel: 0.5,
+            lfo1_target: LfoTarget::Off,
+            lfo1_amount: 0.0,
+            ..plain_settings()
+        };
+
+        // Without a matrix route the wheel still acts as the old vibrato
+        // wheel. A high LFO 1 therefore bends the pitch up by a semitone.
+        let mut coupled = voice(&coupled_settings);
+        assert!(!coupled.mod_wheel_routed);
+        let coupled_frequency = measure_frequency_with_lfo(&mut coupled, &coupled_settings, 1.0);
+        let base_frequency = util::f32_midi_key_to_freq(60.0);
+        let expected = base_frequency * 2f32.powf(1.0 / 12.0);
+        assert!(
+            (coupled_frequency - expected).abs() < 4.0,
+            "the built-in wheel vibrato played at {coupled_frequency} Hz instead of {expected} Hz"
+        );
+
+        // The same wheel, now routed to the cutoff by the matrix, must not
+        // touch the pitch at all: the route is the only wheel path.
+        let routed_settings = VoiceSettings {
+            mod_slots: matrix(ModSlot {
+                source: ModSource::ModWheel,
+                dest: ModDest::Cutoff,
+                amount: 0.5,
+            }),
+            ..coupled_settings
+        };
+        let mut routed = voice(&routed_settings);
+        assert!(routed.mod_wheel_routed);
+        let routed_frequency = measure_frequency_with_lfo(&mut routed, &routed_settings, 1.0);
+        assert!(
+            (routed_frequency - base_frequency).abs() < 4.0,
+            "the Mod Wheel to Cutoff route bent the pitch to {routed_frequency} Hz instead of {base_frequency} Hz"
+        );
+        assert!(
+            routed_frequency < coupled_frequency - 5.0,
+            "the routed wheel still added the built-in vibrato ({routed_frequency} vs {coupled_frequency} Hz)"
+        );
     }
 
     #[test]
@@ -1867,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_to_the_modern_ladder_uses_the_corrected_resonance() {
+    fn switching_to_the_modern_ladder_prepares_the_zdf_filter() {
         let mut settings = plain_settings();
         settings.resonance = 1.0;
         let mut voice = voice(&settings);
@@ -1878,24 +2027,134 @@ mod tests {
         assert_ne!(voice.control_counter, CONTROL_RATE - 1);
 
         // The switch happens in the middle of a control period, so the
-        // transition preparation has to choose the modern resonance curve.
+        // transition preparation has to choose the modern ZDF ladder and
+        // prepare its coefficients.
         settings.filter_slope = FilterSlope::FourPoleModern;
         let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
         assert!(left.is_finite() && right.is_finite());
-        let (_, _, rez) = voice.ladder_left.coefficients();
+        let (_, k, gain) = voice.modern_ladder_left.coefficients();
         assert!(
-            rez > 0.999,
-            "the modern ladder kept the old resonance clamp: {rez}"
+            (3.8..4.0).contains(&k),
+            "the modern ladder did not reach full resonance: {k}"
+        );
+        assert!(
+            (4.8..5.0).contains(&gain),
+            "the modern ladder lost its gain compensation: {gain}"
         );
         assert_eq!(
-            voice.ladder_right.coefficients(),
-            voice.ladder_left.coefficients()
+            voice.modern_ladder_right.coefficients(),
+            voice.modern_ladder_left.coefficients()
         );
 
         for _ in 0..256 {
             let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
             assert!(left.is_finite() && right.is_finite());
         }
+    }
+
+    #[test]
+    fn switching_between_ladder_variants_prepares_the_new_one() {
+        let mut settings = plain_settings();
+        settings.resonance = 0.6;
+        settings.filter_slope = FilterSlope::FourPole;
+        let mut voice = voice(&settings);
+
+        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
+            voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        let old_coefficients = voice.ladder_left.coefficients();
+        assert_ne!(old_coefficients, (0.0, 0.0, 0.0));
+        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
+
+        // The ladder mode stays active, so only the newly selected variant
+        // has to be reset and prepared.
+        settings.filter_slope = FilterSlope::FourPoleModern;
+        let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+        assert!(left.is_finite() && right.is_finite());
+        assert_eq!(voice.ladder_left.coefficients(), old_coefficients);
+        let (_, k, _) = voice.modern_ladder_left.coefficients();
+        assert!(k > 0.0, "the modern ladder was not prepared: {k}");
+
+        for _ in 0..128 {
+            let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+            assert!(left.is_finite() && right.is_finite());
+        }
+
+        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
+        settings.filter_slope = FilterSlope::FourPole;
+        let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
+        assert!(left.is_finite() && right.is_finite());
+        assert!(voice.ladder_left.coefficients().2 > 0.0);
+    }
+
+    #[test]
+    fn the_fixed_paths_keep_their_pre_zdf_fingerprints() {
+        // These fingerprints were captured before the modern ZDF ladder was
+        // added. They pin the legacy path, the old 24 dB path and the default
+        // 12 dB path (the one `render_demo` uses).
+        fn fingerprint(hash: &mut u64, sample: f32) {
+            *hash ^= sample.to_bits() as u64;
+            *hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+
+        fn render(settings: &VoiceSettings, id: u64) -> u64 {
+            let mut voice = Voice::new(
+                id as i32,
+                Channel::Number(0),
+                Key::Number(60),
+                id,
+                0.8,
+                settings,
+            );
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for _ in 0..8_192 {
+                let (left, right) = voice.next_sample(settings, 1_400.0, 0.0, 0.0, SAMPLE_RATE);
+                fingerprint(&mut hash, left);
+                fingerprint(&mut hash, right);
+            }
+            hash
+        }
+
+        let base = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Saw,
+                level: 0.8,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                waveform: Waveform::Square,
+                level: 0.3,
+                semitones: -12.0,
+                ..OscSettings::default()
+            },
+            filter_mode: FilterMode::Lowpass,
+            filter_slope: FilterSlope::FourPole,
+            resonance: 0.45,
+            filter_env_octaves: 1.0,
+            filter_drive: 0.3,
+            unison: 2,
+            detune_cents: 8.0,
+            spread: 0.5,
+            drift_amount: 0.2,
+            ..VoiceSettings::default()
+        };
+
+        let old = VoiceSettings {
+            filter_slope: FilterSlope::FourPole,
+            ..base
+        };
+        let two_pole = VoiceSettings {
+            filter_slope: FilterSlope::TwoPole,
+            ..base
+        };
+        let legacy = VoiceSettings {
+            legacy: true,
+            ..base
+        };
+
+        assert_eq!(render(&legacy, 9), 0x0b35_beab_2d91_6476);
+        assert_eq!(render(&old, 7), 0xd3c4_1b8b_a3ae_329c);
+        assert_eq!(render(&two_pole, 11), 0x9534_eebd_dd8a_6d8e);
     }
 
     #[test]
@@ -2073,6 +2332,301 @@ mod tests {
             "the level of the voice was {loud} instead of {}",
             plain * 2.0
         );
+    }
+
+    #[test]
+    fn the_random_source_is_deterministic_and_stable_for_a_note() {
+        let settings = plain_settings();
+        let mut first = Voice::new(1, Channel::Number(0), Key::Number(60), 123, 1.0, &settings);
+        let value = first.random_value;
+        assert!(
+            (-1.0..=1.0).contains(&value),
+            "the Random source left its range: {value}"
+        );
+
+        for _ in 0..4_096 {
+            first.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert_eq!(
+                first.random_value, value,
+                "the Random source changed while the note was held"
+            );
+        }
+
+        // The same voice ID gives the same value on every run.
+        let second = Voice::new(1, Channel::Number(0), Key::Number(60), 123, 1.0, &settings);
+        assert_eq!(second.random_value, value);
+
+        // Another voice gets its own value.
+        let third = Voice::new(1, Channel::Number(0), Key::Number(60), 124, 1.0, &settings);
+        assert_ne!(third.random_value, value);
+    }
+
+    #[test]
+    fn a_retrigger_refreshes_the_random_source_but_a_legato_note_keeps_it() {
+        let settings = plain_settings();
+        let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 17, 1.0, &settings);
+        let first = voice.random_value;
+
+        // A gliding note keeps the value of the note that is already sounding.
+        voice.set_key(Key::Number(62), &settings, false);
+        assert_eq!(voice.random_value, first);
+
+        // A retriggered mono note gets a fresh value.
+        voice.set_key(Key::Number(64), &settings, true);
+        let refreshed = voice.random_value;
+        assert_ne!(refreshed, first);
+        for _ in 0..256 {
+            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert_eq!(voice.random_value, refreshed);
+        }
+
+        voice.set_key(Key::Number(65), &settings, false);
+        assert_eq!(voice.random_value, refreshed);
+    }
+
+    #[test]
+    fn the_matrix_offsets_the_pitch_of_the_second_oscillator() {
+        let settings = VoiceSettings {
+            osc1: OscSettings {
+                waveform: Waveform::Sine,
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                waveform: Waveform::Sine,
+                level: 1.0,
+                semitones: 0.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 0.0,
+            filter_keytrack: 0.0,
+            velocity_amount: 0.0,
+            drift_amount: 0.0,
+            ..VoiceSettings::default()
+        };
+
+        let mut plain = voice(&settings);
+        let plain_frequency = measure_frequency(&mut plain, &settings);
+
+        let octave = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Osc2Pitch,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+        let mut bent = voice(&octave);
+        let bent_frequency = measure_frequency(&mut bent, &octave);
+        let expected = util::f32_midi_key_to_freq(72.0);
+        assert!(
+            (bent_frequency - expected).abs() < 5.0,
+            "Osc2 Pitch played at {bent_frequency} Hz instead of {expected} Hz"
+        );
+        assert!(
+            (bent_frequency - plain_frequency * 2.0).abs() < 5.0,
+            "Osc2 Pitch did not move an octave"
+        );
+
+        let semitone = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Osc2Fine,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+        let mut fine = voice(&semitone);
+        let fine_frequency = measure_frequency(&mut fine, &semitone);
+        let expected = util::f32_midi_key_to_freq(61.0);
+        assert!(
+            (fine_frequency - expected).abs() < 5.0,
+            "Osc2 Fine played at {fine_frequency} Hz instead of {expected} Hz"
+        );
+    }
+
+    #[test]
+    fn the_matrix_offsets_the_unison_detune() {
+        let settings = VoiceSettings {
+            detune_cents: 0.0,
+            unison: 2,
+            filter_env_octaves: 0.0,
+            ..plain_settings()
+        };
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Detune,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut voice = voice(&modulated);
+        voice.next_sample(&modulated, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
+
+        let base = util::f32_midi_key_to_freq(60.0);
+        for index in 0..2 {
+            let offset = unison_offset(index, 2);
+            let expected = base * unison_detune_ratio(50.0, offset) / SAMPLE_RATE;
+            assert!(
+                (voice.phase_delta1[index] - expected).abs() < 1e-6,
+                "the Detune matrix wrote {} instead of {expected}",
+                voice.phase_delta1[index]
+            );
+        }
+    }
+
+    #[test]
+    fn the_matrix_moves_the_filter_envelope_amount() {
+        let settings = VoiceSettings {
+            filter_env_octaves: 0.0,
+            filter_env: EnvCoeffs::new(0.1, 1.0, 1.0, 100.0, SAMPLE_RATE),
+            ..plain_settings()
+        };
+        let modulated = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::FilterEnv,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+
+        let mut plain_voice = voice(&settings);
+        let mut modulated_voice = voice(&modulated);
+        for _ in 0..4_096 {
+            plain_voice.next_sample(&settings, 200.0, 0.0, 0.0, SAMPLE_RATE);
+            modulated_voice.next_sample(&modulated, 200.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+
+        assert!(
+            modulated_voice.current_cutoff > plain_voice.current_cutoff * 4.0,
+            "Filter Env opened the filter only from {} to {} Hz",
+            plain_voice.current_cutoff,
+            modulated_voice.current_cutoff
+        );
+    }
+
+    #[test]
+    fn the_sub_and_noise_levels_are_clamped_to_their_range() {
+        fn render(settings: &VoiceSettings) -> Vec<(f32, f32)> {
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 5, 1.0, settings);
+            (0..4_096)
+                .map(|_| voice.next_sample(settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE))
+                .collect()
+        }
+
+        let full_sub = VoiceSettings {
+            osc1: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            sub_level: 1.0,
+            noise_level: 0.0,
+            ..plain_settings()
+        };
+        let clipped_sub = VoiceSettings {
+            sub_level: 0.8,
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::SubLevel,
+                amount: 1.0,
+            }),
+            ..full_sub
+        };
+        assert_eq!(render(&full_sub), render(&clipped_sub));
+
+        let full_noise = VoiceSettings {
+            osc1: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                level: 0.0,
+                ..OscSettings::default()
+            },
+            sub_level: 0.0,
+            noise_level: 1.0,
+            ..plain_settings()
+        };
+        let clipped_noise = VoiceSettings {
+            noise_level: 0.8,
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::NoiseLevel,
+                amount: 1.0,
+            }),
+            ..full_noise
+        };
+        assert_eq!(render(&full_noise), render(&clipped_noise));
+    }
+
+    #[test]
+    fn the_empty_matrix_keeps_the_legacy_output_unchanged() {
+        fn render(settings: &VoiceSettings) -> u64 {
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(48), 9, 0.8, settings);
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for _ in 0..8_192 {
+                let (left, right) = voice.next_sample(settings, 1_400.0, 0.0, 0.0, SAMPLE_RATE);
+                for sample in [left, right] {
+                    hash ^= sample.to_bits() as u64;
+                    hash = hash.wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            hash
+        }
+
+        let settings = VoiceSettings {
+            legacy: true,
+            osc1: OscSettings {
+                waveform: Waveform::Saw,
+                level: 0.8,
+                ..OscSettings::default()
+            },
+            osc2: OscSettings {
+                waveform: Waveform::Square,
+                level: 0.3,
+                semitones: -12.0,
+                ..OscSettings::default()
+            },
+            filter_env_octaves: 1.0,
+            unison: 2,
+            detune_cents: 8.0,
+            drift_amount: 0.2,
+            ..VoiceSettings::default()
+        };
+
+        // The empty matrix has only Off slots, so the new sources and
+        // destinations are never selected.
+        assert!(
+            settings
+                .mod_slots
+                .iter()
+                .all(|slot| slot.source == ModSource::Off && slot.dest == ModDest::Off)
+        );
+        let empty = render(&settings);
+
+        // Explicitly zeroed old routes are neutral as well.
+        let zeroed = VoiceSettings {
+            mod_slots: [ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Volume,
+                amount: 0.0,
+            }; MOD_SLOTS],
+            ..settings
+        };
+        assert_eq!(render(&zeroed), empty);
     }
 
     #[test]
