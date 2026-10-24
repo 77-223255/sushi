@@ -238,16 +238,16 @@ fn percentage_param(name: &str, default: f32) -> FloatParam {
 /// The parameter flags that expose a parameter as a host automation and
 /// modulation target.
 ///
-/// nice-plug 0.4.2 has no separate `MODULATABLE` or `AUTOMATABLE` flag. Both
-/// its CLAP and VST3 wrappers treat a parameter as automatable and modulatable
-/// unless it carries `NON_AUTOMATABLE` or `HIDDEN`; the CLAP wrapper then
-/// advertises `CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE` for it.
+/// nice-plug 0.4.2 has no separate `MODULATABLE` or `AUTOMATABLE` flag. Its
+/// CLAP wrapper treats a parameter as automatable and modulatable unless it
+/// carries `NON_AUTOMATABLE` or `HIDDEN`; it then advertises
+/// `CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE` for the parameter.
 /// The empty flag set is therefore the explicit, correct setting for this
 /// version.
 const HOST_MODULATABLE_FLAGS: ParamFlags = ParamFlags::empty();
 
 /// Whether nice-plug exposes a parameter to host automation and modulation.
-/// This is the exact condition used by the CLAP and VST3 wrappers.
+/// This is the exact condition used by the CLAP wrapper.
 fn host_modulatable(flags: ParamFlags) -> bool {
     !flags.intersects(ParamFlags::NON_AUTOMATABLE | ParamFlags::HIDDEN)
 }

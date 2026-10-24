@@ -1,7 +1,7 @@
 //! Sushi — a polyphonic subtractive synthesizer.
 //!
 //! The plugin is built on [nice-plug](https://codeberg.org/RustAudio/nice-plug)
-//! and exported as CLAP, VST3 and a standalone binary.
+//! and exported as a CLAP plugin.
 
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::midi::{Channel, Key, VoiceID};
@@ -1823,17 +1823,7 @@ impl ClapPlugin for Sushi {
     ];
 }
 
-impl Vst3Plugin for Sushi {
-    const VST3_CLASS_ID: [u8; 16] = *b"SushiSynth000001";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
-        Vst3SubCategory::Instrument,
-        Vst3SubCategory::Synth,
-        Vst3SubCategory::Stereo,
-    ];
-}
-
 nice_export_clap!(Sushi);
-nice_export_vst3!(Sushi);
 
 #[cfg(test)]
 mod tests {
@@ -1861,7 +1851,7 @@ mod tests {
 
     impl ProcessContext<Sushi> for TestContext {
         fn plugin_api(&self) -> PluginApi {
-            PluginApi::Standalone
+            PluginApi::Clap
         }
 
         fn execute_background(&self, _task: ()) {}

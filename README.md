@@ -1,7 +1,7 @@
 # SUSHI
 
 A compact, mouse-first polyphonic synthesizer.
-**CLAP · VST3 · Standalone**
+**CLAP**
 
 [![Release](https://img.shields.io/github/v/release/77-223255/sushi?label=release)](https://github.com/77-223255/sushi/releases/tag/v0.0.1)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -95,14 +95,15 @@ Download the 0.0.1 release archive and unpack it:
 ```bash
 tar -xzf sushi-0.0.1-linux-x86_64.tar.gz
 cp -r sushi.clap ~/.clap/
-cp -r sushi.vst3 ~/.vst3/
 ```
 
-The standalone binary is `sushi`.
+Sushi is CLAP-only. The 0.0.1 archive still contains a VST3 bundle and a
+standalone binary; both are no longer maintained and are not built from this
+source tree anymore.
 
 ## Build
 
-Requires Rust 1.88+ on Linux. The plugin bundles also need
+Requires Rust 1.88+ on Linux. Building the CLAP bundle also needs
 `cargo-nice-plug`.
 
 ```bash
@@ -111,8 +112,7 @@ cargo build --release
 cargo nice-plug bundle sushi --release
 ```
 
-The standalone binary is written to `target/release/sushi`; bundles are written
-to `target/bundled/`.
+The CLAP bundle is written to `target/bundled/`.
 
 ## Patches
 
