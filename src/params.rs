@@ -261,6 +261,28 @@ fn frequency_param(name: &str, default: f32, min: f32, max: f32, skew: f32) -> F
     .with_unit(" Hz")
 }
 
+/// A gain parameter in decibels, in the `-12..12` range. 0 dB is neutral.
+fn db_param(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Linear {
+            min: -12.0,
+            max: 12.0,
+        },
+    )
+    .with_value_to_string(formatters::v2s_f32_rounded(1))
+    .with_string_to_value(Arc::new(|text: &str| {
+        text.trim()
+            .trim_end_matches("dB")
+            .trim()
+            .parse::<f32>()
+            .ok()
+    }))
+    .with_unit(" dB")
+    .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
 #[derive(Params)]
 pub struct SushiParams {
     // --- Oscillator 1 -----------------------------------------------------
@@ -592,6 +614,33 @@ pub struct SushiParams {
     #[id = "lfo2_retrigger"]
     pub lfo2_retrigger: BoolParam,
 
+    // --- Drive, phaser and EQ ---------------------------------------------
+    // These are appended to the parameter list, so every existing parameter
+    // keeps its host automation index. Their defaults are completely neutral.
+    #[id = "drive_amount"]
+    pub drive_amount: FloatParam,
+
+    #[id = "drive_mix"]
+    pub drive_mix: FloatParam,
+
+    #[id = "phaser_rate"]
+    pub phaser_rate: FloatParam,
+
+    #[id = "phaser_depth"]
+    pub phaser_depth: FloatParam,
+
+    #[id = "phaser_mix"]
+    pub phaser_mix: FloatParam,
+
+    #[id = "eq_low"]
+    pub eq_low: FloatParam,
+
+    #[id = "eq_mid"]
+    pub eq_mid: FloatParam,
+
+    #[id = "eq_high"]
+    pub eq_high: FloatParam,
+
     // --- Persistent editor state ------------------------------------------
     // These fields are not parameters; nice-plug stores them with the plugin
     // state so a reopened project keeps showing the loaded patch even though
@@ -916,6 +965,17 @@ impl Default for SushiParams {
             lfo2_div: EnumParam::new("LFO 2 Division", NoteDiv::Quarter),
             lfo2_retrigger: BoolParam::new("LFO 2 Retrigger", false),
 
+            // --- Drive, phaser and EQ -----------------------------------------
+            drive_amount: percentage_param("Drive Amount", 0.0),
+            drive_mix: percentage_param("Drive Mix", 0.0),
+            phaser_rate: frequency_param("Phaser Rate", 0.3, 0.02, 5.0, -1.0)
+                .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            phaser_depth: percentage_param("Phaser Depth", 0.5),
+            phaser_mix: percentage_param("Phaser Mix", 0.0),
+            eq_low: db_param("EQ Low", 0.0),
+            eq_mid: db_param("EQ Mid", 0.0),
+            eq_high: db_param("EQ High", 0.0),
+
             patch_name: Mutex::new(None),
             patch_path: Mutex::new(None),
             preset_index: Mutex::new(0),
@@ -1031,6 +1091,29 @@ mod tests {
         assert_eq!(params.delay_time.value(), 350.0);
         assert_eq!(params.delay_feedback.value(), 0.3);
         assert_eq!(params.reverb_decay.value(), 0.6);
+    }
+
+    #[test]
+    fn the_new_fx_defaults_are_neutral() {
+        let params = SushiParams::default();
+
+        assert_eq!(params.drive_amount.value(), 0.0);
+        assert_eq!(params.drive_mix.value(), 0.0);
+        assert_eq!(params.phaser_rate.value(), 0.3);
+        assert_eq!(params.phaser_depth.value(), 0.5);
+        assert_eq!(params.phaser_mix.value(), 0.0);
+        assert_eq!(params.eq_low.value(), 0.0);
+        assert_eq!(params.eq_mid.value(), 0.0);
+        assert_eq!(params.eq_high.value(), 0.0);
+
+        // The EQ gains are shown and read in decibels.
+        assert_eq!(params.eq_low.to_string(), "0.0 dB");
+        let normalized = params
+            .eq_high
+            .string_to_normalized_value("+12 dB")
+            .expect("the EQ gain could not be read");
+        let value = params.eq_high.range().unnormalize(normalized);
+        assert!((value - 12.0).abs() < 0.01, "the EQ gain was {value}");
     }
 
     #[test]

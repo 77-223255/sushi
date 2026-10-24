@@ -1,6 +1,6 @@
 //! The undo and redo history of the editor.
 //!
-//! Every entry is a full snapshot of the sound (all 101 patch parameters) and
+//! Every entry is a full snapshot of the sound (all 109 patch parameters) and
 //! of the patch identity that the panel shows. The snapshots only live on the
 //! GUI thread: the audio thread never allocates for them, because it never
 //! reads or writes this history.

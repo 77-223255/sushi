@@ -19,13 +19,14 @@ A compact, mouse-first polyphonic synthesizer.
 - 8-slot modulation matrix; the LFOs are sources there, so all LFO routing
   lives in MOD (the old direct LFO target/amount is kept only for old patches)
 - Arpeggiator with swing, ratchet, gate, length and latch
-- Chorus, ping-pong delay, Freeverb-style reverb
+- Drive, phaser, chorus, ping-pong delay, Freeverb-style reverb and a
+  three-band EQ
 - Legacy engine only: old-school rough, analog-warm path (Freeverb, cascaded
   SVF, raw tanh) with deterministic per-voice component tolerances, slower
   drift, even-harmonic warmth and a fixed HF loss; old projects keep their
   patch behavior
 - Patch JSON and parameter IDs are unchanged
-- 29 factory presets, all played through the Legacy engine, 101 patch parameters
+- 29 factory presets, all played through the Legacy engine, 109 patch parameters
 
 The LFO sync divisions are 1/4, 1/8, 1/16 and 1/32. A quarter note at 120 BPM
 runs at 2 Hz, and rate changes follow the host tempo with a short glide. The
@@ -47,10 +48,12 @@ PAD** uses the deterministic per-note Random source for pan and cutoff.
 - Live MOD feedback: LFO, macro and mod-wheel routes show their current value
   on the amount bar
 - Coarse lane plus a separate fine lane on every fader
-- LFO 1/2 show wave, sync and retrigger, a free-rate fader and the synced
-  division; their routing is in the MOD table
-- MOD and FX page tabs; the FX tab opens a full-panel overview of the existing
-  effects
+- LFO 1/2 editors live on the MOD page below the matrix: wave, sync,
+  retrigger, a free-rate fader and the synced division; their routing stays in
+  the MOD table
+- The main page keeps ARP / VOICE and MACROS / VCA in two wide lower bands
+- MOD and FX page tabs; the FX tab opens a full-panel two-row rack of drive,
+  phaser, chorus, delay, reverb and EQ, with the signal order printed above it
 - Click the preset LCD to open the full-page JSON patch browser
 - Undo/Redo in the footer, with Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z; a whole fader
   drag is one step

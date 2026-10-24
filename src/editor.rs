@@ -164,6 +164,10 @@ const GROUP_PADDING: f32 = 4.0;
 const TITLE_HEIGHT: f32 = 20.0;
 /// The horizontal gap between two parameter columns.
 const COLUMN_GAP: f32 = 4.0;
+/// The gap between the wide fader slots of the lower bands. A wide section
+/// gets a bank that uses its whole width, so the spacing between the faders
+/// grows with the section instead of leaving an empty right edge.
+const WIDE_COLUMN_GAP: f32 = 8.0;
 
 // --- The modulation table ---------------------------------------------------
 
@@ -202,20 +206,31 @@ const MOD_LIVE_MARKER_WIDTH: f32 = 2.0;
 /// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
 
-/// The widths of the sections of the first row: `VCO 1 | VCO 2 | SOURCE MIXER |
-/// VCF`. They are the proportions of the sections and are scaled with the
-/// zoom of the panel.
+/// The widths of the sections of the first row: `VCO 1 | VCO 2 | PULSE WIDTH |
+/// SOURCE MIXER`. They are the proportions of the sections and are scaled
+/// with the zoom of the panel.
 const ROW_A_WIDTHS: [f32; 4] = [240.0, 192.0, 124.0, 352.0];
-/// The widths of the sections of the second row: `PULSE WIDTH | MOD ENV | AMP
-/// ENV | LFO / CLK`.
+/// The widths of the sections of the second row: `VCF | MOD ENV | AMP ENV`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
-/// The widths of the sections of the third row: `ARP | VOICE`.
-const ROW_C_WIDTHS: [f32; 4] = [210.0, 210.0, 300.0, 188.0];
-/// The widths of the sections of the fourth row: `FX | MACROS | VCA`.
-const ROW_D_WIDTHS: [f32; 3] = [552.0, 216.0, 152.0];
+/// The widths of the two wide sections of the third row. The normal page
+/// shows `ARP | VOICE`; the modulation page puts `LFO 1 | LFO 2` in the same
+/// two columns.
+const ROW_C_WIDTHS: [f32; 2] = [472.0, 472.0];
+/// The widths of the two wide sections of the fourth row: `MACROS | VCA`.
+const ROW_D_WIDTHS: [f32; 2] = [472.0, 472.0];
 
 /// The widths of the sections of every row.
 const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTHS, &ROW_D_WIDTHS];
+
+// --- The FX rack ------------------------------------------------------------
+
+/// The height of the header of the FX rack. It holds the chain order caption
+/// and is not a fader band of its own.
+const FX_RACK_HEADER_HEIGHT: f32 = 22.0;
+/// The order in which the six effect modules process the signal.
+const FX_CHAIN_ORDER: &str = "DRIVE > PHASER > CHORUS > DELAY > REVERB > EQ";
+/// The titles of the six modules, row by row, in the order of the chain.
+const FX_RACK_TITLES: [[&str; 3]; 2] = [["DRIVE", "PHASER", "CHORUS"], ["DELAY", "REVERB", "EQ"]];
 
 // --- Widget metrics ---------------------------------------------------------
 
@@ -288,8 +303,8 @@ const FOOTER_BUTTON_HEIGHT: f32 = 14.0;
 
 /// The layout of the panel for the size of the window.
 ///
-/// The panel has a fixed design size of 960 x 640, like the skin of Surge
-/// XT. It is scaled by a single zoom factor, so that it always keeps its
+/// The panel has a fixed design size of 960 x 600. It is scaled by a single
+/// zoom factor, so that it always keeps its
 /// proportions, and it is centered in the window. Every measure of the
 /// design is multiplied by the zoom, and so is every font.
 #[derive(Clone, Copy, Debug)]
@@ -444,7 +459,7 @@ struct PersistedEditorState {
     dirty: bool,
 }
 
-/// The page that replaces the two upper bands of the panel.
+/// The page that replaces the normal control rows of the panel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
     /// The normal sound page.
@@ -452,7 +467,7 @@ enum Page {
     Main,
     /// The MOD 2.0 routing table.
     Mod,
-    /// The FX overview page.
+    /// The two-row FX rack.
     Fx,
 }
 
@@ -954,6 +969,8 @@ impl SushiEditor {
             // leave its rectangles behind.
             self.state.popup_rects.clear();
             self.state.amount_rects.clear();
+            self.state.check_rects.clear();
+            self.state.radio_rects.clear();
         }
         let setter = gui_ctx.param_setter();
 
@@ -1025,7 +1042,7 @@ impl SushiEditor {
                     }
                     Page::Mod => {
                         row_mod(ui, &layout, &mut ctx);
-                        row_c(ui, &layout, &mut ctx);
+                        row_c_mod(ui, &layout, &mut ctx);
                         row_d(ui, &layout, &mut ctx);
                     }
                     Page::Fx => row_fx(ui, &layout, &mut ctx),
@@ -1273,7 +1290,7 @@ struct HeaderRects {
     mutate: Rect,
     /// The tab that switches the panel to the modulation matrix.
     mod_page: Rect,
-    /// The tab that switches the panel to the FX overview.
+    /// The tab that switches the panel to the FX rack.
     fx_page: Rect,
     /// The meter that shows the number of the voices that are playing.
     meter: Rect,
@@ -2079,11 +2096,13 @@ fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec:
     });
 }
 
-/// One of the two LFO sections.
+/// One of the two LFO editors of the modulation page.
 ///
 /// The LFO is a source of the modulation matrix now, so its section has no
 /// target or amount. It keeps the waveform, the clock and the retrigger, and
-/// the `MOD ROUTE` caption points to the page that owns the routing.
+/// the `MOD ROUTE` caption points at the table above that owns the routing.
+/// The editor fills its wide section with two balanced columns: the rate
+/// fader on the left and the clock controls on the right.
 fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usize) {
     let p = ctx.params;
     let (title, wave, sync, division, retrigger, rate, ids) = if index == 0 {
@@ -2126,12 +2145,11 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
             ctx.check(ui, ids.1, sync, "SYNC");
         }
         Part::Body => {
-            column_row_fixed(
+            column_row_fill(
                 ui,
                 ids.4,
                 2,
-                COLUMN_GAP,
-                60.0,
+                WIDE_COLUMN_GAP,
                 zoom,
                 |index, ui| match index {
                     0 => ctx.float(ui, ids.4, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
@@ -2141,7 +2159,7 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
                         });
                         if sync.value() {
                             caption(ui, "Div", 9.0, zoom, palette().label);
-                            ctx.popup(ui, ids.2, division, 50.0);
+                            ctx.popup(ui, ids.2, division, 66.0);
                         }
                         text_label(ui, "MOD ROUTE", 7.5, zoom, palette().muted);
                     }
@@ -2152,17 +2170,17 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
     });
 }
 
-/// The third row: the two LFOs, the arpeggiator and the voice.
+/// The third row of the normal page: the arpeggiator and the voice.
 ///
-/// Splitting the LFOs into two small sections gives each one its own waveform
-/// and clock. The LFO routing lives in the modulation matrix.
+/// The two wide sections use their whole width for the fader banks, so the
+/// lower half of the panel reads as two balanced columns instead of one
+/// dense block on the left and empty paper on the right.
 fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-c", layout, 2, |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
-            2 => group(ui, rect, "ARP", zoom, |ui, part| match part {
+            0 => group(ui, rect, "ARP", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.check(ui, "arp_on", &p.arp_on, "ON");
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
@@ -2181,7 +2199,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     );
                 }
                 Part::Body => {
-                    column_row_fixed(ui, "arp", 5, COLUMN_GAP, 56.0, zoom, |index, ui| {
+                    column_row_fill(ui, "arp", 5, WIDE_COLUMN_GAP, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -2227,7 +2245,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             _ => group(ui, rect, "VOICE", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "poly_mode", &p.poly_mode, 66.0),
                 Part::Body => {
-                    column_row_fixed(ui, "voice", 4, COLUMN_GAP, 44.0, zoom, |index, ui| {
+                    column_row_fill(ui, "voice", 4, WIDE_COLUMN_GAP, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -2255,49 +2273,39 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     });
 }
 
-/// The fourth row: the effects, the macros and the output.
+/// The third row of the modulation page: the two LFO editors.
+///
+/// They sit directly below the routing table, so the waveform, clock and
+/// retrigger of a source are in the same workspace as the routes that use
+/// it. The normal page has no LFO controls at all.
+fn row_c_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    group_row(ui, "row-c-mod", layout, 2, |index, rect, ui| {
+        lfo_group(ui, rect, zoom, ctx, index);
+    });
+}
+
+/// The fourth row: the macros and the output.
+///
+/// The normal page and the modulation page share this band, so the macros
+/// and the VCA stay in reach while the upper bands change.
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
-        0 => {
-            group(ui, rect, "FX", zoom, |ui, part| match part {
-                Part::Header => {}
-                Part::Body => sections(ui, "fx", 3, GROUP_GAP, zoom, |index, _rect, ui| {
-                    let name = ["chorus", "delay", "reverb"][index];
-                    fx_section_controls(ui, ctx, index, 52.0, name);
-                }),
-            });
-
-            // The labels sit over the centre of their real subgroups, not at
-            // arbitrary fractions of the title bar.
-            let painter = ui.painter_at(rect);
-            let body_left = rect.left() + GROUP_PADDING * zoom;
-            let body_width = rect.width() - 2.0 * GROUP_PADDING * zoom;
-            let gap = GROUP_GAP * zoom;
-            let slot = (body_width - 2.0 * gap) / 3.0;
-            for (index, label) in ["CHORUS", "DELAY", "REVERB"].iter().enumerate() {
-                let x = body_left + slot * 0.5 + index as f32 * (slot + gap);
-                painter.text(
-                    egui::pos2(x, rect.top() + TITLE_HEIGHT * 0.5 * zoom),
-                    Align2::CENTER_CENTER,
-                    *label,
-                    FontId::new(font_size(8.0, zoom), bold()),
-                    palette().muted,
-                );
-            }
-        }
-        1 => group(ui, rect, "MACROS", zoom, |ui, part| match part {
+        0 => group(ui, rect, "MACROS", zoom, |ui, part| match part {
             Part::Header => {}
-            Part::Body => column_row_fixed(ui, "macros", 3, COLUMN_GAP, 60.0, zoom, |index, ui| {
-                let p = ctx.params;
-                let knob = Knob::percent().with_width(layout.macro_width());
-                match index {
-                    0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
-                    1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
-                    2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
-                    _ => {}
-                }
-            }),
+            Part::Body => {
+                column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
+                    let p = ctx.params;
+                    let knob = Knob::percent().with_width(layout.macro_width());
+                    match index {
+                        0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
+                        1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
+                        2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
+                        _ => {}
+                    }
+                });
+            }
         }),
         _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
@@ -2305,119 +2313,226 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 text_label(ui, "CHAR", 8.0, zoom, palette().muted);
                 ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
-            Part::Body => column_row_fixed(ui, "output", 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
-                let p = ctx.params;
-                match index {
-                    0 => ctx.float(
-                        ui,
-                        "volume",
-                        "Volume",
-                        &p.volume,
-                        &Knob::decibels(-60.0, 6.0),
-                    ),
-                    1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
-                    _ => {}
-                }
-            }),
+            Part::Body => {
+                column_row_fill(ui, "output", 2, WIDE_COLUMN_GAP, zoom, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(
+                            ui,
+                            "volume",
+                            "Volume",
+                            &p.volume,
+                            &Knob::decibels(-60.0, 6.0),
+                        ),
+                        1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
+                        _ => {}
+                    }
+                });
+            }
         }),
     });
 }
 
-/// The controls of one effect. The normal page uses them in the compact fourth
-/// band, and the FX page uses the same controls with a wider slot.
-fn fx_section_controls(ui: &mut egui::Ui, ctx: &mut Ctx, section: usize, slot: f32, name: &str) {
+/// The controls of one module of the FX rack. The module index follows the
+/// chain order: drive, phaser, chorus, delay, reverb and EQ.
+fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
     let zoom = ctx.zoom;
-    match section {
-        0 => {
-            column_row_fixed(ui, name, 3, COLUMN_GAP, slot, zoom, |index, ui| {
-                let p = ctx.params;
-                match index {
-                    0 => ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent()),
-                    1 => ctx.float(
-                        ui,
-                        "chorus_rate",
-                        "Rate",
-                        &p.chorus_rate,
-                        &Knob::logarithmic(0.05, 8.0, 2),
-                    ),
-                    2 => ctx.float(
-                        ui,
-                        "chorus_depth",
-                        "Depth",
-                        &p.chorus_depth,
-                        &Knob::percent(),
-                    ),
-                    _ => {}
-                }
-            });
-        }
-        1 => {
-            column_row_fixed(ui, name, 3, COLUMN_GAP, slot, zoom, |index, ui| {
-                let p = ctx.params;
-                match index {
-                    0 => ctx.float(
-                        ui,
-                        "delay_time",
-                        "Time",
-                        &p.delay_time,
-                        &Knob::logarithmic(10.0, 1_500.0, 1),
-                    ),
-                    1 => ctx.float(
-                        ui,
-                        "delay_feedback",
-                        "FB",
-                        &p.delay_feedback,
-                        &Knob::percent(),
-                    ),
-                    2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
-                    _ => {}
-                }
-            });
-        }
+    let p = ctx.params;
+    match module {
+        0 => column_row_fill(
+            ui,
+            "fx-drive",
+            2,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "drive_amount",
+                    "Amount",
+                    &p.drive_amount,
+                    &Knob::percent(),
+                ),
+                1 => ctx.float(ui, "drive_mix", "Mix", &p.drive_mix, &Knob::percent()),
+                _ => {}
+            },
+        ),
+        1 => column_row_fill(
+            ui,
+            "fx-phaser",
+            3,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "phaser_rate",
+                    "Rate",
+                    &p.phaser_rate,
+                    &Knob::logarithmic(0.02, 5.0, 2),
+                ),
+                1 => ctx.float(
+                    ui,
+                    "phaser_depth",
+                    "Depth",
+                    &p.phaser_depth,
+                    &Knob::percent(),
+                ),
+                2 => ctx.float(ui, "phaser_mix", "Mix", &p.phaser_mix, &Knob::percent()),
+                _ => {}
+            },
+        ),
+        2 => column_row_fill(
+            ui,
+            "fx-chorus",
+            3,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent()),
+                1 => ctx.float(
+                    ui,
+                    "chorus_rate",
+                    "Rate",
+                    &p.chorus_rate,
+                    &Knob::logarithmic(0.05, 8.0, 2),
+                ),
+                2 => ctx.float(
+                    ui,
+                    "chorus_depth",
+                    "Depth",
+                    &p.chorus_depth,
+                    &Knob::percent(),
+                ),
+                _ => {}
+            },
+        ),
+        3 => column_row_fill(
+            ui,
+            "fx-delay",
+            3,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "delay_time",
+                    "Time",
+                    &p.delay_time,
+                    &Knob::logarithmic(10.0, 1_500.0, 1),
+                ),
+                1 => ctx.float(
+                    ui,
+                    "delay_feedback",
+                    "FB",
+                    &p.delay_feedback,
+                    &Knob::percent(),
+                ),
+                2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
+                _ => {}
+            },
+        ),
+        4 => column_row_fill(
+            ui,
+            "fx-reverb",
+            2,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "reverb_decay",
+                    "Decay",
+                    &p.reverb_decay,
+                    &Knob::percent(),
+                ),
+                1 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
+                _ => {}
+            },
+        ),
         _ => {
-            column_row_fixed(ui, name, 2, COLUMN_GAP, slot, zoom, |index, ui| {
-                let p = ctx.params;
-                match index {
-                    0 => ctx.float(
-                        ui,
-                        "reverb_decay",
-                        "Decay",
-                        &p.reverb_decay,
-                        &Knob::percent(),
-                    ),
-                    1 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
+            let eq = Knob::plain(-12.0, 12.0, 1);
+            column_row_fill(
+                ui,
+                "fx-eq",
+                3,
+                WIDE_COLUMN_GAP,
+                zoom,
+                |index, ui| match index {
+                    0 => ctx.float(ui, "eq_low", "Low", &p.eq_low, &eq),
+                    1 => ctx.float(ui, "eq_mid", "Mid", &p.eq_mid, &eq),
+                    2 => ctx.float(ui, "eq_high", "High", &p.eq_high, &eq),
                     _ => {}
-                }
-            });
+                },
+            );
         }
     }
 }
 
-/// The FX page: a simple, full-panel overview of the existing effects.
+/// The FX page: a two-row rack of the six effect modules.
 ///
-/// It draws the same chorus, delay and reverb controls as the fourth band of
-/// the sound page, with wider fader slots. There are no new DSP effects here:
-/// the page is the plumbing for the FX tab and the place where future effect
-/// controls can be added.
+/// The rack uses the whole area between the header and the footer. Each of
+/// the two bands holds three modules, and every module spreads its faders
+/// over the full width of its card. The caption above the rack lists the
+/// signal order.
 fn row_fx(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let top = layout.scale(layout.base_rows[0]).left_top();
     let bottom = layout.scale(layout.base_rows[3]).right_bottom();
-    let rect = Rect::from_min_max(top, bottom);
+    let rack = Rect::from_min_max(top, bottom);
 
-    group(ui, rect, "FX", zoom, |ui, part| match part {
-        Part::Header => {
-            text_label(ui, "CHORUS / DELAY / REVERB", 9.0, zoom, palette().muted);
-        }
-        Part::Body => {
-            sections(ui, "fx-page", 3, GROUP_GAP, zoom, |index, _rect, ui| {
-                let title = ["CHORUS", "DELAY", "REVERB"][index];
-                let name = ["fx-page-chorus", "fx-page-delay", "fx-page-reverb"][index];
-                caption(ui, title, 10.0, zoom, palette().title_blue);
-                fx_section_controls(ui, ctx, index, 84.0, name);
+    // The rack header: the name of the rack on the left and the processing
+    // order of the six modules on the right. It is a caption, not a band, so
+    // the modules below it still get nearly the whole height of the page.
+    let painter = ui.painter_at(rack);
+    let header_bottom = rack.top() + FX_RACK_HEADER_HEIGHT * zoom;
+    let header_center = (rack.top() + header_bottom) * 0.5;
+    painter.text(
+        egui::pos2(rack.left() + (GROUP_PADDING + 2.0) * zoom, header_center),
+        Align2::LEFT_CENTER,
+        "FX RACK",
+        FontId::new(font_size(13.0, zoom), bold()),
+        palette().title_blue,
+    );
+    painter.text(
+        egui::pos2(rack.right() - (GROUP_PADDING + 2.0) * zoom, header_center),
+        Align2::RIGHT_CENTER,
+        FX_CHAIN_ORDER,
+        FontId::new(font_size(8.0, zoom), bold()),
+        palette().muted,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(rack.left(), header_bottom),
+            egui::pos2(rack.right(), header_bottom),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+
+    // Two rows of three equal cards, with the same gap as the rows of the
+    // normal grid.
+    let body_top = header_bottom + GROUP_GAP * 0.5 * zoom;
+    let row_gap = GROUP_GAP * zoom;
+    let column_gap = GROUP_GAP * zoom;
+    let row_height = (rack.bottom() - body_top - row_gap) * 0.5;
+    let column_width = (rack.width() - 2.0 * column_gap) / 3.0;
+
+    for (row, titles) in FX_RACK_TITLES.iter().enumerate() {
+        for (column, title) in titles.iter().enumerate() {
+            let rect = Rect::from_min_size(
+                egui::pos2(
+                    rack.left() + column as f32 * (column_width + column_gap),
+                    body_top + row as f32 * (row_height + row_gap),
+                ),
+                egui::vec2(column_width, row_height),
+            );
+            let module = row * 3 + column;
+            group(ui, rect, title, zoom, |ui, part| match part {
+                Part::Header => {}
+                Part::Body => fx_module_controls(ui, ctx, module),
             });
         }
-    });
+    }
 }
 
 // --- The widgets of the parameters ------------------------------------------
@@ -3834,54 +3949,6 @@ fn group(
     );
 }
 
-/// Lays out a row of sub sections inside a section.
-fn sections(
-    ui: &mut egui::Ui,
-    name: &str,
-    count: usize,
-    gap: f32,
-    zoom: f32,
-    mut add: impl FnMut(usize, Rect, &mut egui::Ui),
-) {
-    let gap = gap * zoom;
-    let start = ui.next_widget_position();
-    let width = ui.available_width();
-    let height = ui.available_height();
-    let slot = (width - gap * (count as f32 - 1.0)) / count as f32;
-
-    for index in 0..count {
-        let rect = Rect::from_min_size(
-            egui::pos2(start.x + index as f32 * (slot + gap), start.y),
-            egui::vec2(slot, height),
-        );
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .id_salt(("sushi-section", name, index))
-                .max_rect(rect)
-                .layout(EguiLayout::top_down(Align::Min)),
-            |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0) * zoom;
-                add(index, rect, ui);
-            },
-        );
-    }
-
-    // The dividers between the sub sections.
-    let painter = ui.painter_at(Rect::from_min_size(start, egui::vec2(width, height)));
-    for index in 1..count {
-        let x = start.x + index as f32 * (slot + gap) - gap * 0.5;
-        painter.line_segment(
-            [
-                egui::pos2(x, start.y + 2.0 * zoom),
-                egui::pos2(x, start.y + height - 2.0 * zoom),
-            ],
-            Stroke::new(1.0, palette().rule),
-        );
-    }
-
-    ui.advance_cursor_after_rect(Rect::from_min_size(start, egui::vec2(width, height)));
-}
-
 /// Lays out a row of parameter columns with a fixed slot width. The bank is
 /// centered in its section, so a four-fader oscillator and a six-fader mixer
 /// share the same pitch: one of the strongest cues that this is a machined
@@ -3911,6 +3978,46 @@ fn column_row_fixed(
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id_salt(("sushi-column-fixed", name, index))
+                .max_rect(rect)
+                .layout(EguiLayout::top_down(Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0) * zoom;
+                add(index, ui);
+            },
+        );
+    }
+
+    ui.advance_cursor_after_rect(Rect::from_min_size(start, egui::vec2(total_width, height)));
+}
+
+/// Lays out a fader bank that uses the whole width of its section.
+///
+/// The slots share the available width equally, so a wide section gets a
+/// wide, centered bank instead of a small one pinned to the left. The faders
+/// themselves keep their design width; the extra room becomes breathing
+/// space between them.
+fn column_row_fill(
+    ui: &mut egui::Ui,
+    name: &str,
+    count: usize,
+    gap: f32,
+    zoom: f32,
+    mut add: impl FnMut(usize, &mut egui::Ui),
+) {
+    let gap = gap * zoom;
+    let start = ui.next_widget_position();
+    let total_width = ui.available_width();
+    let height = ui.available_height();
+    let slot = ((total_width - gap * (count as f32 - 1.0)) / count as f32).max(0.0);
+
+    for index in 0..count {
+        let rect = Rect::from_min_size(
+            egui::pos2(start.x + index as f32 * (slot + gap), start.y),
+            egui::vec2(slot, height),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("sushi-column-fill", name, index))
                 .max_rect(rect)
                 .layout(EguiLayout::top_down(Align::Center)),
             |ui| {
@@ -5218,7 +5325,7 @@ mod tests {
     const TUNE_SLIDER: usize = 0;
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
-    const VOICES_SLIDER: usize = 40;
+    const VOICES_SLIDER: usize = 38;
 
     #[test]
     fn fader_thumbs_keep_equal_side_margins() {
@@ -5243,9 +5350,9 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 54, "unexpected number of sliders");
-        assert_eq!(counts.popups, 9, "unexpected number of popups");
-        assert_eq!(counts.checks, 7, "unexpected number of check boxes");
+        assert_eq!(counts.sliders, 44, "unexpected number of sliders");
+        assert_eq!(counts.popups, 7, "unexpected number of popups");
+        assert_eq!(counts.checks, 3, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
 
@@ -5255,45 +5362,60 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The panel page has 71 visible patch parameters: 54 sliders, 9
-        // choices, 7 switches and one pair of buttons. The LFO target and
-        // amount are hidden legacy parameters now, and the two divisions
-        // appear only while their sync switch is on (for 73 visible
-        // parameters in all). The modulation matrix adds 24 more on its own
-        // page, which has its own test. The Legacy DSP flag is a host
-        // parameter kept for state compatibility; it is no longer exposed on
-        // the panel.
+        // The normal page has 55 visible patch parameters: 44 sliders, 7
+        // choices, 3 switches and one pair of buttons. The two LFO editors,
+        // the modulation matrix and the FX rack live on their own pages and
+        // have their own tests. The LFO target and amount are hidden legacy
+        // parameters now, and the two divisions appear only while their sync
+        // switch is on. The Legacy DSP flag is a host parameter kept for
+        // state compatibility; it is no longer exposed on the panel.
         let continuous = counts.sliders;
-        assert_eq!(continuous, 54);
+        assert_eq!(continuous, 44);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            71
+            55
         );
     }
 
     #[test]
-    fn the_lfo_sections_route_through_mod_and_show_the_sync_controls() {
+    fn the_lfo_editors_live_on_the_modulation_page() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
 
+        // The normal page has no LFO controls at all. The LFOs live with the
+        // routing table, so they only appear after the MOD tab is opened.
+        for hidden in ["LFO 1", "LFO 2", "MOD ROUTE", "RETRIG"] {
+            assert!(
+                !names.iter().any(|text| text == hidden),
+                "the normal page still shows the LFO control {hidden}: {names:?}"
+            );
+        }
+
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for shown in ["LFO 1", "LFO 2", "MOD ROUTE", "RETRIG", "RATE"] {
+            assert!(
+                names.iter().any(|text| text == shown),
+                "the modulation page has no LFO control {shown}: {names:?}"
+            );
+        }
         // The legacy Target/Amount pair is gone from the faceplate; the
         // matrix page is the only place that routes an LFO.
         for hidden in ["Target", "TARGET", "Amount", "AMOUNT"] {
             assert!(
                 !names.iter().any(|text| text == hidden),
-                "the panel still shows the old LFO {hidden}: {names:?}"
+                "the modulation page still shows the old LFO {hidden}: {names:?}"
             );
         }
-        assert!(
-            names.iter().any(|text| text == "MOD ROUTE"),
-            "the LFO section has no hint that routing lives in MOD"
-        );
         // The division only appears once sync is on.
         assert!(!names.iter().any(|text| text == "1/4"));
 
-        // The first LFO sync switch is the second check box of the panel.
-        let sync = editor.state.check_rects[1];
+        // The first LFO sync switch is the first check box of the modulation
+        // page, because its table has no check boxes.
+        let sync = editor.state.check_rects[0];
+        let retrigger = editor.state.check_rects[1];
         run_frames(&ctx, &mut editor, click(sync.center()));
         assert!(params.lfo1_sync.value());
 
@@ -5304,12 +5426,11 @@ mod tests {
         );
         assert_eq!(
             editor.state.popup_rects.len(),
-            10,
+            19,
             "the LFO 1 division popup is missing"
         );
 
         // The retrigger switch sits beside the rate fader.
-        let retrigger = editor.state.check_rects[2];
         run_frames(&ctx, &mut editor, click(retrigger.center()));
         assert!(params.lfo1_retrigger.value());
 
@@ -5340,9 +5461,10 @@ mod tests {
             ],
         );
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        // The division popup of LFO 1 sits in the left half of the page.
         let (_, eighth) = texts(&output)
             .into_iter()
-            .find(|(text, pos)| text == "1/8" && pos.x < 240.0)
+            .find(|(text, pos)| text == "1/8" && pos.x < 490.0)
             .expect("the division popup has no eighth note");
         run_frames(&ctx, &mut editor, click(eighth + egui::vec2(2.0, 2.0)));
         assert_eq!(params.lfo1_div.value(), crate::params::NoteDiv::Eighth);
@@ -5419,7 +5541,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
+        assert_eq!(sliders.len(), 44, "unexpected number of sliders");
         // The cutoff slider is the first one of the fourth group of the
         // first row.
         let rect = sliders[CUTOFF_SLIDER];
@@ -6196,10 +6318,9 @@ mod tests {
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The check boxes are VCO 2 SYNC, the two LFO sync/retrigger pairs,
-        // then the ARP ON and LATCH switches. This test uses the first ARP
-        // switch.
-        let rect = editor.state.check_rects[5];
+        // The check boxes are VCO 2 SYNC, then the ARP ON and LATCH
+        // switches. This test uses the first ARP switch.
+        let rect = editor.state.check_rects[1];
         let pos = rect.center();
 
         // A single click switches the check box on.
@@ -6368,16 +6489,17 @@ mod tests {
 
         let counts = editor.state.counts;
         assert_eq!(
-            counts.sliders, 40,
-            "the matrix needs eight bars and eight envelope faders"
+            counts.sliders, 23,
+            "the matrix needs eight bars, eight envelope faders, two LFO rates \
+and the lower band"
         );
-        assert_eq!(counts.popups, 21, "unexpected number of matrix popups");
+        assert_eq!(counts.popups, 18, "unexpected number of matrix popups");
         assert_eq!(
             editor.state.popup_rects.len(),
             counts.popups,
             "the matrix page left stale popup rectangles behind"
         );
-        assert_eq!(counts.checks, 6);
+        assert_eq!(counts.checks, 4);
         assert_eq!(counts.radios, 1);
         assert_eq!(
             editor.state.amount_rects.len(),
@@ -6386,7 +6508,7 @@ mod tests {
         );
         assert_eq!(
             slider_rects(&ctx, &output).len(),
-            32,
+            15,
             "the matrix lost a vertical fader"
         );
 
@@ -6402,8 +6524,8 @@ mod tests {
         assert_eq!(editor.state.page, Page::Main);
         editor.state.counts = Counts::default();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(editor.state.counts.sliders, 54);
-        assert_eq!(editor.state.counts.popups, 9);
+        assert_eq!(editor.state.counts.sliders, 44);
+        assert_eq!(editor.state.counts.popups, 7);
         assert_eq!(
             editor.state.popup_rects.len(),
             editor.state.counts.popups,
@@ -6525,27 +6647,57 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_page_keeps_the_lower_bands_in_place() {
-        let titles = ["LFO 1", "LFO 2", "ARP", "VOICE", "FX", "MACROS", "VCA"];
-
+    fn the_mod_page_keeps_the_shared_band_and_swaps_the_lfo_band() {
         let (ctx, mut editor, _params) = make_editor();
         let normal = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let normal: Vec<(String, egui::Pos2)> = texts(&normal)
-            .into_iter()
-            .filter(|(text, pos)| pos.y > HEADER_HEIGHT && titles.contains(&text.as_str()))
-            .collect();
-        assert_eq!(normal.len(), titles.len());
+        let normal_texts = texts(&normal);
+        let normal_names: Vec<String> = normal_texts.iter().map(|(text, _)| text.clone()).collect();
+
+        // The normal page owns ARP and VOICE, while the modulation page owns
+        // the two LFO editors. Both pages share MACROS and VCA.
+        for title in ["ARP", "VOICE"] {
+            assert!(
+                normal_names.iter().any(|text| text == title),
+                "the normal page has no {title}"
+            );
+        }
+        for title in ["LFO 1", "LFO 2"] {
+            assert!(
+                !normal_names.iter().any(|text| text == title),
+                "the normal page still has {title}"
+            );
+        }
 
         editor.state.page = Page::Mod;
         let matrix = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        for (title, position) in normal {
-            let (_, other) = texts(&matrix)
-                .into_iter()
-                .find(|(text, pos)| *text == title && pos.y > HEADER_HEIGHT)
-                .unwrap_or_else(|| panic!("the matrix page has no {title}"));
+        let matrix_texts = texts(&matrix);
+        let matrix_names: Vec<String> = matrix_texts.iter().map(|(text, _)| text.clone()).collect();
+        for title in ["LFO 1", "LFO 2"] {
+            assert!(
+                matrix_names.iter().any(|text| text == title),
+                "the modulation page has no {title}"
+            );
+        }
+        for title in ["ARP", "VOICE"] {
+            assert!(
+                !matrix_names.iter().any(|text| text == title),
+                "the modulation page still has {title}"
+            );
+        }
+
+        // The shared lower band has not moved between the two pages.
+        for title in ["MACROS", "VCA"] {
+            let (_, position) = normal_texts
+                .iter()
+                .find(|(text, _)| text == title)
+                .unwrap_or_else(|| panic!("the normal page has no {title}"));
+            let (_, other) = matrix_texts
+                .iter()
+                .find(|(text, _)| text == title)
+                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
             assert_eq!(
                 other, position,
-                "the matrix page moved the lower band section {title}"
+                "the modulation page moved the shared section {title}"
             );
         }
     }
@@ -6558,7 +6710,7 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.popup_rects.len(), 21);
+        assert_eq!(editor.state.popup_rects.len(), 18);
         for rect in editor.state.popup_rects.iter().take(16) {
             assert!(
                 (rect.height() - 24.0 * zoom).abs() < 1.0,
@@ -7196,8 +7348,35 @@ mod tests {
     }
 
     #[test]
-    fn the_fx_tab_opens_the_existing_effect_controls() {
+    fn the_main_page_has_no_effect_section() {
         let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let all_texts = texts(&output);
+        let names: Vec<String> = all_texts.iter().map(|(text, _)| text.clone()).collect();
+
+        // The only FX text on the normal page is the page tab in the header.
+        // No effect module, and no effect control, is drawn on the faceplate.
+        assert_eq!(
+            names.iter().filter(|text| *text == "FX").count(),
+            1,
+            "the normal page has an effect section: {names:?}"
+        );
+        for hidden in [
+            "DRIVE", "PHASER", "CHORUS", "DELAY", "REVERB", "EQ", "DECAY", "DEPTH",
+        ] {
+            let in_body = all_texts
+                .iter()
+                .any(|(text, pos)| text == hidden && pos.y > HEADER_HEIGHT);
+            assert!(
+                !in_body,
+                "the normal page still draws the effect control {hidden}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fx_tab_opens_a_full_two_row_rack() {
+        let (ctx, mut editor, params) = make_editor();
         let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
 
         run_frames(&ctx, &mut editor, click(rects.fx_page.center()));
@@ -7205,19 +7384,107 @@ mod tests {
         editor.state.counts = Counts::default();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        // The same eight effect parameters as the compact band of the main
-        // page, with one caption for each effect.
-        assert_eq!(editor.state.counts.sliders, 8);
+        // Two rows of three modules: two drive faders, three phaser faders,
+        // three chorus faders, three delay faders, two reverb faders and
+        // three EQ faders.
+        assert_eq!(editor.state.counts.sliders, 16);
         assert_eq!(editor.state.counts.popups, 0);
         assert_eq!(editor.state.counts.checks, 0);
         assert_eq!(editor.state.counts.radios, 0);
+        assert_eq!(
+            slider_rects(&ctx, &output).len(),
+            16,
+            "the FX rack lost a fader"
+        );
+
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         for name in [
-            "FX", "CHORUS", "DELAY", "REVERB", "MIX", "DEPTH", "TIME", "DECAY",
+            "FX RACK",
+            "DRIVE",
+            "PHASER",
+            "CHORUS",
+            "DELAY",
+            "REVERB",
+            "EQ",
+            FX_CHAIN_ORDER,
         ] {
             assert!(
                 names.contains(&name.to_string()),
-                "the FX page has no {name}"
+                "the FX page has no {name}: {names:?}"
+            );
+        }
+        for caption in [
+            "AMOUNT", "RATE", "DEPTH", "TIME", "DECAY", "LOW", "MID", "HIGH",
+        ] {
+            assert!(
+                names.contains(&caption.to_string()),
+                "the FX rack has no {caption} control: {names:?}"
+            );
+        }
+
+        // The new drive control and the existing delay mix are both wired to
+        // their parameters. The rack order is drive, phaser, chorus, delay,
+        // reverb, EQ.
+        let sliders = slider_rects(&ctx, &output);
+        let top = |index: usize| {
+            let rect = sliders[index];
+            egui::pos2(rect.center().x, rect.top() + 6.0)
+        };
+        run_frames(&ctx, &mut editor, click(top(0)));
+        assert!(
+            params.drive_amount.value() > 0.9,
+            "the drive amount fader is not connected: {}",
+            params.drive_amount.value()
+        );
+
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(top(10)));
+        assert!(
+            params.delay_mix.value() > 0.9,
+            "the delay mix fader is not connected: {}",
+            params.delay_mix.value()
+        );
+
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(top(13)));
+        assert!(
+            params.eq_low.value() > 8.0,
+            "the EQ low fader is not connected: {}",
+            params.eq_low.value()
+        );
+    }
+
+    #[test]
+    fn the_fx_page_fits_into_the_panel() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Fx;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let panel = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        );
+        assert_the_widgets_fit(&ctx, &output, panel);
+
+        // The chain caption has to stay inside the rack header at any zoom,
+        // not just at the design size.
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+            let layout = Layout::for_rect(Rect::from_min_size(Pos2::ZERO, size))
+                .expect("the window is big enough");
+            let rack = Rect::from_min_max(
+                layout.scale(layout.base_rows[0]).left_top(),
+                layout.scale(layout.base_rows[3]).right_bottom(),
+            );
+            let (_, pos, text_size) = text_shapes(&output)
+                .into_iter()
+                .find(|(text, _, _)| text == FX_CHAIN_ORDER)
+                .unwrap_or_else(|| panic!("the chain caption is missing at {percent}%"));
+            let text = Rect::from_min_size(pos, text_size);
+            assert!(
+                rack.contains_rect(text),
+                "the chain caption is outside the rack at {percent}%: {text:?} / {rack:?}"
             );
         }
     }
@@ -8296,6 +8563,62 @@ mod tests {
     }
 
     #[test]
+    fn the_wide_fader_banks_are_centered_and_use_their_sections() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+
+        // The two lower bands hold ARP / VOICE and MACROS / VCA. Every bank
+        // has to sit in the middle of its section and spread across it.
+        for (row, index, count) in [(2, 0, 5), (2, 1, 4), (3, 0, 3), (3, 1, 2)] {
+            let section = layout.group(row, index);
+            let mut bank: Vec<egui::Rect> = sliders
+                .iter()
+                .filter(|rect| section.contains_rect(**rect))
+                .copied()
+                .collect();
+            assert_eq!(
+                bank.len(),
+                count,
+                "the section at row {row}, index {index} lost a fader: {bank:?}"
+            );
+            bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+
+            let left = bank[0].left();
+            let right = bank[bank.len() - 1].right();
+            let center = (left + right) * 0.5;
+            assert!(
+                (center - section.center().x).abs() < 1.0,
+                "the fader bank at row {row}, index {index} is not centered: \
+{center} instead of {}",
+                section.center().x
+            );
+            assert!(
+                left - section.left() < section.width() * 0.25,
+                "the fader bank at row {row}, index {index} is pinned to the left: \
+{left} in {section:?}"
+            );
+            assert!(
+                section.right() - right < section.width() * 0.25,
+                "the fader bank at row {row}, index {index} leaves an empty right edge: \
+{right} in {section:?}"
+            );
+            assert!(
+                right - left > section.width() * 0.5,
+                "the fader bank at row {row}, index {index} does not use its width: \
+{} of {}",
+                right - left,
+                section.width()
+            );
+        }
+    }
+
+    #[test]
     fn the_sections_of_the_panel_have_the_blueprint_layout() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -8310,13 +8633,10 @@ mod tests {
             ("VCF", 12.0, 195.0),
             ("MOD ENV", 372.0, 195.0),
             ("AMP ENV", 668.0, 195.0),
-            ("LFO 1", 12.0, 326.0),
-            ("LFO 2", 234.0, 326.0),
-            ("ARP", 456.0, 326.0),
-            ("VOICE", 768.0, 326.0),
-            ("FX", 12.0, 457.0),
-            ("MACROS", 576.0, 457.0),
-            ("VCA", 804.0, 457.0),
+            ("ARP", 12.0, 326.0),
+            ("VOICE", 490.0, 326.0),
+            ("MACROS", 12.0, 457.0),
+            ("VCA", 490.0, 457.0),
         ];
 
         let titles: Vec<(String, egui::Pos2)> = texts(&output)
@@ -8344,6 +8664,47 @@ mod tests {
                 "the title {title} is at {pos:?} instead of in the row of {row}"
             );
         }
+    }
+
+    #[test]
+    fn the_mod_page_puts_the_lfo_editors_in_the_third_row() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let positions: Vec<(String, egui::Pos2)> = texts(&output)
+            .into_iter()
+            .filter(|(text, _)| matches!(text.as_str(), "LFO 1" | "LFO 2"))
+            .collect();
+
+        // The two LFO titles share the third band with the ARP / VOICE pair
+        // of the normal page, in the two wide lower columns.
+        let expected = [("LFO 1", 12.0), ("LFO 2", 490.0)];
+        for (title, x) in expected {
+            let (_, pos) = positions
+                .iter()
+                .find(|(text, _)| text == title)
+                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
+            assert!(
+                (pos.x - x).abs() < 1.0,
+                "the title {title} is at {pos:?} instead of {x}"
+            );
+            assert!(
+                pos.y >= 326.0 && pos.y <= 326.0 + TITLE_HEIGHT,
+                "the title {title} is not in the third row: {pos:?}"
+            );
+        }
+
+        // Their rate faders are in the same band, one per editor.
+        let zoom = zoom_of(&ctx);
+        let rate_faders: Vec<egui::Rect> = slider_rects(&ctx, &output)
+            .into_iter()
+            .filter(|rect| rect.center().y > 326.0 * zoom && rect.center().y < 448.0 * zoom)
+            .collect();
+        assert_eq!(rate_faders.len(), 2, "the LFO rate faders are not in row C");
+        assert!(
+            rate_faders[0].center().x < rate_faders[1].center().x,
+            "the LFO rate faders are in the wrong order"
+        );
     }
 
     #[test]
@@ -8695,7 +9056,7 @@ mod tests {
         // The default size.
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let small = slider_rects(&ctx, &output);
-        assert_eq!(small.len(), 54, "unexpected number of sliders");
+        assert_eq!(small.len(), 44, "unexpected number of sliders");
 
         // A bigger window: the sliders are taller and the sections are
         // wider.
@@ -8705,7 +9066,7 @@ mod tests {
             vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
         );
         let big = slider_rects(&ctx, &output);
-        assert_eq!(big.len(), 54, "unexpected number of sliders");
+        assert_eq!(big.len(), 44, "unexpected number of sliders");
 
         for (small, big) in small.iter().zip(big.iter()) {
             assert!(

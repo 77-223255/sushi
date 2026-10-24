@@ -650,6 +650,14 @@ sushi_params! {
     "lfo2_sync" => lfo2_sync,
     "lfo2_div" => lfo2_div,
     "lfo2_retrigger" => lfo2_retrigger,
+    "drive_amount" => drive_amount,
+    "drive_mix" => drive_mix,
+    "phaser_rate" => phaser_rate,
+    "phaser_depth" => phaser_depth,
+    "phaser_mix" => phaser_mix,
+    "eq_low" => eq_low,
+    "eq_mid" => eq_mid,
+    "eq_high" => eq_high,
 }
 
 /// Collects the values of all the parameters into a JSON document.
@@ -906,12 +914,12 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 101);
+        assert_eq!(PARAM_IDS.len(), 109);
 
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 101, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 109, "the ids of the parameters are not unique");
     }
 
     #[test]
@@ -922,8 +930,8 @@ mod tests {
         reset_count();
         apply_defaults(&params, &setter);
 
-        // Every one of the 101 parameters is written.
-        assert_eq!(set_count(), 101);
+        // Every one of the 109 parameters is written.
+        assert_eq!(set_count(), 109);
     }
 
     #[test]
@@ -986,7 +994,7 @@ mod tests {
         assert_eq!(document["name"], "TEST");
 
         let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 101);
+        assert_eq!(map.len(), 109);
         for id in PARAM_IDS {
             assert!(map.contains_key(*id), "the parameter {id} is missing");
         }

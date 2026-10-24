@@ -1,7 +1,9 @@
-//! The effect chain: a chorus, a ping-pong delay and a compact reverb.
+//! The effect chain: a drive, a phaser, a chorus, a ping-pong delay, a
+//! compact reverb and a three band EQ.
 //!
 //! All the delay lines are allocated up front (in [`Fx::new`]) so that the
-//! processing itself never allocates.
+//! processing itself never allocates. The new effects default to completely
+//! neutral settings, so old patches and presets keep sounding the same.
 
 use std::f32::consts::PI;
 
@@ -25,10 +27,41 @@ const DELAY_LOWPASS: f32 = 5_000.0;
 const DELAY_TIME_SMOOTHING: f32 = 0.02;
 /// The mix below which an effect is switched off completely.
 const BYPASS_MIX: f32 = 1e-4;
+/// The maximum pre-gain of the drive, in decibels.
+const DRIVE_MAX_GAIN_DB: f32 = 24.0;
+/// The output compensation of the drive at full amount. The tanh already
+/// limits the wet signal to ±1; this keeps a hot input from sounding louder
+/// than the dry signal.
+const DRIVE_COMPENSATION: f32 = 1.5;
+/// The number of first-order allpass stages in the phaser.
+const PHASER_STAGES: usize = 4;
+/// The centre frequency of the phaser, in Hz.
+const PHASER_CENTER: f32 = 700.0;
+/// The sweep range of the phaser at full depth, in octaves.
+const PHASER_OCTAVES: f32 = 2.0;
+/// The lowest frequency of an allpass stage. The coefficient stays well
+/// inside the stable range even at very low sample rates.
+const PHASER_MIN_FREQUENCY: f32 = 10.0;
+/// The frequency of the low/mid crossover of the EQ, in Hz.
+const EQ_LOW_CROSSOVER: f32 = 250.0;
+/// The frequency of the mid/high crossover of the EQ, in Hz.
+const EQ_HIGH_CROSSOVER: f32 = 4_000.0;
+/// The largest boost or cut of an EQ band, in decibels.
+const EQ_MAX_GAIN_DB: f32 = 12.0;
+/// A band gain closer to 0 dB than this is treated as neutral.
+const EQ_BYPASS_DB: f32 = 1e-4;
 
 /// The parameters of the effect chain.
 #[derive(Debug, Clone, Copy)]
 pub struct FxParams {
+    pub drive_amount: f32,
+    pub drive_mix: f32,
+    pub phaser_rate: f32,
+    pub phaser_depth: f32,
+    pub phaser_mix: f32,
+    pub eq_low: f32,
+    pub eq_mid: f32,
+    pub eq_high: f32,
     pub chorus_mix: f32,
     pub chorus_rate: f32,
     pub chorus_depth: f32,
@@ -45,6 +78,14 @@ pub struct FxParams {
 impl Default for FxParams {
     fn default() -> Self {
         Self {
+            drive_amount: 0.0,
+            drive_mix: 0.0,
+            phaser_rate: 0.3,
+            phaser_depth: 0.5,
+            phaser_mix: 0.0,
+            eq_low: 0.0,
+            eq_mid: 0.0,
+            eq_high: 0.0,
             chorus_mix: 0.0,
             chorus_rate: 0.8,
             chorus_depth: 0.5,
@@ -79,9 +120,49 @@ fn flush_denormal(value: f32) -> f32 {
     if value.abs() < 1e-20 { 0.0 } else { value }
 }
 
+/// The coefficient of a first-order allpass at the given frequency. The
+/// frequency is clamped so the coefficient stays inside the stable range even
+/// at the lowest sample rates.
+#[inline]
+fn allpass_coefficient(frequency: f32, sample_rate: f32) -> f32 {
+    let sample_rate = sample_rate.max(1.0);
+    let max_frequency = (sample_rate * 0.45).max(PHASER_MIN_FREQUENCY);
+    let frequency = frequency.clamp(PHASER_MIN_FREQUENCY, max_frequency);
+    let tangent = (PI * frequency / sample_rate).tan();
+    (1.0 - tangent) / (1.0 + tangent)
+}
+
+/// One first-order allpass stage in direct form II. The state is the single
+/// delay of the stage.
+#[inline]
+fn allpass_stage(input: f32, coefficient: f32, state: &mut f32) -> f32 {
+    let output = coefficient * input + *state;
+    *state = flush_denormal(input - coefficient * output);
+    output
+}
+
 /// The effect chain of the synthesizer.
 pub struct Fx {
     sample_rate: f32,
+
+    // The drive.
+    drive_adaa_left: AdaaTanh,
+    drive_adaa_right: AdaaTanh,
+
+    // The phaser.
+    phaser_phase: f32,
+    phaser_left: [f32; PHASER_STAGES],
+    phaser_right: [f32; PHASER_STAGES],
+
+    // The three band EQ. The low band is the output of a lowpass at the low
+    // crossover, the high band is the input minus a lowpass at the high
+    // crossover, and the mid band is the rest.
+    eq_low_left: f32,
+    eq_low_right: f32,
+    eq_high_left: f32,
+    eq_high_right: f32,
+    eq_low_coefficient: f32,
+    eq_high_coefficient: f32,
 
     // The chorus.
     chorus_left: Vec<f32>,
@@ -137,6 +218,17 @@ impl Fx {
 
         Self {
             sample_rate,
+            drive_adaa_left: AdaaTanh::default(),
+            drive_adaa_right: AdaaTanh::default(),
+            phaser_phase: 0.0,
+            phaser_left: [0.0; PHASER_STAGES],
+            phaser_right: [0.0; PHASER_STAGES],
+            eq_low_left: 0.0,
+            eq_low_right: 0.0,
+            eq_high_left: 0.0,
+            eq_high_right: 0.0,
+            eq_low_coefficient: lowpass_coefficient(EQ_LOW_CROSSOVER, sample_rate),
+            eq_high_coefficient: lowpass_coefficient(EQ_HIGH_CROSSOVER, sample_rate),
             chorus_left: vec![0.0; chorus_len],
             chorus_right: vec![0.0; chorus_len],
             chorus_index: 0,
@@ -161,8 +253,17 @@ impl Fx {
         }
     }
 
-    /// Clears all the delay lines.
+    /// Clears all the delay lines and the state of the other effects.
     pub fn reset(&mut self) {
+        self.drive_adaa_left.reset();
+        self.drive_adaa_right.reset();
+        self.phaser_phase = 0.0;
+        self.phaser_left = [0.0; PHASER_STAGES];
+        self.phaser_right = [0.0; PHASER_STAGES];
+        self.eq_low_left = 0.0;
+        self.eq_low_right = 0.0;
+        self.eq_high_left = 0.0;
+        self.eq_high_right = 0.0;
         self.chorus_left.fill(0.0);
         self.chorus_right.fill(0.0);
         self.chorus_index = 0;
@@ -192,17 +293,29 @@ impl Fx {
 
         // Clamp first, so a fully bypassed chain is detected before any
         // effect updates its state.
+        let drive_mix = params.drive_mix.clamp(0.0, 1.0);
+        let phaser_mix = params.phaser_mix.clamp(0.0, 1.0);
         let chorus_mix = params.chorus_mix.clamp(0.0, 1.0);
         let delay_mix = params.delay_mix.clamp(0.0, 1.0);
         let reverb_mix = params.reverb_mix.clamp(0.0, 1.0);
-        let all_bypassed =
-            chorus_mix <= BYPASS_MIX && delay_mix <= BYPASS_MIX && reverb_mix <= BYPASS_MIX;
+        let eq_low = params.eq_low.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+        let eq_mid = params.eq_mid.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+        let eq_high = params.eq_high.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+        let eq_neutral = eq_low.abs() <= EQ_BYPASS_DB
+            && eq_mid.abs() <= EQ_BYPASS_DB
+            && eq_high.abs() <= EQ_BYPASS_DB;
+        let all_bypassed = drive_mix <= BYPASS_MIX
+            && phaser_mix <= BYPASS_MIX
+            && chorus_mix <= BYPASS_MIX
+            && delay_mix <= BYPASS_MIX
+            && reverb_mix <= BYPASS_MIX
+            && eq_neutral;
 
         if all_bypassed {
             if !self.bypassed {
-                // Entering bypass clears every delay line and the reverb, so
-                // a later enable starts from silence instead of replaying an
-                // old tail.
+                // Entering bypass clears every delay line, the reverb and
+                // the new effects, so a later enable starts from silence
+                // instead of replaying an old tail.
                 self.reset();
             }
             return (left, right);
@@ -222,9 +335,121 @@ impl Fx {
             self.last_legacy = Some(params.legacy);
         }
 
+        let (left, right) = self.process_drive(left, right, params);
+        let (left, right) = self.process_phaser(left, right, params);
         let (left, right) = self.process_chorus(left, right, params);
         let (left, right) = self.process_delay(left, right, params);
-        self.process_reverb(left, right, params)
+        let (left, right) = self.process_reverb(left, right, params);
+        self.process_eq(left, right, params)
+    }
+
+    /// An anti-aliased tanh drive with a dry/wet crossfade.
+    fn process_drive(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let mix = params.drive_mix.clamp(0.0, 1.0);
+
+        if mix <= BYPASS_MIX {
+            // A bypassed drive must not colour the signal, and its ADAA
+            // history must not leak into a later enable.
+            self.drive_adaa_left.reset();
+            self.drive_adaa_right.reset();
+            return (left, right);
+        }
+
+        let amount = params.drive_amount.clamp(0.0, 1.0);
+        // The amount maps to 0..24 dB of pre-gain. The tanh limits the wet
+        // signal, while the compensation keeps a hot input close to the level
+        // of the dry signal.
+        let gain = 10f32.powf(amount * DRIVE_MAX_GAIN_DB / 20.0);
+        let compensation = 1.0 / (1.0 + amount * DRIVE_COMPENSATION);
+        let wet_left = self.drive_adaa_left.process(left * gain) * compensation;
+        let wet_right = self.drive_adaa_right.process(right * gain) * compensation;
+
+        (
+            left * (1.0 - mix) + wet_left * mix,
+            right * (1.0 - mix) + wet_right * mix,
+        )
+    }
+
+    /// A four stage first-order allpass phaser with a stereo quadrature LFO.
+    fn process_phaser(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let mix = params.phaser_mix.clamp(0.0, 1.0);
+
+        if mix <= BYPASS_MIX {
+            // No state may influence the sound while the phaser is off.
+            self.phaser_phase = 0.0;
+            self.phaser_left = [0.0; PHASER_STAGES];
+            self.phaser_right = [0.0; PHASER_STAGES];
+            return (left, right);
+        }
+
+        let rate = params.phaser_rate.clamp(0.0, self.sample_rate * 0.5);
+        self.phaser_phase += rate / self.sample_rate;
+        if self.phaser_phase >= 1.0 {
+            self.phaser_phase -= self.phaser_phase.floor();
+        }
+
+        let phase = self.phaser_phase * PI * 2.0;
+        let depth = params.phaser_depth.clamp(0.0, 1.0) * PHASER_OCTAVES;
+        let (lfo_left, lfo_right) = phase.sin_cos();
+        let frequency_left = PHASER_CENTER * (depth * lfo_left).exp2();
+        let frequency_right = PHASER_CENTER * (depth * lfo_right).exp2();
+        let coefficient_left = allpass_coefficient(frequency_left, self.sample_rate);
+        let coefficient_right = allpass_coefficient(frequency_right, self.sample_rate);
+
+        let wet_left = self.phaser_left.iter_mut().fold(left, |sample, state| {
+            allpass_stage(sample, coefficient_left, state)
+        });
+        let wet_right = self.phaser_right.iter_mut().fold(right, |sample, state| {
+            allpass_stage(sample, coefficient_right, state)
+        });
+
+        (
+            left * (1.0 - mix) + wet_left * mix,
+            right * (1.0 - mix) + wet_right * mix,
+        )
+    }
+
+    /// A three band EQ built from two one-pole crossovers. The bands always
+    /// sum back to the input, so three gains of 0 dB would be transparent (and
+    /// the neutral case is bypassed outright).
+    fn process_eq(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let low_db = params.eq_low.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+        let mid_db = params.eq_mid.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+        let high_db = params.eq_high.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+
+        if low_db.abs() <= EQ_BYPASS_DB
+            && mid_db.abs() <= EQ_BYPASS_DB
+            && high_db.abs() <= EQ_BYPASS_DB
+        {
+            self.eq_low_left = 0.0;
+            self.eq_low_right = 0.0;
+            self.eq_high_left = 0.0;
+            self.eq_high_right = 0.0;
+            return (left, right);
+        }
+
+        self.eq_low_left += (left - self.eq_low_left) * self.eq_low_coefficient;
+        self.eq_low_right += (right - self.eq_low_right) * self.eq_low_coefficient;
+        self.eq_high_left += (left - self.eq_high_left) * self.eq_high_coefficient;
+        self.eq_high_right += (right - self.eq_high_right) * self.eq_high_coefficient;
+        self.eq_low_left = flush_denormal(self.eq_low_left);
+        self.eq_low_right = flush_denormal(self.eq_low_right);
+        self.eq_high_left = flush_denormal(self.eq_high_left);
+        self.eq_high_right = flush_denormal(self.eq_high_right);
+
+        let low_gain = 10f32.powf(low_db / 20.0);
+        let mid_gain = 10f32.powf(mid_db / 20.0);
+        let high_gain = 10f32.powf(high_db / 20.0);
+
+        let (low_left, high_left) = (self.eq_low_left, left - self.eq_high_left);
+        let (low_right, high_right) = (self.eq_low_right, right - self.eq_high_right);
+        let mid_left = left - low_left - high_left;
+        let mid_right = right - low_right - high_right;
+
+        (
+            low_left * low_gain + mid_left * mid_gain + high_left * high_gain,
+            low_right * low_gain + mid_right * mid_gain + high_right * high_gain,
+        )
     }
 
     /// A two tap chorus with a quadrature LFO.
@@ -415,6 +640,17 @@ impl Default for Fx {
     fn default() -> Self {
         Self {
             sample_rate: 48_000.0,
+            drive_adaa_left: AdaaTanh::default(),
+            drive_adaa_right: AdaaTanh::default(),
+            phaser_phase: 0.0,
+            phaser_left: [0.0; PHASER_STAGES],
+            phaser_right: [0.0; PHASER_STAGES],
+            eq_low_left: 0.0,
+            eq_low_right: 0.0,
+            eq_high_left: 0.0,
+            eq_high_right: 0.0,
+            eq_low_coefficient: 0.0,
+            eq_high_coefficient: 0.0,
             chorus_left: Vec::new(),
             chorus_right: Vec::new(),
             chorus_index: 0,
@@ -448,6 +684,14 @@ mod tests {
     fn an_impulse_produces_finite_output() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
+            drive_amount: 0.0,
+            drive_mix: 0.0,
+            phaser_rate: 0.3,
+            phaser_depth: 0.5,
+            phaser_mix: 0.0,
+            eq_low: 0.0,
+            eq_mid: 0.0,
+            eq_high: 0.0,
             chorus_mix: 0.5,
             chorus_rate: 0.8,
             chorus_depth: 0.5,
@@ -785,6 +1029,14 @@ mod tests {
     fn the_wet_path_stays_bounded() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
+            drive_amount: 1.0,
+            drive_mix: 1.0,
+            phaser_rate: 5.0,
+            phaser_depth: 1.0,
+            phaser_mix: 1.0,
+            eq_low: 12.0,
+            eq_mid: -12.0,
+            eq_high: 12.0,
             chorus_mix: 1.0,
             chorus_rate: 0.8,
             chorus_depth: 0.5,
@@ -806,5 +1058,243 @@ mod tests {
         }
 
         assert!(peak < 10.0, "the wet signal ran away ({peak})");
+    }
+
+    /// A deterministic noise source for the tests.
+    fn noise(state: &mut u32) -> f32 {
+        *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((*state >> 8) as f32 / (1u32 << 23) as f32) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn neutral_defaults_are_bit_exact_dry() {
+        let mut fx = Fx::new(48_000.0);
+        let params = FxParams::default();
+        let mut state = 0x5EED_1234;
+
+        for sample in 0..48_000 {
+            let left = noise(&mut state) * 0.7;
+            let right = noise(&mut state) * 0.7;
+            let (out_left, out_right) = fx.process(left, right, &params);
+            assert_eq!(out_left.to_bits(), left.to_bits(), "sample {sample}");
+            assert_eq!(out_right.to_bits(), right.to_bits(), "sample {sample}");
+        }
+    }
+
+    #[test]
+    fn the_drive_changes_the_signal_and_stays_bounded() {
+        let mut fx = Fx::new(48_000.0);
+        let mut params = FxParams {
+            drive_amount: 1.0,
+            drive_mix: 1.0,
+            ..FxParams::default()
+        };
+
+        let mut difference = 0.0f32;
+        let mut peak: f32 = 0.0;
+        for sample in 0..48_000 {
+            let time = sample as f32 / 48_000.0;
+            let input = (time * 440.0 * std::f32::consts::TAU).sin() * 0.8;
+            let (left, right) = fx.process(input, input, &params);
+            assert!(left.is_finite() && right.is_finite());
+            difference += (left - input).abs();
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+
+        assert!(difference > 1.0, "the drive did not change the signal");
+        assert!(peak <= 1.01, "the drive exceeded the tanh range ({peak})");
+
+        // With the mix at zero the drive is a bit-exact bypass, even though
+        // the amount is still at its maximum.
+        params.drive_mix = 0.0;
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.25, -0.75, &params);
+            assert_eq!(left, 0.25);
+            assert_eq!(right, -0.75);
+        }
+    }
+
+    #[test]
+    fn the_phaser_changes_the_signal_and_stays_bounded() {
+        let mut fx = Fx::new(48_000.0);
+        let params = FxParams {
+            phaser_rate: 1.5,
+            phaser_depth: 0.8,
+            phaser_mix: 1.0,
+            ..FxParams::default()
+        };
+
+        let mut difference = 0.0f32;
+        let mut peak: f32 = 0.0;
+        for sample in 0..48_000 {
+            let time = sample as f32 / 48_000.0;
+            let input = (time * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+            let (left, right) = fx.process(input, input, &params);
+            assert!(left.is_finite() && right.is_finite());
+            difference += (left - input).abs();
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+
+        assert!(difference > 1.0, "the phaser did not change the signal");
+        assert!(peak < 1.0, "the phaser ran away ({peak})");
+
+        // Turning the mix off returns exactly the dry input, and no allpass
+        // state is left behind.
+        let off = FxParams {
+            phaser_mix: 0.0,
+            ..params
+        };
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.25, -0.75, &off);
+            assert_eq!(left, 0.25);
+            assert_eq!(right, -0.75);
+        }
+        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
+        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
+        assert_eq!(fx.phaser_phase, 0.0);
+    }
+
+    #[test]
+    fn the_eq_changes_the_bands_and_stays_bounded() {
+        fn rms_of(frequency: f32, params: &FxParams) -> f32 {
+            let mut fx = Fx::new(48_000.0);
+            let mut sum = 0.0f32;
+            let mut peak: f32 = 0.0;
+            for sample in 0..48_000 {
+                let time = sample as f32 / 48_000.0;
+                let input = (time * frequency * std::f32::consts::TAU).sin() * 0.25;
+                let (left, right) = fx.process(input, input, params);
+                assert!(left.is_finite() && right.is_finite());
+                // Ignore the first quarter second while the filters settle.
+                if sample >= 12_000 {
+                    sum += left * left;
+                    peak = peak.max(left.abs()).max(right.abs());
+                }
+            }
+            assert!(peak < 4.0, "the EQ ran away at {frequency} Hz ({peak})");
+            (sum / 36_000.0).sqrt()
+        }
+
+        let input_rms = 0.25 / 2f32.sqrt();
+        let boosted = rms_of(
+            100.0,
+            &FxParams {
+                eq_low: 12.0,
+                eq_mid: -12.0,
+                eq_high: -12.0,
+                ..FxParams::default()
+            },
+        );
+        let cut = rms_of(
+            10_000.0,
+            &FxParams {
+                eq_low: -12.0,
+                eq_mid: -12.0,
+                eq_high: 12.0,
+                ..FxParams::default()
+            },
+        );
+
+        assert!(
+            boosted > input_rms * 2.0,
+            "the low boost did not raise the level ({boosted})"
+        );
+        assert!(
+            cut > input_rms * 2.0,
+            "the high boost did not raise the level ({cut})"
+        );
+    }
+
+    #[test]
+    fn a_full_bypass_considers_the_new_effects_and_resets_them() {
+        let mut fx = Fx::new(48_000.0);
+        let mut params = FxParams {
+            drive_amount: 1.0,
+            drive_mix: 1.0,
+            phaser_rate: 5.0,
+            phaser_depth: 1.0,
+            phaser_mix: 1.0,
+            eq_low: 12.0,
+            eq_mid: -6.0,
+            eq_high: 9.0,
+            ..FxParams::default()
+        };
+
+        // Excite the new effects with a loud signal.
+        for sample in 0..12_000 {
+            let input = if sample == 0 { 1.0 } else { 0.0 };
+            fx.process(input, -input, &params);
+        }
+
+        // With every old and new effect neutral the whole chain is bypassed.
+        params.drive_mix = 0.0;
+        params.phaser_mix = 0.0;
+        params.eq_low = 0.0;
+        params.eq_mid = 0.0;
+        params.eq_high = 0.0;
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.25, -0.75, &params);
+            assert_eq!(left, 0.25);
+            assert_eq!(right, -0.75);
+        }
+
+        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
+        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
+        assert_eq!(fx.phaser_phase, 0.0);
+        assert_eq!(fx.eq_low_left, 0.0);
+        assert_eq!(fx.eq_low_right, 0.0);
+        assert_eq!(fx.eq_high_left, 0.0);
+        assert_eq!(fx.eq_high_right, 0.0);
+
+        // Re-enabling the new effects on silence starts from a clean state.
+        params.drive_mix = 1.0;
+        let (left, right) = fx.process(0.0, 0.0, &params);
+        assert_eq!(left, 0.0);
+        assert_eq!(right, 0.0);
+
+        params.drive_mix = 0.0;
+        params.phaser_mix = 1.0;
+        let (left, right) = fx.process(0.0, 0.0, &params);
+        assert_eq!(left, 0.0);
+        assert_eq!(right, 0.0);
+
+        params.phaser_mix = 0.0;
+        params.eq_low = 12.0;
+        let (left, right) = fx.process(0.0, 0.0, &params);
+        assert_eq!(left, 0.0);
+        assert_eq!(right, 0.0);
+    }
+
+    #[test]
+    fn reset_clears_the_new_effects() {
+        let mut fx = Fx::new(48_000.0);
+        let params = FxParams {
+            drive_amount: 1.0,
+            drive_mix: 1.0,
+            phaser_mix: 1.0,
+            eq_low: 12.0,
+            eq_mid: -12.0,
+            eq_high: 12.0,
+            ..FxParams::default()
+        };
+
+        for sample in 0..4_800 {
+            let input = (sample as f32 * 0.01).sin();
+            fx.process(input, input, &params);
+        }
+        assert!(
+            fx.phaser_left.iter().any(|&state| state != 0.0)
+                || fx.eq_low_left != 0.0
+                || fx.eq_high_left != 0.0
+        );
+
+        fx.reset();
+        assert_eq!(fx.phaser_phase, 0.0);
+        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
+        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
+        assert_eq!(fx.eq_low_left, 0.0);
+        assert_eq!(fx.eq_low_right, 0.0);
+        assert_eq!(fx.eq_high_left, 0.0);
+        assert_eq!(fx.eq_high_right, 0.0);
     }
 }

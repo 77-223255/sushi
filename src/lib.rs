@@ -397,6 +397,14 @@ impl Sushi {
     fn fx_params(&self) -> FxParams {
         let params = &self.params;
         FxParams {
+            drive_amount: params.drive_amount.value(),
+            drive_mix: params.drive_mix.value(),
+            phaser_rate: params.phaser_rate.value(),
+            phaser_depth: params.phaser_depth.value(),
+            phaser_mix: params.phaser_mix.value(),
+            eq_low: params.eq_low.value(),
+            eq_mid: params.eq_mid.value(),
+            eq_high: params.eq_high.value(),
             chorus_mix: params.chorus_mix.value(),
             chorus_rate: params.chorus_rate.value(),
             chorus_depth: params.chorus_depth.value(),
@@ -1507,6 +1515,14 @@ impl Plugin for Sushi {
             settings.filter_drive = self.params.filter_drive.smoothed.next();
             settings.detune_cents = self.params.detune.smoothed.next();
             settings.spread = self.params.spread.smoothed.next();
+            fx_params.drive_amount = self.params.drive_amount.smoothed.next();
+            fx_params.drive_mix = self.params.drive_mix.smoothed.next();
+            fx_params.phaser_rate = self.params.phaser_rate.smoothed.next();
+            fx_params.phaser_depth = self.params.phaser_depth.smoothed.next();
+            fx_params.phaser_mix = self.params.phaser_mix.smoothed.next();
+            fx_params.eq_low = self.params.eq_low.smoothed.next();
+            fx_params.eq_mid = self.params.eq_mid.smoothed.next();
+            fx_params.eq_high = self.params.eq_high.smoothed.next();
             fx_params.chorus_mix = self.params.chorus_mix.smoothed.next() + space_wet;
             fx_params.chorus_rate = self.params.chorus_rate.smoothed.next();
             fx_params.chorus_depth = self.params.chorus_depth.smoothed.next();
@@ -1687,9 +1703,14 @@ impl Plugin for Sushi {
         let voices_active = self.voices.iter().any(Option::is_some)
             || self.fading_voices.iter().any(Option::is_some);
         let arp_active = arp_running && (self.arp.has_notes() || self.arp.is_sounding());
-        let fx_active = fx_params.chorus_mix > 1e-4
+        let fx_active = fx_params.drive_mix > 1e-4
+            || fx_params.phaser_mix > 1e-4
+            || fx_params.chorus_mix > 1e-4
             || fx_params.delay_mix > 1e-4
-            || fx_params.reverb_mix > 1e-4;
+            || fx_params.reverb_mix > 1e-4
+            || fx_params.eq_low.abs() > 1e-4
+            || fx_params.eq_mid.abs() > 1e-4
+            || fx_params.eq_high.abs() > 1e-4;
 
         if voices_active || arp_active {
             ProcessStatus::KeepAlive
