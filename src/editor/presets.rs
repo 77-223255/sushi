@@ -42,7 +42,9 @@ pub const PRESETS: &[Preset] = &[
             "ae_sustain": 0.8,
             "ae_release": 700.0,
             "lfo1_rate": 0.3,
-            "lfo1_target": "Filter",
+            "mod1_source": "LFO 1",
+            "mod1_dest": "Cutoff",
+            "mod1_amount": 0.12,
             "unison": 2,
             "spread": 0.6,
             "chorus_mix": 0.3,
@@ -373,12 +375,14 @@ pub const PRESETS: &[Preset] = &[
             "ae_release": 900.0,
             "lfo1_wave": "S&H",
             "lfo1_rate": 0.8,
-            "lfo1_amount": 0.15,
-            "lfo1_target": "Pitch",
             "lfo2_wave": "Triangle",
             "lfo2_rate": 0.25,
-            "lfo2_amount": 0.2,
-            "lfo2_target": "Filter",
+            "mod1_source": "LFO 1",
+            "mod1_dest": "Pitch",
+            "mod1_amount": 0.06,
+            "mod2_source": "LFO 2",
+            "mod2_dest": "Cutoff",
+            "mod2_amount": 0.328,
             "chorus_mix": 0.45,
             "reverb_mix": 0.4,
             "drift": 0.3,
@@ -412,8 +416,9 @@ pub const PRESETS: &[Preset] = &[
             "arp_swing": 15.0,
             "lfo1_wave": "Triangle",
             "lfo1_rate": 3.0,
-            "lfo1_amount": 0.1,
-            "lfo1_target": "Pitch",
+            "mod1_source": "LFO 1",
+            "mod1_dest": "Pitch",
+            "mod1_amount": 0.0467,
             "delay_mix": 0.35,
             "reverb_mix": 0.3,
             "drift": 0.25,
@@ -1114,6 +1119,58 @@ mod tests {
 
         let document: Value = serde_json::from_str(PRESETS[index].json).unwrap();
         assert_eq!(document["filter_slope"], "24 dB NEW");
+    }
+
+    #[test]
+    fn the_direct_lfo_presets_use_matrix_routes() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        // The old direct target fields are no longer used by any factory
+        // preset. The amounts are the effective depths that the presets had
+        // with their macro motion at load time.
+        for preset in PRESETS {
+            assert!(
+                !preset.json.contains("\"lfo1_target\"")
+                    && !preset.json.contains("\"lfo2_target\""),
+                "the preset {} still uses a direct LFO target",
+                preset.name
+            );
+        }
+
+        let expected = [
+            ("INIT PAD", ModDest::Cutoff, None),
+            ("MOTION PAD", ModDest::Pitch, Some(ModDest::Cutoff)),
+            ("ARP TOY", ModDest::Pitch, None),
+        ];
+        for (name, first_dest, second_dest) in expected {
+            let index = PRESETS
+                .iter()
+                .position(|preset| preset.name == name)
+                .unwrap_or_else(|| panic!("the preset {name} is missing"));
+            apply(&params, &setter, index);
+
+            assert_eq!(params.lfo1_target.value(), LfoTarget::Off);
+            assert_eq!(params.lfo1_amount.value(), 0.0);
+            assert_eq!(params.lfo2_target.value(), LfoTarget::Off);
+            assert_eq!(params.lfo2_amount.value(), 0.0);
+
+            assert_eq!(params.mod1_source.value(), ModSource::Lfo1);
+            assert_eq!(params.mod1_dest.value(), first_dest);
+            assert!(params.mod1_amount.value() != 0.0);
+
+            match second_dest {
+                Some(dest) => {
+                    assert_eq!(params.mod2_source.value(), ModSource::Lfo2);
+                    assert_eq!(params.mod2_dest.value(), dest);
+                    assert!(params.mod2_amount.value() != 0.0);
+                }
+                None => {
+                    assert_eq!(params.mod2_source.value(), ModSource::Off);
+                    assert_eq!(params.mod2_dest.value(), ModDest::Off);
+                }
+            }
+        }
     }
 
     #[test]

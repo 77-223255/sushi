@@ -57,7 +57,11 @@ pub enum LfoWaveform {
     SampleHold,
 }
 
-/// The destination an LFO modulates.
+/// The destination of the hidden legacy LFO routing.
+///
+/// New patches route the LFOs through the modulation matrix. These values are
+/// kept so that patches and host states from before that change still sound
+/// the same.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum LfoTarget {
     #[default]
@@ -169,7 +173,7 @@ pub enum ArpPattern {
     AsPlayed,
 }
 
-/// The note division of the arpeggiator.
+/// The note division of the arpeggiator and of the synced LFOs.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum NoteDiv {
     #[name = "1/4"]
@@ -524,8 +528,9 @@ pub struct SushiParams {
     #[id = "character"]
     pub character: EnumParam<Character>,
 
-    /// The DSP flavor. This is a host parameter, but it is deliberately not
-    /// part of the patch JSON: the same patch can be loaded in either flavor.
+    /// The DSP flavor flag, kept for host-state compatibility. Sushi always
+    /// runs the Legacy engine now, so this value no longer selects a flavor.
+    /// It is deliberately not part of the patch JSON.
     #[id = "legacy"]
     pub legacy: BoolParam,
 
@@ -565,6 +570,27 @@ pub struct SushiParams {
 
     #[id = "arp_ratchet"]
     pub arp_ratchet: IntParam,
+
+    // --- LFO clock ---------------------------------------------------------
+    // These are appended to the parameter list so that the order (and thus
+    // the host automation index) of every existing parameter stays the same.
+    #[id = "lfo1_sync"]
+    pub lfo1_sync: BoolParam,
+
+    #[id = "lfo1_div"]
+    pub lfo1_div: EnumParam<NoteDiv>,
+
+    #[id = "lfo1_retrigger"]
+    pub lfo1_retrigger: BoolParam,
+
+    #[id = "lfo2_sync"]
+    pub lfo2_sync: BoolParam,
+
+    #[id = "lfo2_div"]
+    pub lfo2_div: EnumParam<NoteDiv>,
+
+    #[id = "lfo2_retrigger"]
+    pub lfo2_retrigger: BoolParam,
 
     // --- Persistent editor state ------------------------------------------
     // These fields are not parameters; nice-plug stores them with the plugin
@@ -882,6 +908,14 @@ impl Default for SushiParams {
             arp_length: IntParam::new("Arp Length", 16, IntRange::Linear { min: 1, max: 16 }),
             arp_ratchet: IntParam::new("Arp Ratchet", 1, IntRange::Linear { min: 1, max: 4 }),
 
+            // --- LFO clock ----------------------------------------------------
+            lfo1_sync: BoolParam::new("LFO 1 Sync", false),
+            lfo1_div: EnumParam::new("LFO 1 Division", NoteDiv::Quarter),
+            lfo1_retrigger: BoolParam::new("LFO 1 Retrigger", false),
+            lfo2_sync: BoolParam::new("LFO 2 Sync", false),
+            lfo2_div: EnumParam::new("LFO 2 Division", NoteDiv::Quarter),
+            lfo2_retrigger: BoolParam::new("LFO 2 Retrigger", false),
+
             patch_name: Mutex::new(None),
             patch_path: Mutex::new(None),
             preset_index: Mutex::new(0),
@@ -986,6 +1020,12 @@ mod tests {
         assert_eq!(params.lfo1_rate.value(), 5.0);
         assert_eq!(params.lfo2_wave.value(), LfoWaveform::Triangle);
         assert_eq!(params.lfo2_rate.value(), 0.5);
+        assert!(!params.lfo1_sync.value());
+        assert_eq!(params.lfo1_div.value(), NoteDiv::Quarter);
+        assert!(!params.lfo1_retrigger.value());
+        assert!(!params.lfo2_sync.value());
+        assert_eq!(params.lfo2_div.value(), NoteDiv::Quarter);
+        assert!(!params.lfo2_retrigger.value());
         assert_eq!(params.chorus_rate.value(), 0.8);
         assert_eq!(params.chorus_depth.value(), 0.5);
         assert_eq!(params.delay_time.value(), 350.0);

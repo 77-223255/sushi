@@ -66,6 +66,21 @@ impl Lfo {
         value.clamp(-1.0, 1.0)
     }
 
+    /// Restarts the waveform at the beginning of its cycle.
+    ///
+    /// The random state of the sample & hold is deliberately kept, so a
+    /// retriggered note does not repeat the same random sequence.
+    #[inline]
+    pub fn retrigger(&mut self) {
+        self.phase = 0.0;
+    }
+
+    /// The current phase of the oscillator, `0..1`. Only the tests need it.
+    #[cfg(test)]
+    pub(crate) fn phase(&self) -> f32 {
+        self.phase
+    }
+
     /// A random number in the `-1..1` range.
     #[inline]
     fn next_random(&mut self) -> f32 {
@@ -132,5 +147,18 @@ mod tests {
             changed |= value != first;
         }
         assert!(changed, "the sample & hold value never changed");
+    }
+
+    #[test]
+    fn retrigger_restarts_the_phase() {
+        let mut lfo = Lfo::new(7);
+        for _ in 0..1_000 {
+            lfo.next(5.0, SAMPLE_RATE, LfoWaveform::Sine);
+        }
+        assert!(lfo.phase() > 0.0);
+
+        lfo.retrigger();
+        assert_eq!(lfo.phase(), 0.0);
+        assert_eq!(lfo.next(5.0, SAMPLE_RATE, LfoWaveform::Sine), 0.0);
     }
 }

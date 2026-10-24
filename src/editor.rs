@@ -15,6 +15,7 @@
 
 mod presets;
 mod theme;
+mod undo;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -30,10 +31,12 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
+use crate::dsp::mod_feedback::ModFeedback;
 use crate::params::{ModDest, ModSource, SushiParams};
 use crate::patch;
 use presets::{PRESETS, Rng};
-use theme::{palette, set_legacy as set_legacy_theme};
+use theme::palette;
+use undo::UndoHistory;
 
 // --- The fonts ---------------------------------------------------------------
 
@@ -192,6 +195,8 @@ const MOD_BAR_HEIGHT: f32 = 16.0;
 const MOD_BAR_HANDLE_WIDTH: f32 = 7.0;
 /// How far the handle of an amount bar stays away from the ends of its track.
 const MOD_BAR_INSET: f32 = 2.0;
+/// The width of the live marker that shows the current modulation of a route.
+const MOD_LIVE_MARKER_WIDTH: f32 = 2.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
@@ -245,8 +250,8 @@ const VOICE_LED_HEIGHT: f32 = 8.0;
 const VOICE_LED_GAP: f32 = 2.0;
 /// The gap between the caption of the voice meter and its lights.
 const VOICE_METER_GAP: f32 = 8.0;
-/// The width of the button of the patch browser in the header.
-const PATCHES_BUTTON_WIDTH: f32 = 62.0;
+/// The width of a page button (MOD / FX) in the header.
+const PAGE_BUTTON_WIDTH: f32 = 44.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The largest font of the preset display, in the design size. Long names use
@@ -271,6 +276,13 @@ const NO_MATCHES: &str = "No matches";
 
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
+
+// --- The footer controls ----------------------------------------------------
+
+/// The width of one UNDO or REDO button in the footer.
+const FOOTER_BUTTON_WIDTH: f32 = 40.0;
+/// The height of one UNDO or REDO button in the footer.
+const FOOTER_BUTTON_HEIGHT: f32 = 14.0;
 
 // --- The layout of the panel ------------------------------------------------
 
@@ -432,6 +444,18 @@ struct PersistedEditorState {
     dirty: bool,
 }
 
+/// The page that replaces the two upper bands of the panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Page {
+    /// The normal sound page.
+    #[default]
+    Main,
+    /// The MOD 2.0 routing table.
+    Mod,
+    /// The FX overview page.
+    Fx,
+}
+
 /// The state that only the editor needs.
 struct EditorState {
     /// The text buffers of the numeric value fields, keyed by parameter id.
@@ -448,8 +472,8 @@ struct EditorState {
     arp_counter: usize,
     /// The position of the arpeggiator in its pattern.
     arp_step: usize,
-    /// Whether the modulation matrix page is shown in the two upper bands.
-    mod_page: bool,
+    /// The page that is shown in the panel.
+    page: Page,
     /// The parameter and value under the pointer, or the last one seen.
     readout: Option<(String, String)>,
     /// The peak level of the samples of the last frame.
@@ -520,10 +544,11 @@ pub struct SushiEditor {
     params: Arc<SushiParams>,
     scope_rx: rtrb::Consumer<f32>,
     history: VecDeque<f32>,
+    /// The undo and redo steps of the editor. They are GUI-only: the audio
+    /// thread never touches this history.
+    undo_history: UndoHistory,
     gui_ctx: Option<GuiContext>,
     state: EditorState,
-    /// The theme that is currently applied.
-    legacy_theme: bool,
     /// The persisted identity that was last seen by this editor.
     last_persisted: PersistedEditorState,
     /// The zoom of the panel, as it was last applied to the styles.
@@ -534,6 +559,8 @@ pub struct SushiEditor {
     arp_position: Arc<AtomicUsize>,
     /// The number of voices that are currently playing.
     voice_count: Arc<AtomicUsize>,
+    /// The last values of the global modulation sources.
+    mod_feedback: Arc<ModFeedback>,
 }
 
 impl SushiEditor {
@@ -544,13 +571,14 @@ impl SushiEditor {
         arp_led: Arc<AtomicUsize>,
         arp_position: Arc<AtomicUsize>,
         voice_count: Arc<AtomicUsize>,
+        mod_feedback: Arc<ModFeedback>,
     ) -> Self {
         let mut editor = Self {
             params,
             scope_rx,
             history: VecDeque::with_capacity(HISTORY_LEN),
+            undo_history: UndoHistory::default(),
             gui_ctx: None,
-            legacy_theme: false,
             last_persisted: PersistedEditorState::default(),
             zoom: 1.0,
             state: EditorState {
@@ -561,7 +589,7 @@ impl SushiEditor {
                 rng: Rng::new(0x2545_F491),
                 arp_counter: 0,
                 arp_step: 0,
-                mod_page: false,
+                page: Page::Main,
                 readout: None,
                 activity: 0.0,
                 clipping: 0.0,
@@ -592,6 +620,7 @@ impl SushiEditor {
             arp_led,
             arp_position,
             voice_count,
+            mod_feedback,
         };
         editor.init_patch_state();
         editor.last_persisted = editor.read_persisted_state();
@@ -624,9 +653,6 @@ impl SushiEditor {
             .patch_dirty
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let legacy = self.params.legacy.value();
-        self.legacy_theme = legacy;
-        set_legacy_theme(legacy);
         self.state.patch_active_path = self
             .params
             .patch_path
@@ -706,6 +732,10 @@ impl SushiEditor {
     /// Applies a host state change (project reload, undo, another editor) to
     /// the open editor without touching the patch folder or the search.
     fn apply_persisted_state(&mut self, persisted: PersistedEditorState) {
+        // The sound underneath the history changed (project reload, host
+        // undo or another editor), so the old snapshots do not belong to it
+        // anymore.
+        self.undo_history.clear();
         self.state.preset_index = persisted.preset_index.min(PRESETS.len() - 1);
         self.state.dirty = persisted.dirty;
         self.state.patch_confirm_overwrite = false;
@@ -812,6 +842,71 @@ impl SushiEditor {
             self.state.arp_step = self.arp_position.load(Ordering::Relaxed);
         }
     }
+
+    /// Finishes an edit after the widgets are drawn. While a gesture is open
+    /// its snapshot stays pending, so a whole drag becomes one undo step.
+    fn finish_edit(&mut self) {
+        if self.state.gestures.is_empty() {
+            self.undo_history.commit(&self.params, &self.state);
+        }
+    }
+
+    /// Restores the state before the last sound edit.
+    fn undo(&mut self, setter: &ParamSetter) -> bool {
+        self.finish_edit();
+        let changed = self
+            .undo_history
+            .undo(&self.params, setter, &mut self.state);
+        if changed {
+            self.last_persisted = self.read_persisted_state();
+        }
+        changed
+    }
+
+    /// Restores the state that was undone last.
+    fn redo(&mut self, setter: &ParamSetter) -> bool {
+        self.finish_edit();
+        let changed = self
+            .undo_history
+            .redo(&self.params, setter, &mut self.state);
+        if changed {
+            self.last_persisted = self.read_persisted_state();
+        }
+        changed
+    }
+
+    /// Handles Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y. The keys are left to
+    /// a focused text field, so that typing and the undo of a text edit keep
+    /// working there.
+    fn handle_history_shortcuts(&mut self, ui: &egui::Ui, setter: &ParamSetter) {
+        if ui.ctx().text_edit_focused() {
+            return;
+        }
+
+        let (undo, redo) = ui.input_mut(|input| {
+            // The shift variant is checked first, because a pattern without
+            // Shift also matches a press that has Shift held down. Both the
+            // command and the plain Ctrl spelling are accepted, so the
+            // shortcut works the same on every host and in the tests.
+            let shift = egui::Modifiers::SHIFT;
+            let redo = input.consume_key(egui::Modifiers::COMMAND.plus(shift), egui::Key::Z)
+                || input.consume_key(egui::Modifiers::CTRL.plus(shift), egui::Key::Z)
+                || input.consume_key(egui::Modifiers::MAC_CMD.plus(shift), egui::Key::Z)
+                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+                || input.consume_key(egui::Modifiers::MAC_CMD, egui::Key::Y);
+            let undo = input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)
+                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
+                || input.consume_key(egui::Modifiers::MAC_CMD, egui::Key::Z);
+            (undo, redo)
+        });
+
+        if redo {
+            self.redo(setter);
+        } else if undo {
+            self.undo(setter);
+        }
+    }
 }
 
 impl NiceEguiApp for SushiEditor {
@@ -824,11 +919,10 @@ impl NiceEguiApp for SushiEditor {
         self.gui_ctx = Some(nice_gui_ctx);
         while self.scope_rx.pop().is_ok() {}
         self.history.clear();
+        self.undo_history.clear();
         self.init_patch_state();
         self.last_persisted = self.read_persisted_state();
 
-        set_legacy_theme(self.params.legacy.value());
-        self.legacy_theme = self.params.legacy.value();
         install_fonts(&egui_ctx);
         apply_theme(&egui_ctx, 1.0);
         Ok(())
@@ -863,10 +957,9 @@ impl SushiEditor {
         }
         let setter = gui_ctx.param_setter();
 
+        self.handle_history_shortcuts(ui, &setter);
         self.collect_scope();
         self.update_arp_position();
-        let legacy = self.params.legacy.value();
-        set_legacy_theme(legacy);
         ui.ctx().request_repaint_after(Duration::from_millis(16));
 
         let full = ui.max_rect();
@@ -882,60 +975,169 @@ impl SushiEditor {
 
         // The styles of the widgets follow the zoom of the panel, so that the
         // texts of the fields and of the windows grow with it.
-        if layout.zoom != self.zoom || legacy != self.legacy_theme {
+        if layout.zoom != self.zoom {
             apply_theme(ui.ctx(), layout.zoom);
             // The root ui was made before the theme was changed, so it still
             // has the old one.
             ui.reset_style();
             self.zoom = layout.zoom;
-            self.legacy_theme = legacy;
         }
 
-        // Split the borrow of the editor, so that the parameters, the state of
-        // the panel and the text buffers can be used at the same time.
-        let params = self.params.as_ref();
-        let history = &self.history;
-        let voice_count = &self.voice_count;
-        let mut ctx = Ctx {
-            params,
-            setter: &setter,
-            state: &mut self.state,
-            history,
-            voice_count,
-            slider_width: layout.slider_width(),
-            zoom: layout.zoom,
+        let footer_action = {
+            // Split the borrow of the editor, so that the parameters, the
+            // state of the panel, the text buffers and the undo history can
+            // be used at the same time.
+            let params = self.params.as_ref();
+            let history = &self.history;
+            let voice_count = &self.voice_count;
+            let mod_feedback = self.mod_feedback.as_ref();
+            let mut ctx = Ctx {
+                params,
+                setter: &setter,
+                state: &mut self.state,
+                undo: &mut self.undo_history,
+                history,
+                voice_count,
+                mod_feedback,
+                slider_width: layout.slider_width(),
+                zoom: layout.zoom,
+            };
+
+            if ctx.state.patch_open {
+                ctx.patch_page(ui);
+                None
+            } else {
+                let header_rect = layout.header();
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt("sushi-header")
+                        .max_rect(header_rect)
+                        .layout(EguiLayout::top_down(Align::Min)),
+                    |ui| header(ui, header_rect, &mut ctx),
+                );
+
+                match ctx.state.page {
+                    Page::Main => {
+                        row_a(ui, &layout, &mut ctx);
+                        row_b(ui, &layout, &mut ctx);
+                        row_c(ui, &layout, &mut ctx);
+                        row_d(ui, &layout, &mut ctx);
+                    }
+                    Page::Mod => {
+                        row_mod(ui, &layout, &mut ctx);
+                        row_c(ui, &layout, &mut ctx);
+                        row_d(ui, &layout, &mut ctx);
+                    }
+                    Page::Fx => row_fx(ui, &layout, &mut ctx),
+                }
+                draw_footer(
+                    ui,
+                    &layout,
+                    ctx.state,
+                    ctx.undo.can_undo(),
+                    ctx.undo.can_redo(),
+                )
+            }
         };
 
-        if ctx.state.patch_open {
-            ctx.patch_page(ui);
-            return;
-        }
+        // A drag may still be open, in which case its snapshot waits for the
+        // next frame. Everything else is committed here, once per edit.
+        self.finish_edit();
 
-        let header_rect = layout.header();
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .id_salt("sushi-header")
-                .max_rect(header_rect)
-                .layout(EguiLayout::top_down(Align::Min)),
-            |ui| header(ui, header_rect, &mut ctx),
-        );
-
-        let mod_page = ctx.state.mod_page;
-        if mod_page {
-            row_mod(ui, &layout, &mut ctx);
-        } else {
-            row_a(ui, &layout, &mut ctx);
-            row_b(ui, &layout, &mut ctx);
+        match footer_action {
+            Some(FooterAction::Undo) => {
+                self.undo(&setter);
+            }
+            Some(FooterAction::Redo) => {
+                self.redo(&setter);
+            }
+            None => {}
         }
-        row_c(ui, &layout, &mut ctx);
-        row_d(ui, &layout, &mut ctx);
-        draw_footer(ui, &layout, ctx.state);
     }
 }
 
-/// The footer silkscreen: the model name and the two shortcuts that are not
-/// visible on the faceplate.
-fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
+/// The command that a button of the footer asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FooterAction {
+    Undo,
+    Redo,
+}
+
+/// The places of the two history buttons of the footer.
+fn footer_button_rects(panel: Rect, zoom: f32) -> (Rect, Rect) {
+    let undo = Rect::from_min_size(
+        egui::pos2(
+            panel.left() + 118.0 * zoom,
+            panel.bottom() - (FOOTER_HEIGHT - 3.0) * zoom,
+        ),
+        egui::vec2(FOOTER_BUTTON_WIDTH, FOOTER_BUTTON_HEIGHT) * zoom,
+    );
+    let redo = Rect::from_min_size(
+        egui::pos2(undo.right() + 4.0 * zoom, undo.top()),
+        undo.size(),
+    );
+    (undo, redo)
+}
+
+/// A small flat button of the footer. The disabled state is a pale fill and a
+/// muted label instead of a click target that silently does nothing.
+fn footer_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    text: &str,
+    enabled: bool,
+    zoom: f32,
+) -> egui::Response {
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("sushi-footer", text)),
+        Sense::click(),
+    );
+    let painter = ui.painter_at(rect);
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let fill = if !enabled {
+        palette().track
+    } else if pressed {
+        palette().button_active
+    } else {
+        palette().button_bg
+    };
+    flat_box(&painter, rect, fill);
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::new(font_size(8.0, zoom), bold()),
+        if enabled {
+            palette().text
+        } else {
+            palette().muted
+        },
+    );
+
+    let hint = if enabled {
+        if text == "UNDO" {
+            "Undo (Ctrl/Cmd+Z)"
+        } else {
+            "Redo (Ctrl/Cmd+Shift+Z)"
+        }
+    } else if text == "UNDO" {
+        "Nothing to undo"
+    } else {
+        "Nothing to redo"
+    };
+    response.on_hover_text(hint)
+}
+
+/// The footer silkscreen: the model name, the two history buttons and the two
+/// shortcuts that are not visible on the faceplate.
+fn draw_footer(
+    ui: &mut egui::Ui,
+    layout: &Layout,
+    state: &EditorState,
+    can_undo: bool,
+    can_redo: bool,
+) -> Option<FooterAction> {
     let painter = ui.painter_at(layout.panel);
     let zoom = layout.zoom;
     let panel = layout.panel;
@@ -963,6 +1165,12 @@ fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
         palette().muted,
     );
 
+    // The two history buttons sit beside the model name, away from the
+    // centered readout and the shortcut hints on the right.
+    let (undo_rect, redo_rect) = footer_button_rects(panel, zoom);
+    let undo = footer_button(ui, undo_rect, "UNDO", can_undo, zoom);
+    let redo = footer_button(ui, redo_rect, "REDO", can_redo, zoom);
+
     // The live parameter readout: the reference's central value box.
     let (label, value) = state
         .readout
@@ -988,6 +1196,14 @@ fn draw_footer(ui: &egui::Ui, layout: &Layout, state: &EditorState) {
         FontId::new(font_size(10.0, zoom), bold()),
         palette().text,
     );
+
+    if undo.clicked() && can_undo {
+        Some(FooterAction::Undo)
+    } else if redo.clicked() && can_redo {
+        Some(FooterAction::Redo)
+    } else {
+        None
+    }
 }
 
 /// Draws the sad face that tells the user that the window is too small for
@@ -1045,36 +1261,35 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
 /// The places of the widgets of the header.
 struct HeaderRects {
-    /// The clickable area of the wordmark. The subtitle has to stay inside it.
+    /// The area of the wordmark. The subtitle has to stay inside it.
     logo: Rect,
     /// The button of the previous factory preset.
     previous: Rect,
-    /// The display that shows the name of the sound.
+    /// The display that shows the name of the sound and opens the patches.
     display: Rect,
     /// The button of the next factory preset.
     next: Rect,
     /// The button that mutates the sound.
     mutate: Rect,
-    /// The button that opens the patch browser.
-    patches: Rect,
-    /// The button that switches the two upper bands to the modulation matrix.
+    /// The tab that switches the panel to the modulation matrix.
     mod_page: Rect,
+    /// The tab that switches the panel to the FX overview.
+    fx_page: Rect,
     /// The meter that shows the number of the voices that are playing.
     meter: Rect,
 }
 
 /// The places of the widgets of the header.
 fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
-    // The wordmark is also the Modern/Legacy switch. The subtitle has to fit
-    // into the same clickable area, so the logo stops before the presets.
+    // The wordmark has a fixed place, and its subtitle has to fit into the
+    // same area, so the logo stops before the presets.
     let logo = Rect::from_min_size(
         rect.left_top() + egui::vec2(6.0, 0.0) * zoom,
         egui::vec2(140.0, HEADER_HEIGHT) * zoom,
     );
 
-    // The presets. The block starts close to the logo, so the display is wide
-    // enough for the long factory names. The next button keeps its old place,
-    // which leaves the meter and the scope untouched.
+    // The presets. The display is wider than before, because the separate
+    // PATCHES button is gone and the LCD itself opens the browser now.
     let preset_x = rect.left() + 152.0 * zoom;
     let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5 * zoom;
     let previous = Rect::from_min_size(
@@ -1083,31 +1298,33 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     );
     let display = Rect::from_min_size(
         egui::pos2(preset_x + 26.0 * zoom, button_y),
-        egui::vec2(178.0, 28.0) * zoom,
+        egui::vec2(198.0, 28.0) * zoom,
     );
     let next = Rect::from_min_size(
-        egui::pos2(preset_x + 210.0 * zoom, button_y),
+        egui::pos2(display.right() + 4.0 * zoom, button_y),
         egui::vec2(22.0, 28.0) * zoom,
     );
     let mutate = Rect::from_min_size(
-        egui::pos2(preset_x + 236.0 * zoom, button_y),
+        egui::pos2(next.right() + 4.0 * zoom, button_y),
         egui::vec2(62.0, 28.0) * zoom,
     );
-    let patches = Rect::from_min_size(
-        egui::pos2(mutate.right() + 4.0 * zoom, button_y),
-        egui::vec2(PATCHES_BUTTON_WIDTH, 28.0) * zoom,
-    );
 
-    // The page switch sits between the patch commands and the meter.
+    // The two page tabs sit between the patch commands and the meter. They
+    // are mutually exclusive and the active one is filled like a pressed
+    // tab, without moving any of the neighbouring controls.
     let mod_page = Rect::from_min_size(
-        egui::pos2(patches.right() + 4.0 * zoom, button_y),
-        egui::vec2(44.0, 28.0) * zoom,
+        egui::pos2(mutate.right() + 4.0 * zoom, button_y),
+        egui::vec2(PAGE_BUTTON_WIDTH, 28.0) * zoom,
+    );
+    let fx_page = Rect::from_min_size(
+        egui::pos2(mod_page.right() + 4.0 * zoom, button_y),
+        egui::vec2(PAGE_BUTTON_WIDTH, 28.0) * zoom,
     );
 
     // The meter that shows how many voices are playing. It sits in the free
-    // space between the page switch and the lights of the activity meter.
+    // space between the page tabs and the lights of the activity meter.
     let meter = Rect::from_min_max(
-        egui::pos2(mod_page.right() + 8.0 * zoom, rect.top()),
+        egui::pos2(fx_page.right() + 8.0 * zoom, rect.top()),
         egui::pos2(rect.right() - 220.0 * zoom, rect.bottom()),
     );
 
@@ -1117,8 +1334,8 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
         display,
         next,
         mutate,
-        patches,
         mod_page,
+        fx_page,
         meter,
     }
 }
@@ -1188,50 +1405,42 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         Stroke::new(1.0, palette().rule),
     );
 
-    // The wordmark is also the Modern/Legacy switch. It is drawn with the
-    // bold pixel font, so it does not have to be drawn twice. The preset
-    // controls and the display are measured first, so that the subtitle can
-    // be checked against the clickable logo area.
+    // The wordmark is static: the engine is Legacy-only, so there is no
+    // Modern/Legacy switch and no mode in the subtitle.
     let rects = header_rects(rect, zoom);
-    let logo_response = ui.interact(rects.logo, ui.scope_id().with("sushi-logo"), Sense::click());
     let wordmark = FontId::new(font_size(20.0, zoom), bold());
     painter.text(
-        rect.left_top() + egui::vec2(8.0, 2.0) * zoom,
+        rects.logo.left_top() + egui::vec2(2.0, 2.0) * zoom,
         Align2::LEFT_TOP,
         "SUSHI",
         wordmark,
-        if logo_response.hovered() {
-            palette().title_blue
-        } else {
-            palette().text
-        },
+        palette().text,
     );
-    let mode = if ctx.params.legacy.value() {
-        "LEGACY"
-    } else {
-        "MODERN"
-    };
     painter.text(
-        rect.left_top() + egui::vec2(8.0, 30.0) * zoom,
+        rects.logo.left_top() + egui::vec2(2.0, 30.0) * zoom,
         Align2::LEFT_TOP,
-        format!("POLYPHONIC / {mode}"),
+        "POLYPHONIC SYNTHESIZER",
         FontId::proportional(font_size(8.0, zoom)),
-        if logo_response.hovered() {
-            palette().accent
-        } else {
-            palette().muted
-        },
+        palette().muted,
     );
-    if logo_response.clicked() {
-        ctx.toggle_legacy();
-        ui.ctx().request_repaint();
-    }
-    logo_response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Click to switch Modern / Legacy DSP");
-    // The presets.
+
+    // The preset display is the patch browser button now. It keeps showing
+    // the current name and gets a pointer cursor and a tooltip instead of a
+    // separate PATCHES button.
+    let display_response = ui.interact(
+        rects.display,
+        ui.scope_id().with("sushi-lcd"),
+        Sense::click(),
+    );
     let index = ctx.state.preset_index;
     lcd(&painter, rects.display, &display_text(ctx.state), zoom);
+    if display_response.clicked() {
+        ctx.toggle_patch_browser();
+        ui.ctx().request_repaint();
+    }
+    display_response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Open the patch browser");
 
     if button(ui, rects.previous, "<", zoom).clicked() {
         ctx.load_preset(index + PRESETS.len() - 1);
@@ -1242,22 +1451,22 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     if button(ui, rects.mutate, "MUTATE", zoom).clicked() {
         ctx.mutate();
     }
-    if button(ui, rects.patches, "PATCHES", zoom).clicked() {
-        ctx.toggle_patch_browser();
-    }
 
-    // The page switch: MOD replaces the two upper bands with the routing
-    // matrix, while the performance and output bands stay exactly where they
-    // are.
-    if button(ui, rects.mod_page, "MOD", zoom).clicked() {
-        ctx.state.mod_page = !ctx.state.mod_page;
+    // The page tabs. MOD and FX are mutually exclusive, and clicking the
+    // active tab returns to the normal sound page.
+    if tab_button(ui, rects.mod_page, "MOD", ctx.state.page == Page::Mod, zoom).clicked() {
+        ctx.state.page = if ctx.state.page == Page::Mod {
+            Page::Main
+        } else {
+            Page::Mod
+        };
     }
-    if ctx.state.mod_page {
-        let underline = Rect::from_min_max(
-            egui::pos2(rects.mod_page.left(), rects.mod_page.bottom() - 2.0 * zoom),
-            rects.mod_page.right_bottom(),
-        );
-        painter.rect_filled(underline, CornerRadius::ZERO, palette().accent);
+    if tab_button(ui, rects.fx_page, "FX", ctx.state.page == Page::Fx, zoom).clicked() {
+        ctx.state.page = if ctx.state.page == Page::Fx {
+            Page::Main
+        } else {
+            Page::Fx
+        };
     }
 
     // The meter that shows how many voices are playing.
@@ -1561,7 +1770,7 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 .layout(EguiLayout::top_down(Align::Min)),
             |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                ctx.amount_bar(ui, amount_ids[slot], slot, amounts[slot]);
+                ctx.amount_bar(ui, amount_ids[slot], slot, amounts[slot], source);
             },
         );
 
@@ -1870,57 +2079,89 @@ fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec:
     });
 }
 
+/// One of the two LFO sections.
+///
+/// The LFO is a source of the modulation matrix now, so its section has no
+/// target or amount. It keeps the waveform, the clock and the retrigger, and
+/// the `MOD ROUTE` caption points to the page that owns the routing.
+fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usize) {
+    let p = ctx.params;
+    let (title, wave, sync, division, retrigger, rate, ids) = if index == 0 {
+        (
+            "LFO 1",
+            &p.lfo1_wave,
+            &p.lfo1_sync,
+            &p.lfo1_div,
+            &p.lfo1_retrigger,
+            &p.lfo1_rate,
+            (
+                "lfo1_wave",
+                "lfo1_sync",
+                "lfo1_div",
+                "lfo1_retrigger",
+                "lfo1_rate",
+            ),
+        )
+    } else {
+        (
+            "LFO 2",
+            &p.lfo2_wave,
+            &p.lfo2_sync,
+            &p.lfo2_div,
+            &p.lfo2_retrigger,
+            &p.lfo2_rate,
+            (
+                "lfo2_wave",
+                "lfo2_sync",
+                "lfo2_div",
+                "lfo2_retrigger",
+                "lfo2_rate",
+            ),
+        )
+    };
+
+    group(ui, rect, title, zoom, |ui, part| match part {
+        Part::Header => {
+            ctx.popup(ui, ids.0, wave, 54.0);
+            ctx.check(ui, ids.1, sync, "SYNC");
+        }
+        Part::Body => {
+            column_row_fixed(
+                ui,
+                ids.4,
+                2,
+                COLUMN_GAP,
+                60.0,
+                zoom,
+                |index, ui| match index {
+                    0 => ctx.float(ui, ids.4, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
+                    1 => {
+                        ui.horizontal(|ui| {
+                            ctx.check(ui, ids.3, retrigger, "RETRIG");
+                        });
+                        if sync.value() {
+                            caption(ui, "Div", 9.0, zoom, palette().label);
+                            ctx.popup(ui, ids.2, division, 50.0);
+                        }
+                        text_label(ui, "MOD ROUTE", 7.5, zoom, palette().muted);
+                    }
+                    _ => {}
+                },
+            );
+        }
+    });
+}
+
 /// The third row: the two LFOs, the arpeggiator and the voice.
 ///
 /// Splitting the LFOs into two small sections gives each one its own waveform
-/// and destination field, so neither is hidden behind an "OFF" box.
+/// and clock. The LFO routing lives in the modulation matrix.
 fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-c", layout, 2, |index, rect, ui| {
         let p = ctx.params;
         match index {
-            0 | 1 => {
-                let (title, wave, target, rate, amount, ids) = if index == 0 {
-                    (
-                        "LFO 1",
-                        &p.lfo1_wave,
-                        &p.lfo1_target,
-                        &p.lfo1_rate,
-                        &p.lfo1_amount,
-                        ("lfo1_wave", "lfo1_target", "lfo1_rate", "lfo1_amount"),
-                    )
-                } else {
-                    (
-                        "LFO 2",
-                        &p.lfo2_wave,
-                        &p.lfo2_target,
-                        &p.lfo2_rate,
-                        &p.lfo2_amount,
-                        ("lfo2_wave", "lfo2_target", "lfo2_rate", "lfo2_amount"),
-                    )
-                };
-                group(ui, rect, title, zoom, |ui, part| match part {
-                    Part::Header => {
-                        ctx.popup(ui, ids.0, wave, 54.0);
-                        ctx.popup(ui, ids.1, target, 54.0);
-                    }
-                    Part::Body => {
-                        column_row_fixed(ui, ids.2, 2, COLUMN_GAP, 60.0, zoom, |index, ui| {
-                            match index {
-                                0 => ctx.float(
-                                    ui,
-                                    ids.2,
-                                    "Rate",
-                                    rate,
-                                    &Knob::logarithmic(0.01, 40.0, 2),
-                                ),
-                                1 => ctx.float(ui, ids.3, "Amount", amount, &Knob::percent()),
-                                _ => {}
-                            }
-                        });
-                    }
-                });
-            }
+            0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
             2 => group(ui, rect, "ARP", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.check(ui, "arp_on", &p.arp_on, "ON");
@@ -2021,119 +2262,10 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         0 => {
             group(ui, rect, "FX", zoom, |ui, part| match part {
                 Part::Header => {}
-                Part::Body => sections(
-                    ui,
-                    "fx",
-                    3,
-                    GROUP_GAP,
-                    zoom,
-                    |index, _rect, ui| match index {
-                        0 => {
-                            column_row_fixed(
-                                ui,
-                                "chorus",
-                                3,
-                                COLUMN_GAP,
-                                52.0,
-                                zoom,
-                                |index, ui| {
-                                    let p = ctx.params;
-                                    match index {
-                                        0 => ctx.float(
-                                            ui,
-                                            "chorus_mix",
-                                            "Mix",
-                                            &p.chorus_mix,
-                                            &Knob::percent(),
-                                        ),
-                                        1 => ctx.float(
-                                            ui,
-                                            "chorus_rate",
-                                            "Rate",
-                                            &p.chorus_rate,
-                                            &Knob::logarithmic(0.05, 8.0, 2),
-                                        ),
-                                        2 => ctx.float(
-                                            ui,
-                                            "chorus_depth",
-                                            "Depth",
-                                            &p.chorus_depth,
-                                            &Knob::percent(),
-                                        ),
-                                        _ => {}
-                                    }
-                                },
-                            );
-                        }
-                        1 => {
-                            column_row_fixed(
-                                ui,
-                                "delay",
-                                3,
-                                COLUMN_GAP,
-                                52.0,
-                                zoom,
-                                |index, ui| {
-                                    let p = ctx.params;
-                                    match index {
-                                        0 => ctx.float(
-                                            ui,
-                                            "delay_time",
-                                            "Time",
-                                            &p.delay_time,
-                                            &Knob::logarithmic(10.0, 1_500.0, 1),
-                                        ),
-                                        1 => ctx.float(
-                                            ui,
-                                            "delay_feedback",
-                                            "FB",
-                                            &p.delay_feedback,
-                                            &Knob::percent(),
-                                        ),
-                                        2 => ctx.float(
-                                            ui,
-                                            "delay_mix",
-                                            "Mix",
-                                            &p.delay_mix,
-                                            &Knob::percent(),
-                                        ),
-                                        _ => {}
-                                    }
-                                },
-                            );
-                        }
-                        _ => {
-                            column_row_fixed(
-                                ui,
-                                "reverb",
-                                2,
-                                COLUMN_GAP,
-                                52.0,
-                                zoom,
-                                |index, ui| {
-                                    let p = ctx.params;
-                                    match index {
-                                        0 => ctx.float(
-                                            ui,
-                                            "reverb_decay",
-                                            "Decay",
-                                            &p.reverb_decay,
-                                            &Knob::percent(),
-                                        ),
-                                        1 => ctx.float(
-                                            ui,
-                                            "reverb_mix",
-                                            "Mix",
-                                            &p.reverb_mix,
-                                            &Knob::percent(),
-                                        ),
-                                        _ => {}
-                                    }
-                                },
-                            );
-                        }
-                    },
-                ),
+                Part::Body => sections(ui, "fx", 3, GROUP_GAP, zoom, |index, _rect, ui| {
+                    let name = ["chorus", "delay", "reverb"][index];
+                    fx_section_controls(ui, ctx, index, 52.0, name);
+                }),
             });
 
             // The labels sit over the centre of their real subgroups, not at
@@ -2188,6 +2320,103 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 }
             }),
         }),
+    });
+}
+
+/// The controls of one effect. The normal page uses them in the compact fourth
+/// band, and the FX page uses the same controls with a wider slot.
+fn fx_section_controls(ui: &mut egui::Ui, ctx: &mut Ctx, section: usize, slot: f32, name: &str) {
+    let zoom = ctx.zoom;
+    match section {
+        0 => {
+            column_row_fixed(ui, name, 3, COLUMN_GAP, slot, zoom, |index, ui| {
+                let p = ctx.params;
+                match index {
+                    0 => ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent()),
+                    1 => ctx.float(
+                        ui,
+                        "chorus_rate",
+                        "Rate",
+                        &p.chorus_rate,
+                        &Knob::logarithmic(0.05, 8.0, 2),
+                    ),
+                    2 => ctx.float(
+                        ui,
+                        "chorus_depth",
+                        "Depth",
+                        &p.chorus_depth,
+                        &Knob::percent(),
+                    ),
+                    _ => {}
+                }
+            });
+        }
+        1 => {
+            column_row_fixed(ui, name, 3, COLUMN_GAP, slot, zoom, |index, ui| {
+                let p = ctx.params;
+                match index {
+                    0 => ctx.float(
+                        ui,
+                        "delay_time",
+                        "Time",
+                        &p.delay_time,
+                        &Knob::logarithmic(10.0, 1_500.0, 1),
+                    ),
+                    1 => ctx.float(
+                        ui,
+                        "delay_feedback",
+                        "FB",
+                        &p.delay_feedback,
+                        &Knob::percent(),
+                    ),
+                    2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
+                    _ => {}
+                }
+            });
+        }
+        _ => {
+            column_row_fixed(ui, name, 2, COLUMN_GAP, slot, zoom, |index, ui| {
+                let p = ctx.params;
+                match index {
+                    0 => ctx.float(
+                        ui,
+                        "reverb_decay",
+                        "Decay",
+                        &p.reverb_decay,
+                        &Knob::percent(),
+                    ),
+                    1 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
+                    _ => {}
+                }
+            });
+        }
+    }
+}
+
+/// The FX page: a simple, full-panel overview of the existing effects.
+///
+/// It draws the same chorus, delay and reverb controls as the fourth band of
+/// the sound page, with wider fader slots. There are no new DSP effects here:
+/// the page is the plumbing for the FX tab and the place where future effect
+/// controls can be added.
+fn row_fx(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    let top = layout.scale(layout.base_rows[0]).left_top();
+    let bottom = layout.scale(layout.base_rows[3]).right_bottom();
+    let rect = Rect::from_min_max(top, bottom);
+
+    group(ui, rect, "FX", zoom, |ui, part| match part {
+        Part::Header => {
+            text_label(ui, "CHORUS / DELAY / REVERB", 9.0, zoom, palette().muted);
+        }
+        Part::Body => {
+            sections(ui, "fx-page", 3, GROUP_GAP, zoom, |index, _rect, ui| {
+                let title = ["CHORUS", "DELAY", "REVERB"][index];
+                let name = ["fx-page-chorus", "fx-page-delay", "fx-page-reverb"][index];
+                caption(ui, title, 10.0, zoom, palette().title_blue);
+                fx_section_controls(ui, ctx, index, 84.0, name);
+            });
+        }
     });
 }
 
@@ -2308,15 +2537,45 @@ impl Knob {
     }
 }
 
+/// Rebuilds the JSON preview of the patch browser. The preview belongs to the
+/// patch identity, so undo and redo refresh it as well.
+fn refresh_patch_preview(params: &SushiParams, state: &mut EditorState) {
+    let title = if let Some(active) = &state.patch_active {
+        active.clone()
+    } else {
+        format!(
+            "{:02} {}",
+            state.preset_index + 1,
+            PRESETS[state.preset_index].name
+        )
+    };
+
+    if let (Some(_active), Some(path)) = (&state.patch_active, &state.patch_active_path)
+        && let Ok(text) = std::fs::read_to_string(path)
+    {
+        state.patch_preview = text;
+        state.patch_preview_title = title;
+        return;
+    }
+
+    state.patch_preview = serde_json::to_string_pretty(&patch::to_json(params, &title))
+        .unwrap_or_else(|_| "{\n  \"error\": \"preview unavailable\"\n}".to_string());
+    state.patch_preview_title = title;
+}
+
 /// Everything a parameter widget needs to draw itself.
 struct Ctx<'a, 'b> {
     params: &'a SushiParams,
     setter: &'b ParamSetter<'b>,
     state: &'a mut EditorState,
+    /// The undo and redo history of the panel.
+    undo: &'a mut UndoHistory,
     /// The samples of the oscilloscope.
     history: &'a VecDeque<f32>,
     /// The number of voices that are currently playing.
     voice_count: &'a Arc<AtomicUsize>,
+    /// The last values of the global modulation sources.
+    mod_feedback: &'a ModFeedback,
     /// The width of the sliders of the panel.
     slider_width: f32,
     /// The zoom of the panel: how much bigger it is than its design size.
@@ -2324,18 +2583,23 @@ struct Ctx<'a, 'b> {
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
-    /// Switches between the modern and the legacy DSP flavor.
-    fn toggle_legacy(&mut self) {
-        let legacy = !self.params.legacy.value();
-        self.setter.begin_set_parameter(&self.params.legacy);
-        self.setter.set_parameter(&self.params.legacy, legacy);
-        self.setter.end_set_parameter(&self.params.legacy);
-        set_legacy_theme(legacy);
-    }
-
     /// The readout slot of the panel.
     fn readout(&mut self) -> &mut Option<(String, String)> {
         &mut self.state.readout
+    }
+
+    /// Remembers the sound before a change of this edit. A continuous drag
+    /// calls this on every frame, but only the first call takes a snapshot.
+    fn mark_edit(&mut self) {
+        self.undo.mark(self.params, self.state);
+    }
+
+    /// Finishes the edit of this frame unless a gesture is still open. A drag
+    /// is committed by its release frame, not by every frame in between.
+    fn commit_edit(&mut self) {
+        if self.state.gestures.is_empty() {
+            self.undo.commit(self.params, self.state);
+        }
     }
 
     /// Draws a continuous parameter: a caption, a vertical slider and a
@@ -2373,6 +2637,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
+            self.mark_edit();
             self.setter.set_parameter(param, value);
             self.state.dirty = true;
         }
@@ -2384,6 +2649,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_float(ui, id, label, param, knob, &response);
+        self.commit_edit();
         let value = format_number(knob.display(param.value()), knob.decimals);
         if response.hovered() || response.dragged() {
             *self.readout() = Some((
@@ -2429,6 +2695,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
+            self.mark_edit();
             self.setter.set_parameter(param, value.round() as i32);
             self.state.dirty = true;
         }
@@ -2440,6 +2707,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_int(ui, id, label, param, knob, &response);
+        self.commit_edit();
         let value = format_number(knob.display(param.value() as f32), knob.decimals);
         if response.hovered() || response.dragged() {
             *self.readout() = Some((
@@ -2455,7 +2723,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
     /// centre tick and a black handle. Drag changes the amount, Shift drags
     /// in fine steps, a right click opens the numeric editor and a double
     /// click puts the amount back to zero.
-    fn amount_bar(&mut self, ui: &mut egui::Ui, id: &'static str, slot: usize, param: &FloatParam) {
+    fn amount_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        slot: usize,
+        param: &FloatParam,
+        source: ModSource,
+    ) {
         #[cfg(test)]
         self.state.count(Widget::Slider);
 
@@ -2508,6 +2783,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 palette().handle
             },
         );
+
+        // The live marker: the source value times the amount of the route.
+        // Sources that belong to a single voice have no global value and are
+        // deliberately left without a marker.
+        if let Some(marker) = live_marker_rect(source, value, rect, zoom, self.mod_feedback) {
+            painter.rect_filled(marker, CornerRadius::ZERO, palette().accent);
+        }
 
         let drag_id = ui.scope_id().with("sushi-amount-drag");
         let mut drag: AmountDrag = ui
@@ -2567,6 +2849,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
+            self.mark_edit();
             self.setter.set_parameter(param, value);
             self.state.dirty = true;
         }
@@ -2578,6 +2861,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_float(ui, id, "Amount", param, &Knob::bipolar(), &response);
+        self.commit_edit();
         let text = format_amount(param.value());
         if response.hovered() || response.dragged() {
             *self.readout() = Some((format!("MOD {} AMOUNT", slot + 1), format!("{text}%")));
@@ -2648,6 +2932,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 match text.trim().parse::<f32>() {
                     Ok(parsed) if parsed.is_finite() => {
                         let plain = knob.parse(parsed);
+                        self.mark_edit();
                         self.setter.begin_set_parameter(param);
                         self.setter.set_parameter(param, plain);
                         self.setter.end_set_parameter(param);
@@ -2725,6 +3010,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 match text.trim().parse::<f32>() {
                     Ok(parsed) if parsed.is_finite() => {
                         let plain = knob.parse(parsed).round() as i32;
+                        self.mark_edit();
                         self.setter.begin_set_parameter(param);
                         self.setter.set_parameter(param, plain);
                         self.setter.end_set_parameter(param);
@@ -2782,6 +3068,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 for (index, name) in variants.iter().enumerate() {
                     let variant = T::from_index(index);
                     if ui.selectable_label(current == variant, *name).clicked() {
+                        self.mark_edit();
                         self.setter.set_parameter(param, variant);
                         self.state.dirty = true;
                     }
@@ -2801,10 +3088,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
         // A double click on the button of the popup resets the parameter to
         // its factory default.
         if response.double_clicked() {
+            self.mark_edit();
             self.setter
                 .set_parameter(param, param.default_plain_value());
             self.state.dirty = true;
         }
+
+        self.commit_edit();
     }
 
     /// Draws a check box with a label. Clicking it switches the parameter.
@@ -2846,13 +3136,16 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if response.double_clicked() {
             // A double click resets the parameter to its factory default,
             // even though the two clicks would switch it twice.
+            self.mark_edit();
             self.setter
                 .set_parameter(param, param.default_plain_value());
             self.state.dirty = true;
         } else if response.clicked() {
+            self.mark_edit();
             self.setter.set_parameter(param, !param.value());
             self.state.dirty = true;
         }
+        self.commit_edit();
 
         text_label(ui, label, 9.0, zoom, palette().text);
     }
@@ -2910,19 +3203,23 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
             if response.double_clicked() {
                 // A double click resets the parameter to its factory default.
+                self.mark_edit();
                 self.setter
                     .set_parameter(param, param.default_plain_value());
                 self.state.dirty = true;
             } else if response.clicked() {
+                self.mark_edit();
                 self.setter.set_parameter(param, T::from_index(index));
                 self.state.dirty = true;
             }
         }
+        self.commit_edit();
     }
 
     /// Loads the factory preset with the given index.
     fn load_preset(&mut self, index: usize) {
         let index = index % PRESETS.len();
+        self.mark_edit();
         self.state.preset_index = index;
         self.state.dirty = false;
         // A factory preset replaces the patch of the user.
@@ -2931,6 +3228,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_name = PRESETS[index].name.to_string();
         presets::apply(self.params, self.setter, index);
         self.refresh_patch_preview();
+        self.commit_edit();
     }
 
     /// Draws the patch browser as a full page. It replaces the synth panel
@@ -3235,33 +3533,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
     /// current sound when a factory preset is selected. This is a read-only
     /// view of the actual document, not a second copy of the sound.
     fn refresh_patch_preview(&mut self) {
-        let title = if let Some(active) = &self.state.patch_active {
-            active.clone()
-        } else {
-            format!(
-                "{:02} {}",
-                self.state.preset_index + 1,
-                PRESETS[self.state.preset_index].name
-            )
-        };
-
-        if let (Some(_active), Some(path)) =
-            (&self.state.patch_active, &self.state.patch_active_path)
-            && let Ok(text) = std::fs::read_to_string(path)
-        {
-            self.state.patch_preview = text;
-            self.state.patch_preview_title = title;
-            return;
-        }
-
-        self.state.patch_preview =
-            serde_json::to_string_pretty(&patch::to_json(self.params, &title))
-                .unwrap_or_else(|_| "{\n  \"error\": \"preview unavailable\"\n}".to_string());
-        self.state.patch_preview_title = title;
+        refresh_patch_preview(self.params, self.state);
     }
 
     /// Loads a patch of the folder into the synthesizer.
     fn load_patch_file(&mut self, path: &Path) {
+        self.mark_edit();
         match patch::load_patch(path, self.params, self.setter) {
             Ok(name) => {
                 // The patch that is loaded is not the one that was waiting
@@ -3284,6 +3561,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 self.set_status(error, true);
             }
         }
+        self.commit_edit();
     }
 
     /// Saves the current sound as a patch of the folder.
@@ -3357,14 +3635,20 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
     /// Mutates the current sound a little bit.
     fn mutate(&mut self) {
+        self.mark_edit();
         presets::mutate(self.params, self.setter, &mut self.state.rng);
         self.state.dirty = true;
+        self.commit_edit();
     }
 
     /// Puts a parameter back to its factory default. The reset is done
     /// inside of the automation gesture of the widget, so that the host
     /// records it like any other change of the parameter.
     fn reset_to_default<P: Param>(&mut self, id: &'static str, param: &P) {
+        self.mark_edit();
+        // A reset is a double click. Its first click is folded into the same
+        // undo step, so undo returns to the value before the double click.
+        self.undo.merge_double_click(self.params, self.state);
         // The sound was changed by the user, so it is marked as dirty.
         self.state.dirty = true;
 
@@ -3402,6 +3686,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.state.gestures.insert(id);
+        self.mark_edit();
         true
     }
 
@@ -3420,6 +3705,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.state.gestures.remove(id);
+        // The release frame commits the whole drag as one undo step.
+        self.commit_edit();
         true
     }
 }
@@ -3783,6 +4070,48 @@ fn amount_to_x(value: f32, rect: Rect, zoom: f32) -> f32 {
 fn amount_from_x(x: f32, rect: Rect, zoom: f32) -> f32 {
     let (start, end) = amount_bounds(rect, zoom);
     ((x - start) / (end - start)).clamp(0.0, 1.0) * 2.0 - 1.0
+}
+
+/// The live value of a modulation source, in the units of the matrix.
+///
+/// Only the global sources have a single value that the editor can show. The
+/// envelopes, the velocity, the key and the random source belong to one voice,
+/// so they return `None` instead of a made-up value.
+fn live_source_value(source: ModSource, feedback: &ModFeedback) -> Option<f32> {
+    match source {
+        ModSource::Lfo1 => Some(feedback.lfo1()),
+        ModSource::Lfo2 => Some(feedback.lfo2()),
+        ModSource::Macro1 => Some(feedback.macro1()),
+        ModSource::Macro2 => Some(feedback.macro2()),
+        ModSource::Macro3 => Some(feedback.macro3()),
+        ModSource::ModWheel => Some(feedback.mod_wheel()),
+        ModSource::Off
+        | ModSource::ModEnv
+        | ModSource::AmpEnv
+        | ModSource::Velocity
+        | ModSource::Key
+        | ModSource::Random => None,
+    }
+}
+
+/// The marker of the live modulation on an amount bar, or `None` when the
+/// source has no global value. The marker sits at the product of the source
+/// value and the amount of the route, which is exactly the modulation that the
+/// matrix adds.
+fn live_marker_rect(
+    source: ModSource,
+    amount: f32,
+    rect: Rect,
+    zoom: f32,
+    feedback: &ModFeedback,
+) -> Option<Rect> {
+    let source_value = live_source_value(source, feedback)?;
+    let live = (source_value * amount).clamp(-1.0, 1.0);
+    let x = amount_to_x(live, rect, zoom);
+    Some(Rect::from_center_size(
+        egui::pos2(x, rect.center().y),
+        egui::vec2(MOD_LIVE_MARKER_WIDTH * zoom, (MOD_BAR_HEIGHT - 6.0) * zoom),
+    ))
 }
 
 /// The geometry of one two-lane fader. The thumb width is a ratio of the
@@ -4252,6 +4581,56 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
     response
 }
 
+/// A page tab. The active tab is filled as a whole and gets an accent frame,
+/// so it reads as a pressed tab rather than as an underlined button. The
+/// inactive tabs keep the normal button fill.
+fn tab_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    text: &str,
+    active: bool,
+    zoom: f32,
+) -> egui::Response {
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("sushi-tab", text)),
+        Sense::click(),
+    );
+    let painter = ui.painter_at(rect);
+
+    let pressed = response.is_pointer_button_down_on();
+    let fill = if active || pressed {
+        palette().button_active
+    } else {
+        palette().button_bg
+    };
+    flat_box(&painter, rect, fill);
+    if active {
+        painter.rect_stroke(
+            rect.shrink(1.0 * zoom),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, palette().accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::new(
+            font_size(10.0, zoom),
+            if active {
+                bold()
+            } else {
+                egui::FontFamily::Proportional
+            },
+        ),
+        palette().text,
+    );
+
+    response
+}
+
 /// The small oscilloscope of the header. It is just here to give the panel a
 /// bit of life, not to be a measurement tool.
 fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoom: f32) {
@@ -4487,7 +4866,9 @@ fn flat_box(painter: &egui::Painter, rect: Rect, fill: Color32) {
 
 #[cfg(test)]
 mod tests {
+    use super::undo::UNDO_LIMIT;
     use super::*;
+    use crate::dsp::mod_feedback::ModFeedbackValues;
     use crate::patch::test_support::ENV_LOCK;
     use nice_plug::params::internals::ParamPtr;
     use std::cell::Cell;
@@ -4572,7 +4953,15 @@ mod tests {
         let arp_led = Arc::new(AtomicUsize::new(0));
         let arp_position = Arc::new(AtomicUsize::new(0));
         let voice_count = Arc::new(AtomicUsize::new(0));
-        let mut editor = SushiEditor::new(params.clone(), rx, arp_led, arp_position, voice_count);
+        let mod_feedback = Arc::new(ModFeedback::default());
+        let mut editor = SushiEditor::new(
+            params.clone(),
+            rx,
+            arp_led,
+            arp_position,
+            voice_count,
+            mod_feedback,
+        );
         let ctx = egui::Context::default();
         // The tests draw with the fonts of the real panel, so that a text that
         // is too wide is caught here and not only in the host.
@@ -4592,8 +4981,10 @@ mod tests {
             params,
             setter,
             state: &mut editor.state,
+            undo: &mut editor.undo_history,
             history: &editor.history,
             voice_count: &editor.voice_count,
+            mod_feedback: &editor.mod_feedback,
             slider_width: SLIDER_WIDTH,
             zoom: 1.0,
         }
@@ -4669,6 +5060,29 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// All the filled rectangles of a frame, with their fill colors.
+    fn rect_fills(output: &egui::FullOutput) -> Vec<(egui::Rect, Color32)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => {
+                    Some((rect.rect, rect.fill))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The fill of the rectangle at the given place.
+    fn fill_of(rect: egui::Rect, fills: &[(egui::Rect, Color32)]) -> Color32 {
+        fills
+            .iter()
+            .find(|(candidate, _)| *candidate == rect)
+            .map(|(_, fill)| *fill)
+            .unwrap_or_else(|| panic!("there is no filled rectangle at {rect:?}"))
     }
 
     /// All the texts of a frame, with their positions and their sizes.
@@ -4770,6 +5184,31 @@ mod tests {
         ]
     }
 
+    /// Presses one of the history shortcuts. On Linux the host reports the
+    /// command key as Ctrl and as Command, which is what a real event does.
+    fn shortcut(key: egui::Key, shift: bool) -> Vec<egui::RawInput> {
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            shift,
+            ..Default::default()
+        };
+        vec![input(vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }])]
+    }
+
+    /// The panel of the default test window.
+    fn default_panel(ctx: &egui::Context) -> Rect {
+        Layout::for_rect(ctx.viewport_rect())
+            .expect("the window is big enough")
+            .panel
+    }
+
     /// The index of the slider of the cutoff in the list of the sliders of a
     /// frame. It is the first slider of the filter, the fourth group of the
     /// first row.
@@ -4779,7 +5218,7 @@ mod tests {
     const TUNE_SLIDER: usize = 0;
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
-    const VOICES_SLIDER: usize = 42;
+    const VOICES_SLIDER: usize = 40;
 
     #[test]
     fn fader_thumbs_keep_equal_side_margins() {
@@ -4804,9 +5243,9 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 56, "unexpected number of sliders");
-        assert_eq!(counts.popups, 11, "unexpected number of popups");
-        assert_eq!(counts.checks, 3, "unexpected number of check boxes");
+        assert_eq!(counts.sliders, 54, "unexpected number of sliders");
+        assert_eq!(counts.popups, 9, "unexpected number of popups");
+        assert_eq!(counts.checks, 7, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
 
@@ -4816,16 +5255,97 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The panel page has 71 patch parameters: 56 sliders, 11 choices,
-        // 3 switches and one pair of buttons. The modulation matrix adds 24
-        // more on its own page, which has its own test. The Modern/Legacy
-        // switch is a host parameter reached through the SUSHI wordmark.
+        // The panel page has 71 visible patch parameters: 54 sliders, 9
+        // choices, 7 switches and one pair of buttons. The LFO target and
+        // amount are hidden legacy parameters now, and the two divisions
+        // appear only while their sync switch is on (for 73 visible
+        // parameters in all). The modulation matrix adds 24 more on its own
+        // page, which has its own test. The Legacy DSP flag is a host
+        // parameter kept for state compatibility; it is no longer exposed on
+        // the panel.
         let continuous = counts.sliders;
-        assert_eq!(continuous, 56);
+        assert_eq!(continuous, 54);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
             71
         );
+    }
+
+    #[test]
+    fn the_lfo_sections_route_through_mod_and_show_the_sync_controls() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+
+        // The legacy Target/Amount pair is gone from the faceplate; the
+        // matrix page is the only place that routes an LFO.
+        for hidden in ["Target", "TARGET", "Amount", "AMOUNT"] {
+            assert!(
+                !names.iter().any(|text| text == hidden),
+                "the panel still shows the old LFO {hidden}: {names:?}"
+            );
+        }
+        assert!(
+            names.iter().any(|text| text == "MOD ROUTE"),
+            "the LFO section has no hint that routing lives in MOD"
+        );
+        // The division only appears once sync is on.
+        assert!(!names.iter().any(|text| text == "1/4"));
+
+        // The first LFO sync switch is the second check box of the panel.
+        let sync = editor.state.check_rects[1];
+        run_frames(&ctx, &mut editor, click(sync.center()));
+        assert!(params.lfo1_sync.value());
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert!(
+            texts(&output).iter().any(|(text, _)| text == "1/4"),
+            "the division popup did not appear with sync on"
+        );
+        assert_eq!(
+            editor.state.popup_rects.len(),
+            10,
+            "the LFO 1 division popup is missing"
+        );
+
+        // The retrigger switch sits beside the rate fader.
+        let retrigger = editor.state.check_rects[2];
+        run_frames(&ctx, &mut editor, click(retrigger.center()));
+        assert!(params.lfo1_retrigger.value());
+
+        // Open the division popup and pick a different note value.
+        let (_, division) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "1/4")
+            .expect("the division popup has no selected value");
+        let button = division + egui::vec2(2.0, 2.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(button)]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+                input(vec![]),
+            ],
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, eighth) = texts(&output)
+            .into_iter()
+            .find(|(text, pos)| text == "1/8" && pos.x < 240.0)
+            .expect("the division popup has no eighth note");
+        run_frames(&ctx, &mut editor, click(eighth + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.lfo1_div.value(), crate::params::NoteDiv::Eighth);
     }
 
     #[test]
@@ -4899,7 +5419,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 56, "unexpected number of sliders");
+        assert_eq!(sliders.len(), 54, "unexpected number of sliders");
         // The cutoff slider is the first one of the fourth group of the
         // first row.
         let rect = sliders[CUTOFF_SLIDER];
@@ -4980,6 +5500,359 @@ mod tests {
             "the gesture was not opened and closed exactly once"
         );
         assert!(sets >= 2, "the value was not set while dragging");
+    }
+
+    #[test]
+    fn a_slider_edit_can_be_undone_and_redone() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+        let before = params.cutoff.value();
+        assert!(!editor.undo_history.can_undo());
+
+        run_frames(&ctx, &mut editor, click(rect.center()));
+        let after = params.cutoff.value();
+        assert_ne!(after, before, "the slider did not change the sound");
+        assert!(editor.undo_history.can_undo());
+        assert!(editor.state.dirty);
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let undone = params.cutoff.value();
+        assert!(
+            (undone - before).abs() < 0.01,
+            "undo restored {undone} instead of {before}"
+        );
+        assert!(!editor.state.dirty, "undo did not restore the clean flag");
+        assert!(editor.undo_history.can_redo());
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        let redone = params.cutoff.value();
+        assert!(
+            (redone - after).abs() < 0.01,
+            "redo restored {redone} instead of {after}"
+        );
+        assert!(editor.state.dirty, "redo did not restore the edit flag");
+    }
+
+    #[test]
+    fn a_patch_load_can_be_undone_and_redone() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("undo-load");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // A different sound with no patch loaded, then the patch is loaded.
+        setter.set_parameter(&params.cutoff, 500.0);
+        editor.state.dirty = true;
+        editor.state.patch_active = None;
+        editor.state.patch_active_path = None;
+        let path = dir.path.join("MY PATCH.json");
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&path);
+        }
+        assert!((params.cutoff.value() - 1_234.0).abs() < 0.01);
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+
+        // Undo brings back the sound and the identity that was there before.
+        assert!(editor.undo(&setter));
+        assert!((params.cutoff.value() - 500.0).abs() < 0.01);
+        assert!(editor.state.patch_active.is_none());
+        assert!(editor.state.dirty);
+
+        // Redo loads the patch again.
+        assert!(editor.redo(&setter));
+        assert!((params.cutoff.value() - 1_234.0).abs() < 0.01);
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+        assert!(!editor.state.dirty);
+    }
+
+    #[test]
+    fn a_typed_value_can_be_undone() {
+        let (ctx, mut editor, params) = make_editor();
+        edit_cutoff(&mut editor, &ctx, "1000");
+        assert!((params.cutoff.value() - 1_000.0).abs() < 0.01);
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let cutoff = params.cutoff.value();
+        assert!(
+            (cutoff - 3_000.0).abs() < 0.01,
+            "the typed value was not undone: {cutoff}"
+        );
+    }
+
+    #[test]
+    fn a_reset_is_one_undo_step() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+
+        // Move the cutoff away from its default.
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rect.center().x, rect.top() + 5.0)),
+        );
+        let before_reset = params.cutoff.value();
+        assert_ne!(before_reset, 3_000.0);
+
+        // The first click of the double click is part of the reset, so one
+        // undo brings the sound back to the value before the double click.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+        assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let undone = params.cutoff.value();
+        assert!(
+            (undone - before_reset).abs() < 0.01,
+            "the reset was not one step: {undone} instead of {before_reset}"
+        );
+    }
+
+    #[test]
+    fn a_check_box_reset_is_one_undo_step() {
+        let (ctx, mut editor, params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = editor.state.check_rects[0];
+
+        // Switch the first check box on.
+        run_frames(&ctx, &mut editor, click(rect.center()));
+        assert!(params.osc_sync.value() || params.arp_on.value());
+        let before_reset = if params.osc_sync.value() {
+            params.osc_sync.value()
+        } else {
+            params.arp_on.value()
+        };
+
+        // The double click resets it, and one undo returns to the value that
+        // the check box had before the double click.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, double_click(rect.center()));
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let after_undo = if params.osc_sync.value() {
+            params.osc_sync.value()
+        } else {
+            params.arp_on.value()
+        };
+        assert_eq!(after_undo, before_reset);
+    }
+
+    #[test]
+    fn a_preset_load_can_be_undone_and_redone() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == ">")
+            .expect("the header has no next button");
+
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+        assert_eq!(editor.state.preset_index, 1);
+        assert!((params.cutoff.value() - 4_200.0).abs() < 0.01);
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert_eq!(editor.state.preset_index, 0);
+        assert!(editor.state.patch_active.is_none());
+        assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert_eq!(editor.state.preset_index, 1);
+        assert!((params.cutoff.value() - 4_200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_mutation_can_be_undone_and_redone() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "MUTATE")
+            .expect("the header has no mutate button");
+
+        let before = params.cutoff.value();
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+        let mutated = params.cutoff.value();
+        assert_ne!(mutated, before, "the mutation did not change the sound");
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let undone = params.cutoff.value();
+        assert!(
+            (undone - before).abs() < 0.01,
+            "the mutation was not undone: {undone} instead of {before}"
+        );
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        let redone = params.cutoff.value();
+        assert!(
+            (redone - mutated).abs() < 0.01,
+            "the mutation was not redone: {redone} instead of {mutated}"
+        );
+    }
+
+    #[test]
+    fn a_new_edit_clears_the_redo_branch() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+
+        // A click near the top changes the sound, and undo brings it back.
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rect.center().x, rect.top() + 5.0)),
+        );
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert!(editor.undo_history.can_redo());
+
+        // A new edit must forget the redo branch.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rect.center().x, rect.bottom() - 5.0)),
+        );
+        let second = params.cutoff.value();
+        assert!(
+            !editor.undo_history.can_redo(),
+            "the redo branch survived a new edit"
+        );
+
+        // Redo has nothing to restore anymore.
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert!((params.cutoff.value() - second).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_drag_is_one_undo_step() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+        let before = params.cutoff.value();
+
+        let start = egui::pos2(rect.center().x, rect.top() + 8.0);
+        let end = egui::pos2(rect.center().x, rect.bottom() - 8.0);
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(start, end, egui::Modifiers::default()),
+        );
+
+        let after = params.cutoff.value();
+        assert_ne!(after, before, "the drag did not change the sound");
+        assert_eq!(
+            editor.undo_history.len(),
+            1,
+            "the drag was recorded more than once"
+        );
+
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        let undone = params.cutoff.value();
+        assert!(
+            (undone - before).abs() < 0.01,
+            "one undo did not restore the pre-drag sound: {undone} instead of {before}"
+        );
+    }
+
+    #[test]
+    fn the_undo_history_is_bounded() {
+        let (_ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+
+        for step in 0..UNDO_LIMIT + 10 {
+            editor.undo_history.mark(&params, &editor.state);
+            setter.set_parameter(&params.cutoff, 1_000.0 + step as f32);
+            editor.state.dirty = true;
+            editor.undo_history.commit(&params, &editor.state);
+        }
+
+        assert_eq!(
+            editor.undo_history.len(),
+            UNDO_LIMIT,
+            "the undo history grew past its limit"
+        );
+    }
+
+    #[test]
+    fn a_focused_text_field_keeps_the_undo_shortcut() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+
+        run_frames(&ctx, &mut editor, click(rect.center()));
+        let edited = params.cutoff.value();
+        assert!(editor.undo_history.can_undo());
+
+        // Open the patch browser and focus its search field.
+        editor.state.patch_open = true;
+        settle(&ctx, &mut editor);
+        ctx.memory_mut(|memory| {
+            memory.request_focus(egui::Id::unique("sushi-patch-search"));
+        });
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert!(
+            ctx.text_edit_focused(),
+            "the search field did not take the focus"
+        );
+
+        // The shortcut belongs to the text field, not to the sound.
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert!(
+            (params.cutoff.value() - edited).abs() < 0.01,
+            "the sound was undone while a text field had the focus"
+        );
+        assert!(editor.undo_history.can_undo());
+    }
+
+    #[test]
+    fn the_footer_undo_and_redo_buttons_work() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let panel = default_panel(&ctx);
+        let (undo_rect, redo_rect) = footer_button_rects(panel, zoom_of(&ctx));
+
+        // Both buttons are visible and disabled while the history is empty.
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"UNDO".to_string()),
+            "there is no undo button"
+        );
+        assert!(
+            names.contains(&"REDO".to_string()),
+            "there is no redo button"
+        );
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(undo_rect, &fills), palette().track);
+        assert_eq!(fill_of(redo_rect, &fills), palette().track);
+
+        // An edit enables undo, and the button restores the sound.
+        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
+        run_frames(&ctx, &mut editor, click(rect.center()));
+        let edited = params.cutoff.value();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(undo_rect, &fills), palette().button_bg);
+        assert_eq!(fill_of(redo_rect, &fills), palette().track);
+
+        run_frames(&ctx, &mut editor, click(undo_rect.center()));
+        assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
+
+        // Undo enables redo, and the button restores the edit again.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(redo_rect, &fills), palette().button_bg);
+        run_frames(&ctx, &mut editor, click(redo_rect.center()));
+        assert!((params.cutoff.value() - edited).abs() < 0.01);
     }
 
     /// Right-clicks the cutoff slider, clears the editor and types `text`.
@@ -5323,9 +6196,10 @@ mod tests {
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The check boxes are VCO 2 SYNC, then the ARP ON and LATCH switches.
-        // This test uses the first ARP switch.
-        let rect = editor.state.check_rects[1];
+        // The check boxes are VCO 2 SYNC, the two LFO sync/retrigger pairs,
+        // then the ARP ON and LATCH switches. This test uses the first ARP
+        // switch.
+        let rect = editor.state.check_rects[5];
         let pos = rect.center();
 
         // A single click switches the check box on.
@@ -5419,7 +6293,7 @@ mod tests {
     }
 
     #[test]
-    fn the_patches_button_does_not_overlap_the_voice_meter() {
+    fn the_header_controls_do_not_overlap_the_voice_meter() {
         for percent in (100..=400).step_by(5) {
             let zoom = percent as f32 / 100.0;
             let rect = Rect::from_min_size(
@@ -5428,16 +6302,52 @@ mod tests {
             );
             let rects = header_rects(rect, zoom);
 
-            // The button of the patch browser sits between the mutation and the
-            // meter of the voices.
-            assert!(rects.patches.left() >= rects.mutate.right());
-            assert!(rects.mod_page.left() >= rects.patches.right());
-            assert!(rects.meter.left() >= rects.mod_page.right());
-            assert!(!rects.patches.intersects(rects.meter));
-            // The meter still fits between the button and the lights of the
+            // Every header control has its own slot, in reading order. The
+            // removed PATCHES button leaves room for the wider LCD and the two
+            // page tabs, without an overlap.
+            assert!(rects.previous.left() >= rects.logo.right());
+            assert!(rects.display.left() >= rects.previous.right());
+            assert!(rects.next.left() >= rects.display.right());
+            assert!(rects.mutate.left() >= rects.next.right());
+            assert!(rects.mod_page.left() >= rects.mutate.right());
+            assert!(rects.fx_page.left() >= rects.mod_page.right());
+            assert!(rects.meter.left() >= rects.fx_page.right());
+            assert!(!rects.display.intersects(rects.meter));
+            assert!(!rects.mod_page.intersects(rects.meter));
+            assert!(!rects.fx_page.intersects(rects.meter));
+            // The meter still fits between the tabs and the lights of the
             // activity meter.
             assert!(rects.meter.right() <= rect.right() - 194.0 * zoom);
             assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH * zoom);
+        }
+    }
+
+    #[test]
+    fn the_header_texts_do_not_overlap_at_any_zoom() {
+        let (ctx, mut editor, _params) = make_editor();
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+            let bottom = (MARGIN + HEADER_HEIGHT) * zoom;
+            let header_texts: Vec<(String, Rect)> = text_shapes(&output)
+                .into_iter()
+                .filter(|(_, pos, _)| pos.y < bottom)
+                .map(|(text, pos, text_size)| (text, Rect::from_min_size(pos, text_size)))
+                .collect();
+
+            // The static wordmark, the subtitle and the LCD have to share the
+            // header with the buttons and the page tabs without touching.
+            for (index, (first, first_rect)) in header_texts.iter().enumerate() {
+                for (second, second_rect) in header_texts.iter().skip(index + 1) {
+                    let overlap = first_rect.intersect(*second_rect);
+                    assert!(
+                        overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                        "the header texts {first:?} and {second:?} overlap at {percent}%: \
+{first_rect:?} / {second_rect:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -5452,22 +6362,22 @@ mod tests {
         let button = pos + egui::vec2(2.0, 2.0);
 
         run_frames(&ctx, &mut editor, click(button));
-        assert!(editor.state.mod_page);
+        assert_eq!(editor.state.page, Page::Mod);
         editor.state.counts = Counts::default();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
         assert_eq!(
-            counts.sliders, 42,
+            counts.sliders, 40,
             "the matrix needs eight bars and eight envelope faders"
         );
-        assert_eq!(counts.popups, 23, "unexpected number of matrix popups");
+        assert_eq!(counts.popups, 21, "unexpected number of matrix popups");
         assert_eq!(
             editor.state.popup_rects.len(),
             counts.popups,
             "the matrix page left stale popup rectangles behind"
         );
-        assert_eq!(counts.checks, 2);
+        assert_eq!(counts.checks, 6);
         assert_eq!(counts.radios, 1);
         assert_eq!(
             editor.state.amount_rects.len(),
@@ -5476,7 +6386,7 @@ mod tests {
         );
         assert_eq!(
             slider_rects(&ctx, &output).len(),
-            34,
+            32,
             "the matrix lost a vertical fader"
         );
 
@@ -5489,11 +6399,11 @@ mod tests {
 
         // A second click brings the sound controls back.
         run_frames(&ctx, &mut editor, click(button));
-        assert!(!editor.state.mod_page);
+        assert_eq!(editor.state.page, Page::Main);
         editor.state.counts = Counts::default();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(editor.state.counts.sliders, 56);
-        assert_eq!(editor.state.counts.popups, 11);
+        assert_eq!(editor.state.counts.sliders, 54);
+        assert_eq!(editor.state.counts.popups, 9);
         assert_eq!(
             editor.state.popup_rects.len(),
             editor.state.counts.popups,
@@ -5504,7 +6414,7 @@ mod tests {
     #[test]
     fn the_matrix_page_is_one_compact_table_with_both_envelopes() {
         let (ctx, mut editor, _params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let all_texts = texts(&output);
         let names: Vec<String> = all_texts.iter().map(|(text, _)| text.clone()).collect();
@@ -5596,7 +6506,7 @@ mod tests {
     #[test]
     fn an_amount_that_rounds_to_zero_stays_silent() {
         let (ctx, mut editor, params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
         let setter = gui_ctx.param_setter();
         setter.set_parameter(&params.mod1_amount, 0.001);
@@ -5622,16 +6532,16 @@ mod tests {
         let normal = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let normal: Vec<(String, egui::Pos2)> = texts(&normal)
             .into_iter()
-            .filter(|(text, _)| titles.contains(&text.as_str()))
+            .filter(|(text, pos)| pos.y > HEADER_HEIGHT && titles.contains(&text.as_str()))
             .collect();
         assert_eq!(normal.len(), titles.len());
 
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         let matrix = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         for (title, position) in normal {
             let (_, other) = texts(&matrix)
                 .into_iter()
-                .find(|(text, _)| *text == title)
+                .find(|(text, pos)| *text == title && pos.y > HEADER_HEIGHT)
                 .unwrap_or_else(|| panic!("the matrix page has no {title}"));
             assert_eq!(
                 other, position,
@@ -5643,12 +6553,12 @@ mod tests {
     #[test]
     fn the_matrix_popups_keep_a_compact_click_target() {
         let (ctx, mut editor, _params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         editor.state.popup_rects.clear();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.popup_rects.len(), 23);
+        assert_eq!(editor.state.popup_rects.len(), 21);
         for rect in editor.state.popup_rects.iter().take(16) {
             assert!(
                 (rect.height() - 24.0 * zoom).abs() < 1.0,
@@ -5686,9 +6596,152 @@ mod tests {
     }
 
     #[test]
+    fn the_live_marker_follows_the_global_sources() {
+        let feedback = ModFeedback::default();
+        feedback.store(ModFeedbackValues {
+            lfo1: -0.5,
+            lfo2: 0.75,
+            macro1: 0.25,
+            macro2: 0.5,
+            macro3: 0.75,
+            mod_wheel: 1.0,
+        });
+        let rect = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(220.0, 28.0));
+        let zoom = 1.0;
+        let amount = 0.5;
+
+        // The marker is at the product of the source value and the amount, so
+        // it shows the modulation that the matrix actually adds.
+        let global = [
+            (ModSource::Lfo1, -0.5),
+            (ModSource::Lfo2, 0.75),
+            (ModSource::Macro1, 0.25),
+            (ModSource::Macro2, 0.5),
+            (ModSource::Macro3, 0.75),
+            (ModSource::ModWheel, 1.0),
+        ];
+        for (source, value) in global {
+            assert_eq!(live_source_value(source, &feedback), Some(value));
+            let marker = live_marker_rect(source, amount, rect, zoom, &feedback)
+                .unwrap_or_else(|| panic!("{source:?} has no live marker"));
+            let expected = amount_to_x(value * amount, rect, zoom);
+            assert!(
+                (marker.center().x - expected).abs() < 1.0e-4,
+                "the marker of {source:?} is at {} instead of {expected}",
+                marker.center().x
+            );
+            assert!((marker.width() - MOD_LIVE_MARKER_WIDTH).abs() < 1.0e-4);
+        }
+
+        // Per-voice sources have no single value outside a note, so they get
+        // no marker at all instead of a fake one.
+        for source in [
+            ModSource::Off,
+            ModSource::ModEnv,
+            ModSource::AmpEnv,
+            ModSource::Velocity,
+            ModSource::Key,
+            ModSource::Random,
+        ] {
+            assert_eq!(live_source_value(source, &feedback), None);
+            assert!(
+                live_marker_rect(source, amount, rect, zoom, &feedback).is_none(),
+                "{source:?} must not have a live marker"
+            );
+        }
+    }
+
+    #[test]
+    fn the_live_markers_are_drawn_only_on_global_routes() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        editor.state.page = Page::Mod;
+        // One route with a global source and one with a per-voice source.
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.5);
+        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
+        setter.set_parameter(&params.mod2_amount, 0.5);
+        editor.mod_feedback.store(ModFeedbackValues {
+            lfo1: 0.8,
+            lfo2: -0.4,
+            macro1: 0.2,
+            macro2: 0.4,
+            macro3: 0.6,
+            mod_wheel: 0.3,
+        });
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let zoom = zoom_of(&ctx);
+        let bars = editor.state.amount_rects.clone();
+        assert_eq!(bars.len(), 8);
+
+        // A marker is a narrow accent rectangle inside an amount bar. The
+        // handle is not hovered in this frame, so it cannot be mistaken for
+        // one.
+        let markers: Vec<Rect> = rect_fills(&output)
+            .into_iter()
+            .filter(|(rect, fill)| {
+                *fill == palette().accent
+                    && (rect.width() - MOD_LIVE_MARKER_WIDTH * zoom).abs() < 0.1
+                    && bars.iter().any(|bar| bar.contains_rect(*rect))
+            })
+            .map(|(rect, _)| rect)
+            .collect();
+        assert_eq!(markers.len(), 1, "unexpected live markers: {markers:?}");
+
+        let expected = live_marker_rect(ModSource::Lfo1, 0.5, bars[0], zoom, &editor.mod_feedback)
+            .expect("the LFO 1 route lost its marker");
+        assert!(
+            (markers[0].center().x - expected.center().x).abs() < 0.1,
+            "the LFO 1 marker is at {} instead of {}",
+            markers[0].center().x,
+            expected.center().x
+        );
+        assert!(
+            (markers[0].center().x - bars[0].center().x).abs() > 1.0,
+            "the LFO 1 marker did not follow the source"
+        );
+        assert!(
+            !markers.iter().any(|marker| bars[1].contains_rect(*marker)),
+            "the per-voice route was given a fake live marker"
+        );
+    }
+
+    #[test]
+    fn an_empty_feedback_still_draws_the_matrix() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        editor.state.page = Page::Mod;
+        setter.set_parameter(&params.mod1_source, ModSource::Macro1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Pitch);
+        setter.set_parameter(&params.mod1_amount, 0.5);
+
+        // No audio block has run yet, so every reading is zero. The page must
+        // still draw and the marker must sit in the middle of the bar.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let zoom = zoom_of(&ctx);
+        assert_eq!(editor.state.amount_rects.len(), 8);
+        let bar = editor.state.amount_rects[0];
+        let marker = rect_fills(&output)
+            .into_iter()
+            .find(|(rect, fill)| {
+                *fill == palette().accent
+                    && (rect.width() - MOD_LIVE_MARKER_WIDTH * zoom).abs() < 0.1
+                    && bar.contains_rect(*rect)
+            })
+            .map(|(rect, _)| rect)
+            .expect("the macro route is missing its live marker");
+        assert!((marker.center().x - bar.center().x).abs() < 0.1);
+    }
+
+    #[test]
     fn dragging_the_amount_bar_sets_the_route_in_one_gesture() {
         let (ctx, mut editor, params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let rect = editor.state.amount_rects[0];
@@ -5741,7 +6794,7 @@ mod tests {
     #[test]
     fn shift_dragging_the_amount_bar_is_fine() {
         let (ctx, mut editor, params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let rect = editor.state.amount_rects[0];
@@ -5785,7 +6838,7 @@ mod tests {
     #[test]
     fn the_amount_bar_accepts_a_typed_value() {
         let (ctx, mut editor, params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let pos = editor.state.amount_rects[0].center();
 
@@ -5847,7 +6900,7 @@ mod tests {
     #[test]
     fn a_matrix_source_popup_sets_the_route() {
         let (ctx, mut editor, params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         // The empty source field of the first route. Its popup has no selected
@@ -5893,103 +6946,100 @@ mod tests {
 
     #[test]
     fn no_two_texts_overlap_at_any_zoom() {
-        for legacy in [false, true] {
-            for percent in (100..=400).step_by(5) {
-                let zoom = percent as f32 / 100.0;
-                for mod_page in [false, true] {
-                    let (ctx, mut editor, params) = make_editor();
-                    let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-                    let setter = gui_ctx.param_setter();
-                    setter.set_parameter(&params.legacy, legacy);
-                    editor.state.mod_page = mod_page;
-                    if mod_page {
-                        // Fill the table with the longest names, a full spread
-                        // of amounts and a sign at both ends, so the overlap
-                        // check is about the real page and not an empty one.
-                        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
-                        setter.set_parameter(&params.mod1_dest, ModDest::Resonance);
-                        setter.set_parameter(&params.mod1_amount, 0.62);
-                        setter.set_parameter(&params.mod2_source, ModSource::Lfo2);
-                        setter.set_parameter(&params.mod2_dest, ModDest::Pulse2);
-                        setter.set_parameter(&params.mod2_amount, -0.38);
-                        setter.set_parameter(&params.mod3_source, ModSource::ModEnv);
-                        setter.set_parameter(&params.mod3_dest, ModDest::Cutoff);
-                        setter.set_parameter(&params.mod3_amount, 1.0);
-                        setter.set_parameter(&params.mod4_source, ModSource::AmpEnv);
-                        setter.set_parameter(&params.mod4_dest, ModDest::Volume);
-                        setter.set_parameter(&params.mod4_amount, -0.5);
-                        setter.set_parameter(&params.mod5_source, ModSource::Velocity);
-                        setter.set_parameter(&params.mod5_dest, ModDest::Drive);
-                        setter.set_parameter(&params.mod5_amount, 0.12);
-                        setter.set_parameter(&params.mod6_source, ModSource::Key);
-                        setter.set_parameter(&params.mod6_dest, ModDest::Pan);
-                        setter.set_parameter(&params.mod6_amount, -0.75);
-                        setter.set_parameter(&params.mod7_source, ModSource::Macro1);
-                        setter.set_parameter(&params.mod7_dest, ModDest::Pulse1);
-                        setter.set_parameter(&params.mod7_amount, 0.99);
-                        setter.set_parameter(&params.mod8_source, ModSource::Macro3);
-                        setter.set_parameter(&params.mod8_dest, ModDest::Pitch);
-                        setter.set_parameter(&params.mod8_amount, -1.0);
-                    }
-                    let output = run_frames(
-                        &ctx,
-                        &mut editor,
-                        vec![input_at(
-                            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom,
-                            vec![],
-                        )],
-                    );
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            for page in [Page::Main, Page::Mod, Page::Fx] {
+                let (ctx, mut editor, params) = make_editor();
+                let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+                let setter = gui_ctx.param_setter();
+                editor.state.page = page;
+                if page == Page::Mod {
+                    // Fill the table with the longest names, a full spread of
+                    // amounts and a sign at both ends, so the overlap check is
+                    // about the real page and not an empty one.
+                    setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+                    setter.set_parameter(&params.mod1_dest, ModDest::Resonance);
+                    setter.set_parameter(&params.mod1_amount, 0.62);
+                    setter.set_parameter(&params.mod2_source, ModSource::Lfo2);
+                    setter.set_parameter(&params.mod2_dest, ModDest::Pulse2);
+                    setter.set_parameter(&params.mod2_amount, -0.38);
+                    setter.set_parameter(&params.mod3_source, ModSource::ModEnv);
+                    setter.set_parameter(&params.mod3_dest, ModDest::Cutoff);
+                    setter.set_parameter(&params.mod3_amount, 1.0);
+                    setter.set_parameter(&params.mod4_source, ModSource::AmpEnv);
+                    setter.set_parameter(&params.mod4_dest, ModDest::Volume);
+                    setter.set_parameter(&params.mod4_amount, -0.5);
+                    setter.set_parameter(&params.mod5_source, ModSource::Velocity);
+                    setter.set_parameter(&params.mod5_dest, ModDest::Drive);
+                    setter.set_parameter(&params.mod5_amount, 0.12);
+                    setter.set_parameter(&params.mod6_source, ModSource::Key);
+                    setter.set_parameter(&params.mod6_dest, ModDest::Pan);
+                    setter.set_parameter(&params.mod6_amount, -0.75);
+                    setter.set_parameter(&params.mod7_source, ModSource::Macro1);
+                    setter.set_parameter(&params.mod7_dest, ModDest::Pulse1);
+                    setter.set_parameter(&params.mod7_amount, 0.99);
+                    setter.set_parameter(&params.mod8_source, ModSource::Macro3);
+                    setter.set_parameter(&params.mod8_dest, ModDest::Pitch);
+                    setter.set_parameter(&params.mod8_amount, -1.0);
+                }
+                let output = run_frames(
+                    &ctx,
+                    &mut editor,
+                    vec![input_at(
+                        egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom,
+                        vec![],
+                    )],
+                );
 
-                    let texts = text_shapes(&output);
-                    let sliders = slider_rects(&ctx, &output);
-                    let amount_bars = editor.state.amount_rects.clone();
-                    for (text, pos, size) in &texts {
-                        let rect = Rect::from_min_size(*pos, *size);
-                        for slider in &sliders {
-                            let overlap = rect.intersect(*slider);
-                            assert!(
-                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                                "the text {text:?} is covered by a slider at {percent}% \
-(mod={mod_page}, legacy={legacy}): {rect:?} / {slider:?}"
-                            );
-                        }
-                        for bar in &amount_bars {
-                            let overlap = rect.intersect(*bar);
-                            assert!(
-                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                                "the text {text:?} is covered by an amount bar at {percent}% \
-(mod={mod_page}, legacy={legacy}): {rect:?} / {bar:?}"
-                            );
-                        }
-                        for popup in &editor.state.popup_rects {
-                            // The selected text lives inside its own popup button.
-                            if popup.contains(rect.center()) {
-                                assert!(
-                                    popup.expand(zoom).contains_rect(rect),
-                                    "the text {text:?} is clipped by its popup at {percent}% \
-(mod={mod_page}, legacy={legacy}): {rect:?} / {popup:?}"
-                                );
-                                continue;
-                            }
-                            let overlap = rect.expand(4.0 * zoom).intersect(*popup);
-                            assert!(
-                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                                "the text {text:?} is too close to a popup at {percent}% \
-(mod={mod_page}, legacy={legacy}): {rect:?} / {popup:?}"
-                            );
-                        }
+                let texts = text_shapes(&output);
+                let sliders = slider_rects(&ctx, &output);
+                let amount_bars = editor.state.amount_rects.clone();
+                for (text, pos, size) in &texts {
+                    let rect = Rect::from_min_size(*pos, *size);
+                    for slider in &sliders {
+                        let overlap = rect.intersect(*slider);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the text {text:?} is covered by a slider at {percent}% \
+(page={page:?}): {rect:?} / {slider:?}"
+                        );
                     }
-                    for (index, (first, first_pos, first_size)) in texts.iter().enumerate() {
-                        let first_rect = Rect::from_min_size(*first_pos, *first_size);
-                        for (second, second_pos, second_size) in texts.iter().skip(index + 1) {
-                            let second_rect = Rect::from_min_size(*second_pos, *second_size);
-                            let overlap = first_rect.intersect(second_rect);
+                    for bar in &amount_bars {
+                        let overlap = rect.intersect(*bar);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the text {text:?} is covered by an amount bar at {percent}% \
+(page={page:?}): {rect:?} / {bar:?}"
+                        );
+                    }
+                    for popup in &editor.state.popup_rects {
+                        // The selected text lives inside its own popup button.
+                        if popup.contains(rect.center()) {
                             assert!(
-                                overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                                "the texts {first:?} and {second:?} overlap at {percent}% \
-(mod={mod_page}, legacy={legacy}): {first_rect:?} / {second_rect:?}"
+                                popup.expand(zoom).contains_rect(rect),
+                                "the text {text:?} is clipped by its popup at {percent}% \
+(page={page:?}): {rect:?} / {popup:?}"
                             );
+                            continue;
                         }
+                        let overlap = rect.expand(4.0 * zoom).intersect(*popup);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the text {text:?} is too close to a popup at {percent}% \
+(page={page:?}): {rect:?} / {popup:?}"
+                        );
+                    }
+                }
+                for (index, (first, first_pos, first_size)) in texts.iter().enumerate() {
+                    let first_rect = Rect::from_min_size(*first_pos, *first_size);
+                    for (second, second_pos, second_size) in texts.iter().skip(index + 1) {
+                        let second_rect = Rect::from_min_size(*second_pos, *second_size);
+                        let overlap = first_rect.intersect(second_rect);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the texts {first:?} and {second:?} overlap at {percent}% \
+(page={page:?}): {first_rect:?} / {second_rect:?}"
+                        );
                     }
                 }
             }
@@ -5999,7 +7049,7 @@ mod tests {
     #[test]
     fn the_matrix_page_fits_into_the_panel() {
         let (ctx, mut editor, _params) = make_editor();
-        editor.state.mod_page = true;
+        editor.state.page = Page::Mod;
         editor.state.counts = Counts::default();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let panel = Rect::from_min_size(
@@ -6088,18 +7138,88 @@ mod tests {
     }
 
     #[test]
-    fn the_patches_button_opens_the_patch_browser() {
+    fn the_patches_button_is_gone_from_the_header() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "PATCHES")
-            .expect("the header has no patch button");
-        let button = pos + egui::vec2(2.0, 2.0);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            !names.contains(&"PATCHES".to_string()),
+            "the header still has a separate PATCHES button: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_lcd_opens_the_patch_browser() {
+        let (ctx, mut editor, _params) = make_editor();
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
 
         assert!(!editor.state.patch_open);
-        run_frames(&ctx, &mut editor, click(button));
-        assert!(editor.state.patch_open);
+        run_frames(&ctx, &mut editor, click(rects.display.center()));
+        assert!(
+            editor.state.patch_open,
+            "clicking the preset LCD did not open the patch browser"
+        );
+    }
+
+    #[test]
+    fn the_mod_and_fx_tabs_are_mutually_exclusive_and_fill_when_active() {
+        let (ctx, mut editor, _params) = make_editor();
+        let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The normal page has two inactive tabs.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(rects.mod_page, &fills), palette().button_bg);
+        assert_eq!(fill_of(rects.fx_page, &fills), palette().button_bg);
+
+        // FX fills as a whole while MOD stays normal.
+        run_frames(&ctx, &mut editor, click(rects.fx_page.center()));
+        assert_eq!(editor.state.page, Page::Fx);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(rects.fx_page, &fills), palette().button_active);
+        assert_eq!(fill_of(rects.mod_page, &fills), palette().button_bg);
+
+        // MOD takes over the highlight; FX becomes inactive again.
+        run_frames(&ctx, &mut editor, click(rects.mod_page.center()));
+        assert_eq!(editor.state.page, Page::Mod);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let fills = rect_fills(&output);
+        assert_eq!(fill_of(rects.mod_page, &fills), palette().button_active);
+        assert_eq!(fill_of(rects.fx_page, &fills), palette().button_bg);
+
+        // Clicking the active tab returns to the normal page.
+        run_frames(&ctx, &mut editor, click(rects.mod_page.center()));
+        assert_eq!(editor.state.page, Page::Main);
+    }
+
+    #[test]
+    fn the_fx_tab_opens_the_existing_effect_controls() {
+        let (ctx, mut editor, _params) = make_editor();
+        let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+
+        run_frames(&ctx, &mut editor, click(rects.fx_page.center()));
+        assert_eq!(editor.state.page, Page::Fx);
+        editor.state.counts = Counts::default();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The same eight effect parameters as the compact band of the main
+        // page, with one caption for each effect.
+        assert_eq!(editor.state.counts.sliders, 8);
+        assert_eq!(editor.state.counts.popups, 0);
+        assert_eq!(editor.state.counts.checks, 0);
+        assert_eq!(editor.state.counts.radios, 0);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for name in [
+            "FX", "CHORUS", "DELAY", "REVERB", "MIX", "DEPTH", "TIME", "DECAY",
+        ] {
+            assert!(
+                names.contains(&name.to_string()),
+                "the FX page has no {name}"
+            );
+        }
     }
 
     #[test]
@@ -6121,13 +7241,11 @@ mod tests {
             "the list is not empty yet"
         );
 
-        // Opening the browser reads the list of the folder again.
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "PATCHES")
-            .expect("the header has no patch button");
-        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+        // Opening the browser reads the list of the folder again. The LCD
+        // itself is the button now.
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+        run_frames(&ctx, &mut editor, click(rects.display.center()));
 
         assert!(editor.state.patch_open);
         assert_eq!(editor.state.patch_files.len(), 1, "the list was not read");
@@ -6706,104 +7824,106 @@ mod tests {
     }
 
     #[test]
-    fn the_two_flavors_have_different_palettes() {
-        set_legacy_theme(false);
-        let modern = palette().bg;
-        set_legacy_theme(true);
-        let legacy = palette().bg;
-        set_legacy_theme(false);
-
-        assert_ne!(modern, legacy);
-    }
-
-    #[test]
-    fn clicking_the_logo_switches_the_flavor() {
-        let (ctx, mut editor, params) = make_editor();
-        assert!(!params.legacy.value());
-
+    fn the_panel_always_uses_the_legacy_palette() {
+        let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, position) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "SUSHI")
-            .expect("the header has no wordmark");
-        run_frames(&ctx, &mut editor, click(position + egui::vec2(2.0, 2.0)));
+        let fills = rect_fills(&output);
 
-        assert!(params.legacy.value());
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         assert!(
-            names.contains(&"POLYPHONIC / LEGACY".to_string()),
-            "the header did not show the legacy flavor: {names:?}"
+            fills.iter().any(|(_, fill)| *fill == palette().bg),
+            "the panel did not paint its legacy background"
+        );
+        assert!(
+            !fills
+                .iter()
+                .any(|(_, fill)| *fill == Color32::from_rgb(0xF1, 0xF0, 0xEB)),
+            "the modern paper background is still painted"
         );
     }
 
     #[test]
-    fn the_header_subtitle_stays_inside_the_logo() {
-        for legacy in [false, true] {
-            let (ctx, mut editor, params) = make_editor();
-            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-            let setter = gui_ctx.param_setter();
-            setter.set_parameter(&params.legacy, legacy);
-            let subtitle = if legacy {
-                "POLYPHONIC / LEGACY"
-            } else {
-                "POLYPHONIC / MODERN"
-            };
+    fn the_wordmark_is_static_and_not_a_flavor_switch() {
+        let (ctx, mut editor, params) = make_editor();
+        assert!(!params.legacy.value());
 
-            for percent in (100..=400).step_by(5) {
-                let zoom = percent as f32 / 100.0;
-                let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-                let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-                let rects = header_rects_at(size);
-                assert!(
-                    !rects.logo.intersects(rects.previous),
-                    "the clickable logo overlaps the previous preset at {percent}%: \
-{:?} / {:?}",
-                    rects.logo,
-                    rects.previous
-                );
-                let (_, pos, text_size) = text_shapes(&output)
-                    .into_iter()
-                    .find(|(text, _, _)| text == subtitle)
-                    .unwrap_or_else(|| {
-                        panic!("the header has no subtitle {subtitle:?} at {percent}%")
-                    });
-                let rect = Rect::from_min_size(pos, text_size);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, wordmark) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "SUSHI")
+            .expect("the header has no wordmark");
+        run_frames(&ctx, &mut editor, click(wordmark + egui::vec2(2.0, 2.0)));
 
-                assert!(
-                    rects.logo.contains_rect(rect),
-                    "the subtitle {subtitle:?} is outside the logo at {percent}%: \
-{rect:?} / {:?}",
-                    rects.logo
-                );
-                for (name, control) in [
-                    ("preset display", rects.display),
-                    ("previous preset", rects.previous),
-                    ("next preset", rects.next),
-                    ("mutate", rects.mutate),
-                    ("patches", rects.patches),
-                    ("mod page", rects.mod_page),
-                ] {
-                    assert!(
-                        !rect.intersects(control),
-                        "the subtitle {subtitle:?} intersects the {name} at {percent}%: \
-{rect:?} / {control:?}"
-                    );
-                }
-            }
+        // The logo is no switch anymore.
+        assert!(
+            !params.legacy.value(),
+            "the logo still toggles the DSP flag"
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"SUSHI".to_string()),
+            "the wordmark disappeared: {names:?}"
+        );
+        assert!(
+            names.contains(&"POLYPHONIC SYNTHESIZER".to_string()),
+            "the header lost its static subtitle: {names:?}"
+        );
+        for mode in [
+            "POLYPHONIC / MODERN",
+            "POLYPHONIC / LEGACY",
+            "/ MODERN",
+            "/ LEGACY",
+        ] {
+            assert!(
+                !names.contains(&mode.to_string()),
+                "the header still shows the mode subtitle {mode:?}: {names:?}"
+            );
         }
     }
 
     #[test]
-    fn the_flavor_survives_a_host_state_reload() {
-        let (_ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.legacy, true);
+    fn the_header_subtitle_stays_inside_the_logo() {
+        let (ctx, mut editor, _params) = make_editor();
+        let subtitle = "POLYPHONIC SYNTHESIZER";
 
-        editor.init_patch_state();
-        assert!(params.legacy.value());
-        assert!(editor.legacy_theme);
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+            let rects = header_rects_at(size);
+            assert!(
+                !rects.logo.intersects(rects.previous),
+                "the logo overlaps the previous preset at {percent}%: {:?} / {:?}",
+                rects.logo,
+                rects.previous
+            );
+            let (_, pos, text_size) = text_shapes(&output)
+                .into_iter()
+                .find(|(text, _, _)| text == subtitle)
+                .unwrap_or_else(|| panic!("the header has no subtitle {subtitle:?} at {percent}%"));
+            let rect = Rect::from_min_size(pos, text_size);
+
+            assert!(
+                rects.logo.contains_rect(rect),
+                "the subtitle {subtitle:?} is outside the logo at {percent}%: {rect:?} / {:?}",
+                rects.logo
+            );
+            for (name, control) in [
+                ("preset display", rects.display),
+                ("previous preset", rects.previous),
+                ("next preset", rects.next),
+                ("mutate", rects.mutate),
+                ("mod tab", rects.mod_page),
+                ("fx tab", rects.fx_page),
+            ] {
+                assert!(
+                    !rect.intersects(control),
+                    "the subtitle {subtitle:?} intersects the {name} at {percent}%: \
+{rect:?} / {control:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6906,45 +8026,36 @@ mod tests {
             "JUPITER STRINGS",
             "POLY STRINGS",
         ];
-        for legacy in [false, true] {
-            let (ctx, mut editor, params) = make_editor();
-            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-            let setter = gui_ctx.param_setter();
-            setter.set_parameter(&params.legacy, legacy);
+        let (ctx, mut editor, _params) = make_editor();
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let rects = header_rects_at(size);
+            for name in names {
+                let index = PRESETS
+                    .iter()
+                    .position(|preset| preset.name == name)
+                    .unwrap_or_else(|| panic!("there is no preset {name:?}"));
+                editor.state.preset_index = index;
+                editor.state.patch_active = None;
+                editor.state.patch_active_path = None;
+                editor.state.dirty = false;
 
-            for percent in (100..=400).step_by(5) {
-                let zoom = percent as f32 / 100.0;
-                let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-                let rects = header_rects_at(size);
-                for name in names {
-                    let index = PRESETS
-                        .iter()
-                        .position(|preset| preset.name == name)
-                        .unwrap_or_else(|| panic!("there is no preset {name:?}"));
-                    editor.state.preset_index = index;
-                    editor.state.patch_active = None;
-                    editor.state.patch_active_path = None;
-                    editor.state.dirty = false;
-
-                    let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-                    let expected = format!("{:02} {name}", index + 1);
-                    let (_, pos, text_size) = text_shapes(&output)
-                        .into_iter()
-                        .find(|(text, _, _)| text == &expected)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "the display does not show {expected:?} at {percent}% \
-(legacy={legacy})"
-                            )
-                        });
-                    let rect = Rect::from_min_size(pos, text_size);
-                    assert!(
-                        rects.display.contains_rect(rect),
-                        "the display text {expected:?} is outside the display at {percent}% \
-(legacy={legacy}): {rect:?} / {:?}",
-                        rects.display
-                    );
-                }
+                let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+                let expected = format!("{:02} {name}", index + 1);
+                let (_, pos, text_size) = text_shapes(&output)
+                    .into_iter()
+                    .find(|(text, _, _)| text == &expected)
+                    .unwrap_or_else(|| {
+                        panic!("the display does not show {expected:?} at {percent}%")
+                    });
+                let rect = Rect::from_min_size(pos, text_size);
+                assert!(
+                    rects.display.contains_rect(rect),
+                    "the display text {expected:?} is outside the display at {percent}%: \
+{rect:?} / {:?}",
+                    rects.display
+                );
             }
         }
     }
@@ -7210,9 +8321,11 @@ mod tests {
 
         let titles: Vec<(String, egui::Pos2)> = texts(&output)
             .into_iter()
-            .filter(|(text, _)| {
-                text.chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '/')
+            .filter(|(text, pos)| {
+                pos.y > HEADER_HEIGHT
+                    && text.chars().all(|c| {
+                        c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '/'
+                    })
             })
             .collect();
 
@@ -7582,7 +8695,7 @@ mod tests {
         // The default size.
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let small = slider_rects(&ctx, &output);
-        assert_eq!(small.len(), 56, "unexpected number of sliders");
+        assert_eq!(small.len(), 54, "unexpected number of sliders");
 
         // A bigger window: the sliders are taller and the sections are
         // wider.
@@ -7592,7 +8705,7 @@ mod tests {
             vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
         );
         let big = slider_rects(&ctx, &output);
-        assert_eq!(big.len(), 56, "unexpected number of sliders");
+        assert_eq!(big.len(), 54, "unexpected number of sliders");
 
         for (small, big) in small.iter().zip(big.iter()) {
             assert!(

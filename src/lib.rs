@@ -22,9 +22,10 @@ use dsp::adsr::EnvCoeffs;
 use dsp::arp::Arp;
 use dsp::fx::{Fx, FxParams};
 use dsp::lfo::Lfo;
+use dsp::mod_feedback::{ModFeedback, ModFeedbackValues};
 use dsp::voice::{CONTROL_RATE, DcBlocker, OscSettings, Voice, VoiceSettings};
 use editor::{SushiEditor, WINDOW_HEIGHT, WINDOW_WIDTH};
-use params::{Character, PolyMode};
+use params::{Character, ModDest, ModSource, NoteDiv, PolyMode};
 pub use params::{SushiParams, Waveform};
 
 /// Number of simultaneous voices. Steals the oldest voice when exceeded.
@@ -44,6 +45,10 @@ const FIRST_ARP_VOICE_ID: i32 = 0x0100_0000;
 /// The frequency of the tone tilt filter, in Hz.
 const TONE_TILT_FREQUENCY: f32 = 700.0;
 
+/// How quickly the frequency of a synced LFO follows a tempo or division
+/// change, in seconds. The phase itself keeps running, only the rate glides.
+const LFO_SYNC_SMOOTHING_SECONDS: f32 = 0.01;
+
 /// The maximum number of keys that a mono or legato voice remembers. This is
 /// deliberately a fixed array: note handling runs on the audio thread.
 const MAX_MONO_NOTES: usize = 16;
@@ -53,6 +58,11 @@ const STEAL_FADE_SAMPLES: f32 = 64.0;
 
 /// The length of the reported reverb/delay tail, in seconds.
 const TAIL_SECONDS: f32 = 12.0;
+
+/// Sushi always runs the original Legacy engine. The `legacy` host parameter
+/// is kept for state compatibility, but it cannot switch the engine to the
+/// Modern path anymore.
+const LEGACY_ENGINE: bool = true;
 
 /// Values that are smaller than this are flushed to zero, so that they do not
 /// linger in the denormal range.
@@ -82,6 +92,16 @@ fn saturate_sample(sample: f32, drive: f32, negative_gain: f32) -> f32 {
 /// their sound.
 fn space_amount(space: f32) -> f32 {
     (space * 0.35).clamp(0.0, 0.35)
+}
+
+/// The frequency of a synced LFO, from the host tempo and a note division.
+///
+/// A quarter note at 120 BPM is one beat every half second, so it runs at
+/// 2 Hz. Invalid tempo readings fall back to 120 BPM instead of stopping the
+/// LFO or producing a NaN phase increment.
+fn lfo_sync_frequency(bpm: f64, division: NoteDiv) -> f32 {
+    let bpm = if bpm.is_finite() { bpm.max(0.0) } else { 120.0 };
+    (bpm / 60.0 / division.beats()) as f32
 }
 
 /// The glide coefficient for one control-rate update. A control update happens
@@ -155,6 +175,9 @@ pub struct Sushi {
     /// The two global LFOs. Their values are shared by every voice.
     lfo1: Lfo,
     lfo2: Lfo,
+    /// The smoothed frequencies of the two LFOs while they are synced, in Hz.
+    lfo1_sync_rate: f32,
+    lfo2_sync_rate: f32,
 
     /// The effect chain. All of its buffers are allocated in `activate`.
     fx: Fx,
@@ -169,6 +192,9 @@ pub struct Sushi {
     /// The number of voices that are currently playing. The GUI shows it in a
     /// small meter of the header.
     voice_count: Arc<AtomicUsize>,
+    /// The last values of the global modulation sources. The GUI uses them to
+    /// draw the live markers of the modulation matrix.
+    mod_feedback: Arc<ModFeedback>,
     /// The voice that the arpeggiator is currently playing.
     arp_voice_id: Option<i32>,
     /// The ID of the next voice of the arpeggiator.
@@ -226,12 +252,16 @@ impl Default for Sushi {
 
             lfo1: Lfo::new(LFO1_SEED),
             lfo2: Lfo::new(LFO2_SEED),
+            // The default synced division is a quarter note at 120 BPM.
+            lfo1_sync_rate: 2.0,
+            lfo2_sync_rate: 2.0,
             fx: Fx::default(),
 
             arp: Arp::new(),
             arp_led: Arc::new(AtomicUsize::new(0)),
             arp_position: Arc::new(AtomicUsize::new(0)),
             voice_count: Arc::new(AtomicUsize::new(0)),
+            mod_feedback: Arc::new(ModFeedback::default()),
             arp_voice_id: None,
             next_arp_voice_id: FIRST_ARP_VOICE_ID,
             arp_was_on: false,
@@ -308,6 +338,17 @@ impl Sushi {
         // control rate.
         let glide_step = glide_coefficient(params.glide.value(), sample_rate);
 
+        // The matrix slots are read once per block. An active route from an
+        // LFO owns that LFO, so the hidden legacy target/amount does not run
+        // a second time.
+        let mod_slots = params.mod_slots(steps);
+        let lfo1_routed = mod_slots.iter().any(|slot| {
+            slot.source == ModSource::Lfo1 && slot.dest != ModDest::Off && slot.amount != 0.0
+        });
+        let lfo2_routed = mod_slots.iter().any(|slot| {
+            slot.source == ModSource::Lfo2 && slot.dest != ModDest::Off && slot.amount != 0.0
+        });
+
         VoiceSettings {
             osc1,
             osc2,
@@ -335,14 +376,16 @@ impl Sushi {
             glide_step,
             lfo1_amount: params.lfo1_amount.value(),
             lfo1_target: params.lfo1_target.value(),
+            lfo1_routed,
             lfo2_amount: params.lfo2_amount.value(),
             lfo2_target: params.lfo2_target.value(),
+            lfo2_routed,
             velocity_amount: params.velocity.smoothed.next_step(steps),
             drift_amount: 0.0,
             character_grit: false,
             legacy: false,
             // The slots of the modulation matrix are read once per block.
-            mod_slots: params.mod_slots(steps),
+            mod_slots,
             // The macros are the sources of the modulation matrix.
             macro1: macros.bright,
             macro2: macros.motion,
@@ -384,6 +427,12 @@ impl Sushi {
         self.arp_position.clone()
     }
 
+    /// The last values of the global modulation sources. The editor uses them
+    /// to show the live modulation of the matrix.
+    pub fn mod_feedback(&self) -> Arc<ModFeedback> {
+        self.mod_feedback.clone()
+    }
+
     /// Puts the voice of the arpeggiator into its release stage.
     fn release_arp_voice(&mut self) {
         let Some(voice_id) = self.arp_voice_id.take() else {
@@ -405,6 +454,35 @@ impl Sushi {
         }
     }
 
+    /// Whether any voice is still producing sound. A voice that is only
+    /// waiting in a slot for its finished envelope has already gone silent.
+    fn any_voice_sounding(&self) -> bool {
+        self.voices
+            .iter()
+            .flatten()
+            .any(|voice| !voice.is_finished())
+            || self.fading_voices.iter().any(Option::is_some)
+    }
+
+    /// Restarts the enabled LFOs on the first note after silence.
+    ///
+    /// The two LFOs are global, so restarting them on every NoteOn would make
+    /// the phase of a chord or an arpeggio jump between the notes. The policy
+    /// is therefore one retrigger per silent gap: the LFOs line up with the
+    /// first note that starts a phrase, while the later notes of the same
+    /// phrase share the running phase.
+    fn retrigger_lfos_if_silent(&mut self) {
+        if self.any_voice_sounding() {
+            return;
+        }
+        if self.params.lfo1_retrigger.value() {
+            self.lfo1.retrigger();
+        }
+        if self.params.lfo2_retrigger.value() {
+            self.lfo2.retrigger();
+        }
+    }
+
     /// Starts a new voice for the arpeggiator. The voice that the arpeggiator
     /// was playing before is released.
     fn start_arp_voice(
@@ -415,6 +493,9 @@ impl Sushi {
         velocity: f32,
         settings: &VoiceSettings,
     ) {
+        // An arpeggiated phrase retriggers on its first note just like a
+        // played phrase does.
+        self.retrigger_lfos_if_silent();
         self.release_arp_voice();
         self.free_finished_voices(context, sample_offset);
 
@@ -1045,14 +1126,15 @@ impl Plugin for Sushi {
                 self.arp_led.clone(),
                 self.arp_position.clone(),
                 self.voice_count.clone(),
+                self.mod_feedback.clone(),
             ),
         )
     }
 
-    /// Old projects were saved before the Modern/Legacy switch existed. They
-    /// should open in the legacy flavor, while new projects keep the modern
-    /// default. A state without any of the old parameters (for example an
-    /// empty host state) is not an old project and stays modern.
+    /// Old projects were saved before the Modern/Legacy switch existed. The
+    /// migration is kept for state compatibility: it marks them as legacy,
+    /// which is now the only engine anyway. A state without any of the old
+    /// parameters (for example an empty host state) does not get the flag.
     fn filter_state(state: &mut PluginState) {
         if state.params.contains_key("osc1_wave") && !state.params.contains_key("legacy") {
             state.params.insert(
@@ -1084,6 +1166,8 @@ impl Plugin for Sushi {
         self.next_internal_voice_id = 0;
         self.lfo1 = Lfo::new(LFO1_SEED);
         self.lfo2 = Lfo::new(LFO2_SEED);
+        self.lfo1_sync_rate = 2.0;
+        self.lfo2_sync_rate = 2.0;
         self.fx.reset();
         self.arp.reset();
         self.arp_voice_id = None;
@@ -1130,7 +1214,9 @@ impl Plugin for Sushi {
 
         // The limit of the voices is read once per block.
         self.update_voice_limit();
-        let legacy = self.params.legacy.value();
+        // The engine is Legacy-only. The host parameter is intentionally not
+        // consulted, so old projects cannot switch back to the Modern path.
+        let legacy = LEGACY_ENGINE;
         if self.last_legacy != Some(legacy) {
             self.character_adaa_left = AdaaTanhAsym::default();
             self.character_adaa_right = AdaaTanhAsym::default();
@@ -1153,6 +1239,13 @@ impl Plugin for Sushi {
         };
         let beats_per_sample = bpm / (60.0 * sample_rate as f64);
         let block_beats = beats_per_sample * num_samples as f64;
+
+        // The synced LFO frequencies. They are computed once per block and
+        // the phase increment follows them through a short one-pole glide, so
+        // a tempo change does not step the rate.
+        let lfo1_sync_target = lfo_sync_frequency(bpm, self.params.lfo1_div.value());
+        let lfo2_sync_target = lfo_sync_frequency(bpm, self.params.lfo2_div.value());
+        let lfo_sync_step = 1.0 - (-1.0 / (LFO_SYNC_SMOOTHING_SECONDS * sample_rate)).exp();
 
         // The macros, read once per block.
         let bright = self.params.macro_bright.smoothed.next_step(steps);
@@ -1285,6 +1378,10 @@ impl Plugin for Sushi {
         let mut right_channel = channels.next().map(|channel| &mut **channel);
 
         let mut next_event = context.next_event();
+        // The last values of the two global LFOs of this block. They are kept
+        // here so the editor can show them without another read of the LFOs.
+        let mut last_lfo1 = 0.0;
+        let mut last_lfo2 = 0.0;
         for sample_idx in 0..num_samples {
             // An event is applied at the sample it belongs to.
             while let Some(event) = next_event {
@@ -1306,6 +1403,7 @@ impl Plugin for Sushi {
                             self.arp
                                 .note_on(key.number_or_middle_c(), velocity, arp_latch);
                         } else {
+                            self.retrigger_lfos_if_silent();
                             self.start_voice(
                                 context, timing, voice_id, channel, key, velocity, &settings,
                             );
@@ -1443,17 +1541,31 @@ impl Plugin for Sushi {
                 }
             }
 
-            // The global LFOs.
-            let lfo1 = self.lfo1.next(
-                self.params.lfo1_rate.smoothed.next(),
-                sample_rate,
-                self.params.lfo1_wave.value(),
-            );
-            let lfo2 = self.lfo2.next(
-                self.params.lfo2_rate.smoothed.next(),
-                sample_rate,
-                self.params.lfo2_wave.value(),
-            );
+            // The global LFOs. The free rate keeps smoothing even while a
+            // synced LFO runs, so switching sync off does not jump to a stale
+            // value.
+            let lfo1_free_rate = self.params.lfo1_rate.smoothed.next();
+            let lfo2_free_rate = self.params.lfo2_rate.smoothed.next();
+            let lfo1_frequency = if self.params.lfo1_sync.value() {
+                self.lfo1_sync_rate += (lfo1_sync_target - self.lfo1_sync_rate) * lfo_sync_step;
+                self.lfo1_sync_rate
+            } else {
+                lfo1_free_rate
+            };
+            let lfo2_frequency = if self.params.lfo2_sync.value() {
+                self.lfo2_sync_rate += (lfo2_sync_target - self.lfo2_sync_rate) * lfo_sync_step;
+                self.lfo2_sync_rate
+            } else {
+                lfo2_free_rate
+            };
+            let lfo1 = self
+                .lfo1
+                .next(lfo1_frequency, sample_rate, self.params.lfo1_wave.value());
+            let lfo2 = self
+                .lfo2
+                .next(lfo2_frequency, sample_rate, self.params.lfo2_wave.value());
+            last_lfo1 = lfo1;
+            last_lfo2 = lfo2;
 
             // All the voices.
             let mut left = 0.0;
@@ -1552,6 +1664,19 @@ impl Plugin for Sushi {
             }
         }
 
+        // Publish the global modulation sources once per block. The editor
+        // draws a live marker from this snapshot; the audio path never reads
+        // it back. The macros are already block-rate values, while the LFOs
+        // and the mod wheel are the last samples of the block.
+        self.mod_feedback.store(ModFeedbackValues {
+            lfo1: last_lfo1,
+            lfo2: last_lfo2,
+            macro1: bright,
+            macro2: motion,
+            macro3: space,
+            mod_wheel: self.mod_wheel,
+        });
+
         // The number of voices that are playing, for the meter of the editor.
         self.voice_count
             .store(self.voices.iter().flatten().count(), Ordering::Relaxed);
@@ -1603,10 +1728,63 @@ nice_export_vst3!(Sushi);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{ModDest, ModSource};
+    use crate::params::{LfoTarget, LfoWaveform, NoteDiv};
     use crate::patch::test_support::setter;
 
     const SAMPLE_RATE: f32 = 48_000.0;
+
+    /// A minimal process context for the engine tests. It has no events and
+    /// accepts every outgoing event.
+    struct TestContext {
+        transport: Transport,
+        events: std::collections::VecDeque<PluginNoteEvent<Sushi>>,
+    }
+
+    impl TestContext {
+        fn new() -> Self {
+            Self {
+                transport: Transport::new(SAMPLE_RATE),
+                events: std::collections::VecDeque::new(),
+            }
+        }
+    }
+
+    impl ProcessContext<Sushi> for TestContext {
+        fn plugin_api(&self) -> PluginApi {
+            PluginApi::Standalone
+        }
+
+        fn execute_background(&self, _task: ()) {}
+
+        fn execute_gui(&self, _task: ()) {}
+
+        fn transport(&self) -> &Transport {
+            &self.transport
+        }
+
+        fn next_event(&mut self) -> Option<PluginNoteEvent<Sushi>> {
+            self.events.pop_front()
+        }
+
+        fn try_send_event(
+            &mut self,
+            _event: PluginNoteEvent<Sushi>,
+        ) -> Result<
+            (),
+            (
+                PluginNoteEvent<Sushi>,
+                nice_plug::context::process::SendEventError,
+            ),
+        > {
+            Ok(())
+        }
+
+        fn set_latency_samples(&self, _samples: u32) {}
+
+        fn request_restart(&self) {}
+
+        fn set_current_voice_capacity(&self, _capacity: u32) {}
+    }
 
     /// The root mean square of a block of samples.
     fn rms(samples: &[f32]) -> f32 {
@@ -1653,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_host_state_stays_modern() {
+    fn an_empty_host_state_does_not_add_a_flavor_flag() {
         let mut state = PluginState {
             version: String::new(),
             params: std::collections::BTreeMap::new(),
@@ -1662,6 +1840,207 @@ mod tests {
         Sushi::filter_state(&mut state);
 
         assert!(!state.params.contains_key("legacy"));
+    }
+
+    #[test]
+    fn the_legacy_engine_is_forced_even_when_the_host_parameter_is_off() {
+        let params = Arc::new(SushiParams::default());
+        let setter = setter();
+        setter.set_parameter(&params.legacy, false);
+
+        let mut sushi = Sushi {
+            params,
+            ..Default::default()
+        };
+        sushi.sample_rate = SAMPLE_RATE;
+        sushi.fx = Fx::new(SAMPLE_RATE);
+
+        let mut left = vec![0.0; 64];
+        let mut right = vec![0.0; 64];
+        let mut buffer = Buffer::default();
+        // The slices stay alive until the buffer is dropped at the end of the
+        // test, so the unsafe contract of `set_slices` is upheld.
+        unsafe {
+            buffer.set_slices(64, |slices| {
+                slices.push(&mut left);
+                slices.push(&mut right);
+            });
+        }
+        let mut aux = AuxiliaryBuffers {
+            inputs: &mut [],
+            outputs: &mut [],
+        };
+        let mut context = TestContext::new();
+
+        let _ = Plugin::process(&mut sushi, &mut buffer, &mut aux, &mut context);
+
+        assert_eq!(
+            sushi.last_legacy,
+            Some(true),
+            "the process function did not force the Legacy engine"
+        );
+        assert!(
+            !sushi.params.legacy.value(),
+            "the host parameter was changed instead of being ignored"
+        );
+    }
+
+    #[test]
+    fn the_process_publishes_the_modulation_feedback() {
+        let params = Arc::new(SushiParams::default());
+        let setter = setter();
+        setter.set_parameter(&params.lfo1_rate, 5.0);
+        setter.set_parameter(&params.lfo2_rate, 2.0);
+        setter.set_parameter(&params.macro_bright, 0.2);
+        setter.set_parameter(&params.macro_motion, 0.4);
+        setter.set_parameter(&params.macro_space, 0.6);
+        let mut sushi = Sushi {
+            params,
+            ..Default::default()
+        };
+        sushi.sample_rate = SAMPLE_RATE;
+        sushi.fx = Fx::new(SAMPLE_RATE);
+        let feedback = sushi.mod_feedback();
+
+        let mut left = vec![0.0; 1024];
+        let mut right = vec![0.0; 1024];
+        let mut buffer = Buffer::default();
+        // The slices stay alive until the buffer is dropped at the end of the
+        // test, so the unsafe contract of `set_slices` is upheld.
+        unsafe {
+            buffer.set_slices(1024, |slices| {
+                slices.push(&mut left);
+                slices.push(&mut right);
+            });
+        }
+        let mut aux = AuxiliaryBuffers {
+            inputs: &mut [],
+            outputs: &mut [],
+        };
+        let mut context = TestContext::new();
+
+        let _ = Plugin::process(&mut sushi, &mut buffer, &mut aux, &mut context);
+
+        // The macros are block-rate values, so the last block contributes
+        // exactly the values of the parameters.
+        assert!((feedback.macro1() - 0.2).abs() < 1.0e-4);
+        assert!((feedback.macro2() - 0.4).abs() < 1.0e-4);
+        assert!((feedback.macro3() - 0.6).abs() < 1.0e-4);
+        assert_eq!(feedback.mod_wheel(), 0.0);
+        // The LFOs are sampled at the end of the block, so they are already
+        // moving and stay in their bipolar range.
+        assert!(feedback.lfo1().abs() <= 1.0);
+        assert!(feedback.lfo2().abs() <= 1.0);
+        assert!(
+            feedback.lfo1() != 0.0,
+            "the process function did not publish the LFO 1 value"
+        );
+    }
+
+    #[test]
+    fn the_synced_lfo_follows_the_host_tempo() {
+        // 120 BPM is two beats per second. A quarter note is one beat, an
+        // eighth note half a beat.
+        assert!((lfo_sync_frequency(120.0, NoteDiv::Quarter) - 2.0).abs() < 1e-6);
+        assert!((lfo_sync_frequency(120.0, NoteDiv::Eighth) - 4.0).abs() < 1e-6);
+        assert!((lfo_sync_frequency(120.0, NoteDiv::Sixteenth) - 8.0).abs() < 1e-6);
+        assert!((lfo_sync_frequency(90.0, NoteDiv::Eighth) - 3.0).abs() < 1e-6);
+
+        // A broken tempo reading falls back to 120 BPM instead of freezing
+        // or poisoning the phase.
+        assert!((lfo_sync_frequency(f64::NAN, NoteDiv::Quarter) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_matrix_lfo_route_suppresses_the_hidden_direct_path() {
+        let params = SushiParams::default();
+        let setter = setter();
+        // The old direct path is still stored in the patch ...
+        setter.set_parameter(&params.lfo1_amount, 0.5);
+        setter.set_parameter(&params.lfo1_target, LfoTarget::Filter);
+        setter.set_parameter(&params.lfo2_amount, 0.4);
+        setter.set_parameter(&params.lfo2_target, LfoTarget::Pitch);
+        // ... but the matrix now owns LFO 1, and LFO 2 has no route.
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.3);
+
+        let sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+        let settings = sushi.voice_settings(64, Macros::default());
+
+        assert!(settings.lfo1_routed, "the LFO 1 route was not detected");
+        assert!(!settings.lfo2_routed, "LFO 2 has no route");
+    }
+
+    #[test]
+    fn an_old_patch_without_a_route_keeps_the_direct_lfo_path() {
+        let params = Arc::new(SushiParams::default());
+        let setter = setter();
+        let patch = serde_json::json!({
+            "params": {
+                "lfo1_amount": 0.25,
+                "lfo1_target": "Filter"
+            }
+        });
+        crate::patch::apply_json(&params, &setter, &patch)
+            .expect("the old patch could not be loaded");
+
+        let sushi = Sushi {
+            params,
+            ..Default::default()
+        };
+        let settings = sushi.voice_settings(64, Macros::default());
+
+        assert!(!settings.lfo1_routed, "an old patch has no matrix route");
+        assert_eq!(settings.lfo1_target, LfoTarget::Filter);
+        assert!((settings.lfo1_amount - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_lfos_retrigger_only_on_the_first_note_after_silence() {
+        let params = Arc::new(SushiParams::default());
+        let setter = setter();
+        setter.set_parameter(&params.lfo1_retrigger, true);
+        let mut sushi = Sushi {
+            params,
+            ..Default::default()
+        };
+
+        for _ in 0..100 {
+            sushi.lfo1.next(5.0, SAMPLE_RATE, LfoWaveform::Sine);
+        }
+        assert!(sushi.lfo1.phase() > 0.0);
+
+        // The first note of a phrase restarts the phase.
+        sushi.retrigger_lfos_if_silent();
+        assert_eq!(sushi.lfo1.phase(), 0.0);
+
+        // A later note of the same chord or phrase must not jitter the shared
+        // LFO, because a voice is still sounding.
+        let settings = VoiceSettings::default();
+        sushi.voices[0] = Some(Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            0,
+            1.0,
+            &settings,
+        ));
+        for _ in 0..100 {
+            sushi.lfo1.next(5.0, SAMPLE_RATE, LfoWaveform::Sine);
+        }
+        let running_phase = sushi.lfo1.phase();
+        assert!(running_phase > 0.0);
+        sushi.retrigger_lfos_if_silent();
+        assert_eq!(sushi.lfo1.phase(), running_phase);
+
+        // Once the phrase is over, the next phrase retriggers again.
+        sushi.voices[0] = None;
+        sushi.retrigger_lfos_if_silent();
+        assert_eq!(sushi.lfo1.phase(), 0.0);
     }
 
     #[test]

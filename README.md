@@ -13,37 +13,47 @@ A compact, mouse-first polyphonic synthesizer.
 ## Sound
 
 - Two band-limited oscillators, sub oscillator, hard sync, phase FM, unison
-- Filter slopes 12 dB / 24 dB OLD (original ladder) / 24 dB (new ZDF ladder
-  with working resonance), with drive
-- ADAA anti-aliased saturation and drive
-- Dual ADSR envelopes, dual LFOs, analog drift
-- 8-slot modulation matrix
+- Filter slopes 12 dB / 24 dB, both through the Legacy cascaded SVF, with
+  drive; the `24 dB OLD` / `24 dB` labels remain for patch compatibility
+- Dual ADSR envelopes, dual LFOs with host tempo sync and retrigger, analog drift
+- 8-slot modulation matrix; the LFOs are sources there, so all LFO routing
+  lives in MOD (the old direct LFO target/amount is kept only for old patches)
 - Arpeggiator with swing, ratchet, gate, length and latch
-- Chorus, ping-pong delay, diffused and modulated FDN reverb
-- Modern: precise, high-performance digital path, free to evolve (new ZDF
-  24 dB ladder, diffused FDN reverb, new mod sources/destinations)
-- Legacy: old-school rough, analog-warm path (Freeverb, cascaded SVF, raw tanh)
-  with deterministic per-voice component tolerances, slower drift,
-  even-harmonic warmth and a fixed HF loss; old projects keep their patch
-  behavior and open in Legacy
-- Patch JSON and parameter IDs are unchanged; the same patch works in both
-  flavors
-- 29 factory presets, 95 patch parameters
+- Chorus, ping-pong delay, Freeverb-style reverb
+- Legacy engine only: old-school rough, analog-warm path (Freeverb, cascaded
+  SVF, raw tanh) with deterministic per-voice component tolerances, slower
+  drift, even-harmonic warmth and a fixed HF loss; old projects keep their
+  patch behavior
+- Patch JSON and parameter IDs are unchanged
+- 29 factory presets, all played through the Legacy engine, 101 patch parameters
 
-The last three factory presets showcase the new engine: **ZDF ACID** uses the
-zero-delay-feedback 24 dB ladder, **WHEEL MOTION** routes the mod wheel to the
-cutoff without adding pitch vibrato, and **RANDOM PAD** uses the deterministic
-per-note Random source for pan and cutoff.
+The LFO sync divisions are 1/4, 1/8, 1/16 and 1/32. A quarter note at 120 BPM
+runs at 2 Hz, and rate changes follow the host tempo with a short glide. The
+retrigger switch restarts the shared LFO on the first note after all voices
+have gone silent, so a held chord or an arpeggiated phrase keeps one stable
+phase instead of jittering between its notes.
+
+The last three factory presets are the showcase presets: **ZDF ACID** is the
+acid lead (the name is retained from the earlier engine), **WHEEL MOTION**
+routes the mod wheel to the cutoff without adding pitch vibrato, and **RANDOM
+PAD** uses the deterministic per-note Random source for pan and cutoff.
 
 ## Interface
 
-- Modern: light SH-101-inspired faceplate; Legacy: warm vintage palette, all vertical faders
+- Warm vintage faceplate with all vertical faders
 - Compact MOD 2.0 table: one header and eight source/dest/amount routes with
   bipolar bars, MOD ENV and AMP ENV kept visible; Mod Wheel and Random sources,
   plus Osc2 Pitch/Fine, Sub, Noise, Detune and Filter Env destinations
+- Live MOD feedback: LFO, macro and mod-wheel routes show their current value
+  on the amount bar
 - Coarse lane plus a separate fine lane on every fader
-- Click the SUSHI wordmark to switch Modern / Legacy
-- Full-page JSON patch browser
+- LFO 1/2 show wave, sync and retrigger, a free-rate fader and the synced
+  division; their routing is in the MOD table
+- MOD and FX page tabs; the FX tab opens a full-panel overview of the existing
+  effects
+- Click the preset LCD to open the full-page JSON patch browser
+- Undo/Redo in the footer, with Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z; a whole fader
+  drag is one step
 - Right-click value entry, mouse wheel, double-click reset
 - 960 × 600 design, continuous scaling, opens at 1280 × 800
 - Built for the mouse; no live MIDI performance required

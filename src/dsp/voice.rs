@@ -170,8 +170,14 @@ pub struct VoiceSettings {
     pub glide_step: f32,
     pub lfo1_amount: f32,
     pub lfo1_target: LfoTarget,
+    /// Whether the modulation matrix has an active route from the first LFO.
+    /// The hidden legacy target/amount is then ignored, so the same LFO is
+    /// never added twice.
+    pub lfo1_routed: bool,
     pub lfo2_amount: f32,
     pub lfo2_target: LfoTarget,
+    /// Whether the modulation matrix has an active route from the second LFO.
+    pub lfo2_routed: bool,
     /// How much the velocity of the note opens the filter, `0..1`.
     pub velocity_amount: f32,
     /// How much the voice drifts, `0..1`. The value is already scaled by the
@@ -221,8 +227,10 @@ impl Default for VoiceSettings {
             glide_step: 1.0,
             lfo1_amount: 0.0,
             lfo1_target: LfoTarget::Off,
+            lfo1_routed: false,
             lfo2_amount: 0.0,
             lfo2_target: LfoTarget::Off,
+            lfo2_routed: false,
             velocity_amount: 0.0,
             drift_amount: 0.0,
             character_grit: false,
@@ -1252,19 +1260,30 @@ fn lfo_modulation(
     let mut pulse_width_offset = 0.0;
 
     // The mod wheel adds to LFO 1. When no destination was chosen, it acts
-    // as a conventional vibrato wheel.
+    // as a conventional vibrato wheel. As soon as the matrix routes LFO 1,
+    // the legacy direct path is completely out of the way, including this
+    // coupling, so the wheel can not add a second LFO 1 vibrato.
     let mut lfo1_target = settings.lfo1_target;
     let mut lfo1_amount = settings.lfo1_amount;
-    if !mod_wheel_routed && settings.mod_wheel > 1e-4 {
+    if settings.lfo1_routed {
+        lfo1_target = LfoTarget::Off;
+        lfo1_amount = 0.0;
+    } else if !mod_wheel_routed && settings.mod_wheel > 1e-4 {
         lfo1_amount = (lfo1_amount + settings.mod_wheel).clamp(0.0, 1.0);
         if lfo1_target == LfoTarget::Off {
             lfo1_target = LfoTarget::Pitch;
         }
     }
 
+    let (lfo2_target, lfo2_amount) = if settings.lfo2_routed {
+        (LfoTarget::Off, 0.0)
+    } else {
+        (settings.lfo2_target, settings.lfo2_amount)
+    };
+
     for (value, target, amount) in [
         (lfo1, lfo1_target, lfo1_amount),
-        (lfo2, settings.lfo2_target, settings.lfo2_amount),
+        (lfo2, lfo2_target, lfo2_amount),
     ] {
         match target {
             LfoTarget::Off => {}
@@ -1535,6 +1554,50 @@ mod tests {
             routed_frequency < coupled_frequency - 5.0,
             "the routed wheel still added the built-in vibrato ({routed_frequency} vs {coupled_frequency} Hz)"
         );
+    }
+
+    #[test]
+    fn a_matrix_lfo_route_disables_the_direct_path() {
+        let direct = VoiceSettings {
+            lfo1_amount: 0.5,
+            lfo1_target: LfoTarget::Filter,
+            lfo2_amount: 0.4,
+            lfo2_target: LfoTarget::Pitch,
+            ..VoiceSettings::default()
+        };
+        let (pitch, filter, _, _) = lfo_modulation(&direct, 1.0, 1.0, false);
+        assert!(
+            (filter - 2.0).abs() < 1e-6,
+            "the direct filter LFO was {filter}"
+        );
+        assert!(
+            (pitch - 0.8).abs() < 1e-6,
+            "the direct pitch LFO was {pitch}"
+        );
+
+        // The matrix owns both LFOs now, so the hidden legacy route is quiet.
+        let routed = VoiceSettings {
+            lfo1_routed: true,
+            lfo2_routed: true,
+            ..direct
+        };
+        let (pitch, filter, amp, pulse_width) = lfo_modulation(&routed, 1.0, 1.0, false);
+        assert_eq!(pitch, 0.0);
+        assert_eq!(filter, 0.0);
+        assert_eq!(amp, 1.0);
+        assert_eq!(pulse_width, 0.0);
+    }
+
+    #[test]
+    fn a_routed_lfo1_ignores_the_mod_wheel_vibrato() {
+        let settings = VoiceSettings {
+            mod_wheel: 0.5,
+            lfo1_routed: true,
+            ..VoiceSettings::default()
+        };
+
+        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0, false);
+        assert_eq!(pitch, 0.0, "the wheel still added a direct LFO 1 vibrato");
     }
 
     #[test]
