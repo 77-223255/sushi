@@ -116,22 +116,23 @@ The CLAP bundle is written to `target/bundled/`.
 
 ## Patches
 
-The `patches/` folder holds the patches made with Sushi. They are plain
-`sushi-patch` JSON files, so they load in any build: unknown parameters are
-ignored and missing ones keep their factory default.
+This repository is **code only** — user patches are not kept here. They live in
+the REAPER project repo:
 
-Point the plugin's patch folder at the checkout, either in the patch browser or
-in `~/.config/sushi/config.json`:
+    ~/Music/all_my_reaper/presets/Sushi/patches
+
+Point the plugin at that folder in the patch browser, or in
+`~/.config/sushi/config.json`:
 
 ```json
 {
-  "patch_dir": "/path/to/sushi/patches"
+  "patch_dir": "/home/shienze/Music/all_my_reaper/presets/Sushi/patches"
 }
 ```
 
-After saving a patch, `scripts/sync-patches.sh` commits and pushes the folder to
-GitHub. It stages only `patches/`, so source changes in progress stay out of the
-commit.
+Only content that must ship with the plugin belongs in this repo, under
+`factory/`; everything else stays in the presets repo (which is versioned and
+pushed separately).
 
 ## License
 

@@ -5,3 +5,6 @@
 *.dylib
 *.dll
 .DS_Store
+
+# user patches live outside this repo (presets repo); keep the checkout clean
+/patches
