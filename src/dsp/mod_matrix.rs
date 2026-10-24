@@ -51,6 +51,23 @@ const DETUNE_RANGE: f32 = 50.0;
 /// octaves.
 const FILTER_ENV_RANGE: f32 = 5.0;
 
+/// The range of the coarse pitch modulation of the first oscillator at full
+/// amount, in semitones.
+const OSC1_PITCH_RANGE: f32 = 12.0;
+
+/// The range of the fine pitch modulation of the first oscillator at full
+/// amount, in cents.
+const OSC1_FINE_RANGE: f32 = 100.0;
+
+/// The range of the additional filter drive modulation at full amount.
+const FILTER_DRIVE_RANGE: f32 = 1.0;
+
+/// The range of the filter keytrack modulation at full amount.
+const FILTER_KEYTRACK_RANGE: f32 = 1.0;
+
+/// The range of the ring modulator level modulation at full amount.
+const RING_MOD_RANGE: f32 = 1.0;
+
 /// The number of semitones around the middle C that the key source covers.
 /// Two octaves up and down fill the whole range of the source.
 const KEY_RANGE: f32 = 24.0;
@@ -114,6 +131,16 @@ pub struct Modulation {
     pub detune_cents: f32,
     /// The additive offset of the filter envelope amount, in octaves.
     pub filter_env_octaves: f32,
+    /// The offset of the coarse pitch of the first oscillator, in semitones.
+    pub osc1_pitch_semitones: f32,
+    /// The offset of the fine pitch of the first oscillator, in semitones.
+    pub osc1_fine_semitones: f32,
+    /// The additive offset of the filter drive.
+    pub filter_drive: f32,
+    /// The additive offset of the filter keytrack amount.
+    pub filter_keytrack: f32,
+    /// The additive offset of the ring modulator level.
+    pub ring_mod: f32,
 }
 
 impl Default for Modulation {
@@ -134,6 +161,11 @@ impl Default for Modulation {
             noise_level: 0.0,
             detune_cents: 0.0,
             filter_env_octaves: 0.0,
+            osc1_pitch_semitones: 0.0,
+            osc1_fine_semitones: 0.0,
+            filter_drive: 0.0,
+            filter_keytrack: 0.0,
+            ring_mod: 0.0,
         }
     }
 }
@@ -199,6 +231,11 @@ pub fn evaluate(slots: &[ModSlot; MOD_SLOTS], sources: &ModSources) -> Modulatio
             ModDest::NoiseLevel => modulation.noise_level += value * NOISE_LEVEL_RANGE,
             ModDest::Detune => modulation.detune_cents += value * DETUNE_RANGE,
             ModDest::FilterEnv => modulation.filter_env_octaves += value * FILTER_ENV_RANGE,
+            ModDest::Osc1Pitch => modulation.osc1_pitch_semitones += value * OSC1_PITCH_RANGE,
+            ModDest::Osc1Fine => modulation.osc1_fine_semitones += value * OSC1_FINE_RANGE / 100.0,
+            ModDest::FilterDrive => modulation.filter_drive += value * FILTER_DRIVE_RANGE,
+            ModDest::FilterKeytrack => modulation.filter_keytrack += value * FILTER_KEYTRACK_RANGE,
+            ModDest::RingMod => modulation.ring_mod += value * RING_MOD_RANGE,
         }
     }
 
@@ -253,6 +290,11 @@ mod tests {
         assert_eq!(modulation.noise_level, 0.0);
         assert_eq!(modulation.detune_cents, 0.0);
         assert_eq!(modulation.filter_env_octaves, 0.0);
+        assert_eq!(modulation.osc1_pitch_semitones, 0.0);
+        assert_eq!(modulation.osc1_fine_semitones, 0.0);
+        assert_eq!(modulation.filter_drive, 0.0);
+        assert_eq!(modulation.filter_keytrack, 0.0);
+        assert_eq!(modulation.ring_mod, 0.0);
     }
 
     #[test]
@@ -378,6 +420,11 @@ mod tests {
             (ModDest::NoiseLevel, 0.5),
             (ModDest::Detune, 50.0),
             (ModDest::FilterEnv, 5.0),
+            (ModDest::Osc1Pitch, 12.0),
+            (ModDest::Osc1Fine, 1.0),
+            (ModDest::FilterDrive, 1.0),
+            (ModDest::FilterKeytrack, 1.0),
+            (ModDest::RingMod, 1.0),
         ];
 
         for (dest, expected) in destinations {
@@ -398,6 +445,11 @@ mod tests {
                 ModDest::NoiseLevel => modulation.noise_level,
                 ModDest::Detune => modulation.detune_cents,
                 ModDest::FilterEnv => modulation.filter_env_octaves,
+                ModDest::Osc1Pitch => modulation.osc1_pitch_semitones,
+                ModDest::Osc1Fine => modulation.osc1_fine_semitones,
+                ModDest::FilterDrive => modulation.filter_drive,
+                ModDest::FilterKeytrack => modulation.filter_keytrack,
+                ModDest::RingMod => modulation.ring_mod,
                 _ => unreachable!(),
             };
             assert!(
@@ -442,5 +494,10 @@ mod tests {
         assert_eq!(modulation.osc2_pitch_semitones, 0.0);
         assert_eq!(modulation.sub_level, 0.0);
         assert_eq!(modulation.filter_env_octaves, 0.0);
+        assert_eq!(modulation.osc1_pitch_semitones, 0.0);
+        assert_eq!(modulation.osc1_fine_semitones, 0.0);
+        assert_eq!(modulation.filter_drive, 0.0);
+        assert_eq!(modulation.filter_keytrack, 0.0);
+        assert_eq!(modulation.ring_mod, 0.0);
     }
 }

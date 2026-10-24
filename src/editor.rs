@@ -201,6 +201,35 @@ const MOD_BAR_HANDLE_WIDTH: f32 = 7.0;
 const MOD_BAR_INSET: f32 = 2.0;
 /// The width of the live marker that shows the current modulation of a route.
 const MOD_LIVE_MARKER_WIDTH: f32 = 2.0;
+/// The width of the accent line that marks the selected route of the table.
+const MOD_SELECTED_LINE_WIDTH: f32 = 2.0;
+
+// --- The target inspector ---------------------------------------------------
+
+/// The height of one line of the target inspector.
+const TARGET_LINE_HEIGHT: f32 = 18.0;
+/// The inset around the text of the target inspector.
+const TARGET_PADDING: f32 = 4.0;
+/// The top inset of the text of the target inspector.
+const TARGET_TOP_PADDING: f32 = 5.0;
+/// The width of the small label column of the target inspector.
+const TARGET_LABEL_WIDTH: f32 = 58.0;
+/// The width of the route-number column of the target inspector.
+const TARGET_ROUTE_WIDTH: f32 = 26.0;
+/// The gap between the summary and its right-aligned amount.
+const TARGET_AMOUNT_GAP: f32 = 8.0;
+
+/// The ranges that the matrix destinations reach at full amount. They mirror
+/// the constants of `dsp::mod_matrix`; the inspector is read-only and must not
+/// make the DSP module public just to print them.
+const TARGET_PITCH_RANGE: f32 = 12.0;
+const TARGET_PULSE_WIDTH_RANGE: f32 = 0.45;
+const TARGET_CUTOFF_RANGE: f32 = 5.0;
+const TARGET_UNIT_RANGE: f32 = 1.0;
+const TARGET_NOISE_RANGE: f32 = 0.5;
+const TARGET_FINE_RANGE: f32 = 100.0;
+const TARGET_DETUNE_RANGE: f32 = 50.0;
+const TARGET_FILTER_ENV_RANGE: f32 = 5.0;
 
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
@@ -209,14 +238,15 @@ const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
 /// The widths of the sections of the first row: `VCO 1 | VCO 2 | PULSE WIDTH |
 /// SOURCE MIXER`. They are the proportions of the sections and are scaled
 /// with the zoom of the panel.
-const ROW_A_WIDTHS: [f32; 4] = [240.0, 192.0, 124.0, 352.0];
+const ROW_A_WIDTHS: [f32; 4] = [228.0, 224.0, 124.0, 332.0];
 /// The widths of the sections of the second row: `VCF | MOD ENV | AMP ENV`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
 /// The widths of the two wide sections of the third row. The normal page
 /// shows `ARP | VOICE`; the modulation page puts `LFO 1 | LFO 2` in the same
 /// two columns.
 const ROW_C_WIDTHS: [f32; 2] = [472.0, 472.0];
-/// The widths of the two wide sections of the fourth row: `MACROS | VCA`.
+/// The widths of the two wide sections of the fourth row. The normal page
+/// shows `MACROS | VCA`; the modulation page shows `TARGET | MACROS`.
 const ROW_D_WIDTHS: [f32; 2] = [472.0, 472.0];
 
 /// The widths of the sections of every row.
@@ -224,13 +254,69 @@ const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTH
 
 // --- The FX rack ------------------------------------------------------------
 
-/// The height of the header of the FX rack. It holds the chain order caption
-/// and is not a fader band of its own.
-const FX_RACK_HEADER_HEIGHT: f32 = 22.0;
+/// The height of the chain strip at the top of the FX rack. It holds the
+/// order control, the live chain caption and the global wet fader, and is not
+/// a fader band of its own.
+const FX_RACK_HEADER_HEIGHT: f32 = 48.0;
+/// The height of one row of the chain strip.
+const FX_CHAIN_ROW_HEIGHT: f32 = 18.0;
+/// The gap between the two rows of the chain strip.
+const FX_CHAIN_ROW_GAP: f32 = 4.0;
+/// The left edge of the order button, measured from the left of the strip.
+const FX_ORDER_LEFT: f32 = 100.0;
+/// The width of the order button.
+const FX_ORDER_WIDTH: f32 = 78.0;
+/// The width of the global wet fader, including its caption and its value.
+const FX_GLOBAL_WET_WIDTH: f32 = 270.0;
+/// The width of the caption of the global wet fader.
+const FX_GLOBAL_LABEL_WIDTH: f32 = 66.0;
+/// The width of the value readout of the global wet fader.
+const FX_GLOBAL_VALUE_WIDTH: f32 = 30.0;
+/// The six effect stages, in the original order of the chain.
+const FX_STAGES: [&str; 6] = ["DRIVE", "PHASER", "CHORUS", "DELAY", "REVERB", "EQ"];
+/// The separator between two stages of the chain caption.
+const FX_CHAIN_SEPARATOR: &str = " > ";
 /// The order in which the six effect modules process the signal.
 const FX_CHAIN_ORDER: &str = "DRIVE > PHASER > CHORUS > DELAY > REVERB > EQ";
 /// The titles of the six modules, row by row, in the order of the chain.
 const FX_RACK_TITLES: [[&str; 3]; 2] = [["DRIVE", "PHASER", "CHORUS"], ["DELAY", "REVERB", "EQ"]];
+/// The identifiers of the bypass check boxes, in the order of the bits of
+/// `fx_bypass_mask`.
+const FX_BYPASS_IDS: [&str; 6] = [
+    "fx_bypass_drive",
+    "fx_bypass_phaser",
+    "fx_bypass_chorus",
+    "fx_bypass_delay",
+    "fx_bypass_reverb",
+    "fx_bypass_eq",
+];
+
+/// The chain caption for a rotation of the FX order.
+fn fx_chain_order(order: i32) -> String {
+    let stages = FX_STAGES.len() as i32;
+    let offset = order.rem_euclid(stages) as usize;
+    if offset == 0 {
+        return FX_CHAIN_ORDER.to_string();
+    }
+    FX_STAGES
+        .iter()
+        .cycle()
+        .skip(offset)
+        .take(FX_STAGES.len())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(FX_CHAIN_SEPARATOR)
+}
+
+/// The next rotation of the FX order. The last step wraps around to the
+/// original order.
+fn next_fx_order(order: i32) -> i32 {
+    if (0..FX_STAGES.len() as i32 - 1).contains(&order) {
+        order + 1
+    } else {
+        0
+    }
+}
 
 // --- Widget metrics ---------------------------------------------------------
 
@@ -489,6 +575,10 @@ struct EditorState {
     arp_step: usize,
     /// The page that is shown in the panel.
     page: Page,
+    /// The route of the modulation table that the target inspector shows.
+    /// Selecting a route is a view-only action, so it never enters the undo
+    /// history and it is kept while the route is edited.
+    mod_selected: usize,
     /// The parameter and value under the pointer, or the last one seen.
     readout: Option<(String, String)>,
     /// The peak level of the samples of the last frame.
@@ -510,6 +600,23 @@ struct EditorState {
     /// The places of the amount bars of the modulation page of the last frame.
     #[cfg(test)]
     amount_rects: Vec<egui::Rect>,
+    /// The places of the eight route rows of the modulation page of the last
+    /// frame, so that a test can click anywhere on a row.
+    #[cfg(test)]
+    mod_row_rects: Vec<egui::Rect>,
+    /// The identifiers of the faders, popups and switches of the last frame.
+    #[cfg(test)]
+    slider_ids: Vec<&'static str>,
+    #[cfg(test)]
+    popup_ids: Vec<&'static str>,
+    #[cfg(test)]
+    check_ids: Vec<&'static str>,
+    /// The place of the order button of the FX chain strip.
+    #[cfg(test)]
+    fx_order_rect: Option<egui::Rect>,
+    /// The track of the global wet fader of the FX chain strip.
+    #[cfg(test)]
+    fx_global_wet_rect: Option<egui::Rect>,
     /// The configuration of the patch browser.
     patch_config: patch::PatchConfig,
     /// Whether the window of the patch browser is open.
@@ -605,6 +712,7 @@ impl SushiEditor {
                 arp_counter: 0,
                 arp_step: 0,
                 page: Page::Main,
+                mod_selected: 0,
                 readout: None,
                 activity: 0.0,
                 clipping: 0.0,
@@ -618,6 +726,18 @@ impl SushiEditor {
                 popup_rects: Vec::new(),
                 #[cfg(test)]
                 amount_rects: Vec::new(),
+                #[cfg(test)]
+                mod_row_rects: Vec::new(),
+                #[cfg(test)]
+                slider_ids: Vec::new(),
+                #[cfg(test)]
+                popup_ids: Vec::new(),
+                #[cfg(test)]
+                check_ids: Vec::new(),
+                #[cfg(test)]
+                fx_order_rect: None,
+                #[cfg(test)]
+                fx_global_wet_rect: None,
                 patch_config: patch::PatchConfig::default(),
                 patch_open: false,
                 patch_dir_text: String::new(),
@@ -969,8 +1089,14 @@ impl SushiEditor {
             // leave its rectangles behind.
             self.state.popup_rects.clear();
             self.state.amount_rects.clear();
+            self.state.mod_row_rects.clear();
             self.state.check_rects.clear();
             self.state.radio_rects.clear();
+            self.state.slider_ids.clear();
+            self.state.popup_ids.clear();
+            self.state.check_ids.clear();
+            self.state.fx_order_rect = None;
+            self.state.fx_global_wet_rect = None;
         }
         let setter = gui_ctx.param_setter();
 
@@ -1043,7 +1169,7 @@ impl SushiEditor {
                     Page::Mod => {
                         row_mod(ui, &layout, &mut ctx);
                         row_c_mod(ui, &layout, &mut ctx);
-                        row_d(ui, &layout, &mut ctx);
+                        row_d_mod(ui, &layout, &mut ctx);
                     }
                     Page::Fx => row_fx(ui, &layout, &mut ctx),
                 }
@@ -1681,6 +1807,39 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         let silent =
             source == ModSource::Off && dest == ModDest::Off && (amount * 100.0).round() == 0.0;
 
+        // The whole row is a selection target. The popups and the amount bar
+        // are drawn after this response, so they stay on top and keep their
+        // own click and drag behavior. Only the empty parts of the row (the
+        // number, the gaps and the space beside the fields) select it.
+        let row_rect = Rect::from_min_size(
+            egui::pos2(table.left(), top),
+            egui::vec2(table.width(), row_height),
+        );
+        #[cfg(test)]
+        ctx.state.mod_row_rects.push(row_rect);
+        let row_response = ui.interact(
+            row_rect,
+            ui.scope_id().with(("sushi-mod-row", slot)),
+            Sense::click(),
+        );
+        if row_response.clicked() {
+            ctx.state.mod_selected = slot;
+        }
+
+        // A thin accent line on the left edge marks the selected route. It
+        // uses the existing title colour, so the row stays as legible as the
+        // unselected ones.
+        if ctx.state.mod_selected == slot {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    egui::pos2(table.left(), top),
+                    egui::vec2(MOD_SELECTED_LINE_WIDTH * zoom, row_height),
+                ),
+                CornerRadius::ZERO,
+                palette().title_blue,
+            );
+        }
+
         painter.text(
             egui::pos2(
                 index_x + MOD_INDEX_WIDTH * 0.5 * zoom,
@@ -1742,13 +1901,16 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     font_size(10.0, zoom),
                     egui::FontFamily::Proportional,
                 ));
-                ctx.popup_with_text(
+                let response = ctx.popup_with_text(
                     ui,
                     source_ids[slot],
                     sources[slot],
                     MOD_SOURCE_WIDTH - MOD_COLUMN_GAP,
                     source_selected,
                 );
+                if response.clicked() {
+                    ctx.state.mod_selected = slot;
+                }
             },
         );
 
@@ -1768,13 +1930,16 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     font_size(10.0, zoom),
                     egui::FontFamily::Proportional,
                 ));
-                ctx.popup_with_text(
+                let response = ctx.popup_with_text(
                     ui,
                     dest_ids[slot],
                     dests[slot],
                     MOD_DEST_WIDTH - MOD_COLUMN_GAP,
                     dest_selected,
                 );
+                if response.clicked() {
+                    ctx.state.mod_selected = slot;
+                }
             },
         );
 
@@ -1829,75 +1994,71 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         match index {
             0 => group(ui, rect, "VCO 1", zoom, |ui, part| match part {
                 Part::Header => ctx.popup(ui, "osc1_wave", &p.osc1_wave, 66.0),
-                Part::Body => {
-                    column_row_fixed(ui, "osc1", 5, COLUMN_GAP, 43.0, zoom, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => {
-                                ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2))
-                            }
-                            1 => ctx.int(
-                                ui,
-                                "osc1_octave",
-                                "Oct",
-                                &p.osc1_octave,
-                                &Knob::plain(-2.0, 2.0, 0),
-                            ),
-                            2 => ctx.int(
-                                ui,
-                                "osc1_semi",
-                                "Semi",
-                                &p.osc1_semi,
-                                &Knob::plain(-12.0, 12.0, 0),
-                            ),
-                            3 => ctx.float(
-                                ui,
-                                "osc1_fine",
-                                "Fine",
-                                &p.osc1_fine,
-                                &Knob::plain(-100.0, 100.0, 0),
-                            ),
-                            4 => ctx.float(ui, "sub_level", "Sub", &p.sub_level, &Knob::percent()),
-                            _ => {}
-                        }
-                    })
-                }
+                Part::Body => column_row_fixed(ui, "osc1", 5, 3.0, 41.0, zoom, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.float(ui, "tune", "Tune", &p.tune, &Knob::plain(-12.0, 12.0, 2)),
+                        1 => ctx.int(
+                            ui,
+                            "osc1_octave",
+                            "Oct",
+                            &p.osc1_octave,
+                            &Knob::plain(-2.0, 2.0, 0),
+                        ),
+                        2 => ctx.int(
+                            ui,
+                            "osc1_semi",
+                            "Semi",
+                            &p.osc1_semi,
+                            &Knob::plain(-12.0, 12.0, 0),
+                        ),
+                        3 => ctx.float(
+                            ui,
+                            "osc1_fine",
+                            "Fine",
+                            &p.osc1_fine,
+                            &Knob::plain(-100.0, 100.0, 0),
+                        ),
+                        4 => ctx.float(ui, "sub_level", "Sub", &p.sub_level, &Knob::percent()),
+                        _ => {}
+                    }
+                }),
             }),
             1 => group(ui, rect, "VCO 2", zoom, |ui, part| match part {
                 Part::Header => {
                     ctx.popup(ui, "osc2_wave", &p.osc2_wave, 66.0);
                     ctx.check(ui, "osc_sync", &p.osc_sync, "SYNC");
+                    ctx.check(ui, "osc_phase_reset", &p.osc_phase_reset, "RESET");
                 }
-                Part::Body => {
-                    column_row_fixed(ui, "osc2", 4, COLUMN_GAP, 43.0, zoom, |index, ui| {
-                        let p = ctx.params;
-                        match index {
-                            0 => ctx.int(
-                                ui,
-                                "osc2_octave",
-                                "Oct",
-                                &p.osc2_octave,
-                                &Knob::plain(-2.0, 2.0, 0),
-                            ),
-                            1 => ctx.int(
-                                ui,
-                                "osc2_semi",
-                                "Semi",
-                                &p.osc2_semi,
-                                &Knob::plain(-12.0, 12.0, 0),
-                            ),
-                            2 => ctx.float(
-                                ui,
-                                "osc2_fine",
-                                "Fine",
-                                &p.osc2_fine,
-                                &Knob::plain(-100.0, 100.0, 0),
-                            ),
-                            3 => ctx.float(ui, "fm_amount", "FM", &p.fm_amount, &Knob::percent()),
-                            _ => {}
-                        }
-                    })
-                }
+                Part::Body => column_row_fixed(ui, "osc2", 5, 3.0, 39.0, zoom, |index, ui| {
+                    let p = ctx.params;
+                    match index {
+                        0 => ctx.int(
+                            ui,
+                            "osc2_octave",
+                            "Oct",
+                            &p.osc2_octave,
+                            &Knob::plain(-2.0, 2.0, 0),
+                        ),
+                        1 => ctx.int(
+                            ui,
+                            "osc2_semi",
+                            "Semi",
+                            &p.osc2_semi,
+                            &Knob::plain(-12.0, 12.0, 0),
+                        ),
+                        2 => ctx.float(
+                            ui,
+                            "osc2_fine",
+                            "Fine",
+                            &p.osc2_fine,
+                            &Knob::plain(-100.0, 100.0, 0),
+                        ),
+                        3 => ctx.float(ui, "fm_amount", "FM", &p.fm_amount, &Knob::percent()),
+                        4 => ctx.float(ui, "ring_mod", "Ring", &p.ring_mod, &Knob::percent()),
+                        _ => {}
+                    }
+                }),
             }),
             2 => group(ui, rect, "PULSE WIDTH", zoom, |ui, part| match part {
                 Part::Header => {}
@@ -1925,7 +2086,7 @@ fn row_a(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             _ => group(ui, rect, "SOURCE MIXER", zoom, |ui, part| match part {
                 Part::Header => {}
                 Part::Body => {
-                    column_row_fixed(ui, "mix", 6, COLUMN_GAP, 52.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "mix", 6, COLUMN_GAP, 50.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -1982,7 +2143,7 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     ctx.popup(ui, "filter_slope", &p.filter_slope, 66.0);
                 }
                 Part::Body => {
-                    column_row_fixed(ui, "filter", 5, COLUMN_GAP, 60.0, zoom, |index, ui| {
+                    column_row_fixed(ui, "filter", 6, COLUMN_GAP, 50.0, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -1992,22 +2153,29 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                                 &p.cutoff,
                                 &Knob::logarithmic(20.0, 20_000.0, 0),
                             ),
-                            1 => ctx.float(ui, "resonance", "Res", &p.resonance, &Knob::percent()),
-                            2 => ctx.float(
+                            1 => ctx.float(
+                                ui,
+                                "hpf_cutoff",
+                                "HPF",
+                                &p.hpf_cutoff,
+                                &Knob::logarithmic(20.0, 2_000.0, 0),
+                            ),
+                            2 => ctx.float(ui, "resonance", "Res", &p.resonance, &Knob::percent()),
+                            3 => ctx.float(
                                 ui,
                                 "filter_env_amount",
                                 "Env",
                                 &p.filter_env_amount,
                                 &Knob::bipolar(),
                             ),
-                            3 => ctx.float(
+                            4 => ctx.float(
                                 ui,
                                 "filter_keytrack",
                                 "Key",
                                 &p.filter_keytrack,
                                 &Knob::percent(),
                             ),
-                            4 => ctx.float(
+                            5 => ctx.float(
                                 ui,
                                 "filter_drive",
                                 "Drv",
@@ -2031,8 +2199,8 @@ fn row_b(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 struct EnvelopeSpec<'a> {
     title: &'static str,
     column: &'static str,
-    ids: [&'static str; 4],
-    params: [&'a FloatParam; 4],
+    ids: [&'static str; 5],
+    params: [&'a FloatParam; 5],
     release_max: f32,
 }
 
@@ -2042,12 +2210,19 @@ impl<'a> EnvelopeSpec<'a> {
         Self {
             title: "MOD ENV",
             column: "fe",
-            ids: ["fe_attack", "fe_decay", "fe_sustain", "fe_release"],
+            ids: [
+                "fe_attack",
+                "fe_decay",
+                "fe_sustain",
+                "fe_release",
+                "fe_curve",
+            ],
             params: [
                 &params.fe_attack,
                 &params.fe_decay,
                 &params.fe_sustain,
                 &params.fe_release,
+                &params.fe_curve,
             ],
             release_max: 4_000.0,
         }
@@ -2058,37 +2233,46 @@ impl<'a> EnvelopeSpec<'a> {
         Self {
             title: "AMP ENV",
             column: "ae",
-            ids: ["ae_attack", "ae_decay", "ae_sustain", "ae_release"],
+            ids: [
+                "ae_attack",
+                "ae_decay",
+                "ae_sustain",
+                "ae_release",
+                "ae_curve",
+            ],
             params: [
                 &params.ae_attack,
                 &params.ae_decay,
                 &params.ae_sustain,
                 &params.ae_release,
+                &params.ae_curve,
             ],
             release_max: 8_000.0,
         }
     }
 }
 
-/// Draws one of the two envelopes: four A/D/S/R faders in the same geometry
-/// as every other section. The normal panel and the modulation page both use
-/// it, so the faders return to the page with the exact height and pitch that
-/// they have on the panel.
+/// Draws one of the two envelopes: five A/D/S/R/Curve faders in the same
+/// geometry as every other section. The normal panel and the modulation page
+/// both use it, so the faders return to the page with the exact height and
+/// pitch that they have on the panel.
 fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec: &EnvelopeSpec) {
     group(ui, rect, spec.title, zoom, |ui, part| match part {
         Part::Header => {}
         Part::Body => {
-            column_row_fixed(ui, spec.column, 4, COLUMN_GAP, 60.0, zoom, |index, ui| {
+            column_row_fixed(ui, spec.column, 5, COLUMN_GAP, 50.0, zoom, |index, ui| {
                 let knob = match index {
                     0 | 1 => Knob::logarithmic(0.0, 4_000.0, 1),
                     2 => Knob::percent(),
+                    4 => Knob::bipolar(),
                     _ => Knob::logarithmic(0.0, spec.release_max, 1),
                 };
                 let label = match index {
                     0 => "A",
                     1 => "D",
                     2 => "S",
-                    _ => "R",
+                    3 => "R",
+                    _ => "Curve",
                 };
                 ctx.float(ui, spec.ids[index], label, spec.params[index], &knob);
             });
@@ -2105,7 +2289,7 @@ fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec:
 /// fader on the left and the clock controls on the right.
 fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usize) {
     let p = ctx.params;
-    let (title, wave, sync, division, retrigger, rate, ids) = if index == 0 {
+    let (title, wave, sync, division, retrigger, rate, phase, curve, ids) = if index == 0 {
         (
             "LFO 1",
             &p.lfo1_wave,
@@ -2113,12 +2297,16 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
             &p.lfo1_div,
             &p.lfo1_retrigger,
             &p.lfo1_rate,
+            &p.lfo1_phase,
+            &p.lfo1_curve,
             (
                 "lfo1_wave",
                 "lfo1_sync",
                 "lfo1_div",
                 "lfo1_retrigger",
                 "lfo1_rate",
+                "lfo1_phase",
+                "lfo1_curve",
             ),
         )
     } else {
@@ -2129,12 +2317,16 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
             &p.lfo2_div,
             &p.lfo2_retrigger,
             &p.lfo2_rate,
+            &p.lfo2_phase,
+            &p.lfo2_curve,
             (
                 "lfo2_wave",
                 "lfo2_sync",
                 "lfo2_div",
                 "lfo2_retrigger",
                 "lfo2_rate",
+                "lfo2_phase",
+                "lfo2_curve",
             ),
         )
     };
@@ -2148,12 +2340,14 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
             column_row_fill(
                 ui,
                 ids.4,
-                2,
+                4,
                 WIDE_COLUMN_GAP,
                 zoom,
                 |index, ui| match index {
                     0 => ctx.float(ui, ids.4, "Rate", rate, &Knob::logarithmic(0.01, 40.0, 2)),
-                    1 => {
+                    1 => ctx.float(ui, ids.5, "Phase", phase, &Knob::percent()),
+                    2 => ctx.float(ui, ids.6, "Curve", curve, &Knob::bipolar()),
+                    _ => {
                         ui.horizontal(|ui| {
                             ctx.check(ui, ids.3, retrigger, "RETRIG");
                         });
@@ -2163,7 +2357,6 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
                         }
                         text_label(ui, "MOD ROUTE", 7.5, zoom, palette().muted);
                     }
-                    _ => {}
                 },
             );
         }
@@ -2186,6 +2379,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     ctx.check(ui, "arp_latch", &p.arp_latch, "LATCH");
                     ctx.popup(ui, "arp_pattern", &p.arp_pattern, 74.0);
                     ctx.popup(ui, "arp_rate", &p.arp_rate, 52.0);
+                    ctx.popup(ui, "arp_chord", &p.arp_chord, 66.0);
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(ARP_LED_SIZE, ARP_LED_SIZE) * zoom,
                         Sense::hover(),
@@ -2199,7 +2393,7 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                     );
                 }
                 Part::Body => {
-                    column_row_fill(ui, "arp", 5, WIDE_COLUMN_GAP, zoom, |index, ui| {
+                    column_row_fill(ui, "arp", 7, WIDE_COLUMN_GAP, zoom, |index, ui| {
                         let p = ctx.params;
                         match index {
                             0 => ctx.float(
@@ -2236,6 +2430,20 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                                 "Length",
                                 &p.arp_length,
                                 &Knob::plain(1.0, 16.0, 0),
+                            ),
+                            5 => ctx.float(
+                                ui,
+                                "arp_strum",
+                                "Strum",
+                                &p.arp_strum,
+                                &Knob::plain(0.0, 80.0, 1),
+                            ),
+                            6 => ctx.float(
+                                ui,
+                                "arp_probability",
+                                "Prob",
+                                &p.arp_probability,
+                                &Knob::percent(),
                             ),
                             _ => {}
                         }
@@ -2285,28 +2493,15 @@ fn row_c_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     });
 }
 
-/// The fourth row: the macros and the output.
+/// The fourth row of the normal page: the macros and the output.
 ///
-/// The normal page and the modulation page share this band, so the macros
-/// and the VCA stay in reach while the upper bands change.
+/// The normal page keeps `MACROS | VCA`, exactly as before. The modulation
+/// page uses the same band for the target inspector and the macros, so the
+/// VCA stays a main-page control and the macros remain usable while routing.
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
-        0 => group(ui, rect, "MACROS", zoom, |ui, part| match part {
-            Part::Header => {}
-            Part::Body => {
-                column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
-                    let p = ctx.params;
-                    let knob = Knob::percent().with_width(layout.macro_width());
-                    match index {
-                        0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
-                        1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
-                        2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
-                        _ => {}
-                    }
-                });
-            }
-        }),
+        0 => macros_group(ui, rect, layout, ctx),
         _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
                 let p = ctx.params;
@@ -2314,7 +2509,7 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
             Part::Body => {
-                column_row_fill(ui, "output", 2, WIDE_COLUMN_GAP, zoom, |index, ui| {
+                column_row_fill(ui, "output", 4, WIDE_COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
                     match index {
                         0 => ctx.float(
@@ -2325,12 +2520,171 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                             &Knob::decibels(-60.0, 6.0),
                         ),
                         1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
+                        2 => ctx.float(
+                            ui,
+                            "vca_width",
+                            "Width",
+                            &p.vca_width,
+                            &Knob::plain(0.0, 2.0, 2),
+                        ),
+                        3 => ctx.float(ui, "vca_pan", "Pan", &p.vca_pan, &Knob::bipolar()),
                         _ => {}
                     }
                 });
             }
         }),
     });
+}
+
+/// The fourth row of the modulation page: the target inspector on the left
+/// and the macros on the right.
+fn row_d_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    group_row(ui, "row-d-mod", layout, 3, |index, rect, ui| match index {
+        0 => group(ui, rect, "TARGET", ctx.zoom, |ui, part| match part {
+            Part::Header => {}
+            Part::Body => target_inspector(ui, ctx),
+        }),
+        _ => macros_group(ui, rect, layout, ctx),
+    });
+}
+
+/// The three macro faders. They are shared by the normal and the modulation
+/// page, so a routed macro can be moved without leaving the matrix.
+fn macros_group(ui: &mut egui::Ui, rect: Rect, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    group(ui, rect, "MACROS", zoom, |ui, part| match part {
+        Part::Header => {}
+        Part::Body => {
+            column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
+                let p = ctx.params;
+                let knob = Knob::percent().with_width(layout.macro_width());
+                match index {
+                    0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
+                    1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
+                    2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
+                    _ => {}
+                }
+            });
+        }
+    });
+}
+
+/// Draws the read-only inspector for the selected route.
+///
+/// It answers the three questions of a route in one place: what target does
+/// the route move and where does it stand now, how far can the amount push
+/// it, and what is the source doing at this instant. The band has no fader
+/// bank, so the inspection never competes with a control for the same space.
+fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    let body = ui.max_rect();
+    let painter = ui.painter_at(body);
+    // The regular section helper prints the two faint lines of a fader bank.
+    // This band holds text instead, so the body is cleared before the
+    // inspector draws on it.
+    painter.rect_filled(body, CornerRadius::ZERO, palette().bg);
+
+    let slot = ctx.state.mod_selected.min(crate::params::MOD_SLOTS - 1);
+    let (source, dest, amount) = mod_route_values(ctx.params, slot);
+    let left = body.left() + TARGET_PADDING * zoom;
+    let right = body.right() - TARGET_PADDING * zoom;
+    let top = body.top() + TARGET_TOP_PADDING * zoom;
+    let line = TARGET_LINE_HEIGHT * zoom;
+    let label_font = FontId::new(font_size(8.0, zoom), bold());
+    let value_font = FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional);
+    let route_font = FontId::new(font_size(10.0, zoom), bold());
+
+    // An Off route has nothing to inspect. The state is quiet and explicit,
+    // not a row of zeroes that looks like a real reading.
+    if source == ModSource::Off || dest == ModDest::Off {
+        painter.text(
+            egui::pos2(left, top + line * 0.5),
+            Align2::LEFT_CENTER,
+            format!("{:02}", slot + 1),
+            route_font,
+            palette().title_blue,
+        );
+        painter.text(
+            egui::pos2(left + TARGET_ROUTE_WIDTH * zoom, top + line * 0.5),
+            Align2::LEFT_CENTER,
+            "Select a route",
+            value_font,
+            palette().muted,
+        );
+        painter.text(
+            egui::pos2(left, top + line * 1.5),
+            Align2::LEFT_CENTER,
+            "No modulation",
+            FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional),
+            palette().muted,
+        );
+        return;
+    }
+
+    let source_name = ModSource::variants()[ModSource::to_index(source)];
+    let dest_name = ModDest::variants()[ModDest::to_index(dest)];
+    let amount_text = format!("{}%", format_amount(amount));
+    let amount_width = text_width(&painter, &amount_text, &value_font);
+    let summary = format!("{source_name} > {dest_name}");
+    let summary_left = left + TARGET_ROUTE_WIDTH * zoom;
+    let summary_width = (right - summary_left - amount_width - TARGET_AMOUNT_GAP * zoom).max(1.0);
+    let summary = fit_text(&painter, &summary, summary_width, &route_font);
+
+    painter.text(
+        egui::pos2(left, top + line * 0.5),
+        Align2::LEFT_CENTER,
+        format!("{:02}", slot + 1),
+        route_font,
+        palette().title_blue,
+    );
+    painter.text(
+        egui::pos2(summary_left, top + line * 0.5),
+        Align2::LEFT_CENTER,
+        summary,
+        FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
+        palette().text,
+    );
+    painter.text(
+        egui::pos2(right, top + line * 0.5),
+        Align2::RIGHT_CENTER,
+        amount_text,
+        value_font.clone(),
+        palette().text,
+    );
+
+    let current = target_current_text(dest, ctx.params);
+    let range = target_range_text(dest, amount);
+    let live = target_live_text(source, dest, amount, ctx.mod_feedback);
+    let live_color = if live_source_value(source, ctx.mod_feedback).is_some() {
+        palette().text
+    } else {
+        palette().muted
+    };
+
+    for (row, (label, value, color)) in [
+        ("CURRENT", current.as_str(), palette().text),
+        ("RANGE", range.as_str(), palette().text),
+        ("LIVE", live.as_str(), live_color),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let y = top + line * (row as f32 + 1.5);
+        painter.text(
+            egui::pos2(left, y),
+            Align2::LEFT_CENTER,
+            label,
+            label_font.clone(),
+            palette().muted,
+        );
+        painter.text(
+            egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y),
+            Align2::LEFT_CENTER,
+            value,
+            value_font.clone(),
+            color,
+        );
+    }
 }
 
 /// The controls of one module of the FX rack. The module index follows the
@@ -2469,39 +2823,92 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
     }
 }
 
+/// The chain strip at the top of the FX rack: the order control, the live
+/// processing order and the global wet fader.
+fn fx_chain_strip(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    let p = ctx.params;
+    let pad = (GROUP_PADDING + 2.0) * zoom;
+    let row_height = FX_CHAIN_ROW_HEIGHT * zoom;
+    let top = rect.top() + 3.0 * zoom;
+    let center = top + row_height * 0.5;
+
+    let painter = ui.painter_at(rect);
+    let title_font = FontId::new(font_size(13.0, zoom), bold());
+    let title = painter.layout_no_wrap("FX RACK".to_string(), title_font, palette().title_blue);
+    painter.galley(
+        egui::pos2(rect.left() + pad, center - title.size().y * 0.5),
+        title.clone(),
+        palette().title_blue,
+    );
+
+    // The order button sits after the title and cycles the rotation. It is a
+    // plain click target, so no drag is needed to change the chain.
+    let order_left =
+        (rect.left() + pad + title.size().x + 10.0 * zoom).max(rect.left() + FX_ORDER_LEFT * zoom);
+    let order_rect = Rect::from_min_size(
+        egui::pos2(order_left, top),
+        egui::vec2(FX_ORDER_WIDTH * zoom, row_height),
+    );
+    ctx.fx_order_control(ui, order_rect, "fx_order", &p.fx_order);
+
+    // The global wet fader on the right of the same row.
+    let wet_rect = Rect::from_min_size(
+        egui::pos2(rect.right() - pad - FX_GLOBAL_WET_WIDTH * zoom, top),
+        egui::vec2(FX_GLOBAL_WET_WIDTH * zoom, row_height),
+    );
+    ctx.h_fader(
+        ui,
+        wet_rect,
+        "fx_global_mix",
+        "GLOBAL WET",
+        &p.fx_global_mix,
+        &Knob::percent(),
+    );
+
+    // The second row lists the actual processing order of the current
+    // rotation. The caption is rebuilt every frame, so it follows the order
+    // control immediately.
+    let chain_center = top + row_height + FX_CHAIN_ROW_GAP * zoom + row_height * 0.5;
+    let chain_label = painter.layout_no_wrap(
+        "CHAIN".to_string(),
+        FontId::new(font_size(9.0, zoom), bold()),
+        palette().muted,
+    );
+    painter.galley(
+        egui::pos2(rect.left() + pad, chain_center - chain_label.size().y * 0.5),
+        chain_label.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(
+            rect.left() + pad + chain_label.size().x + 8.0 * zoom,
+            chain_center,
+        ),
+        Align2::LEFT_CENTER,
+        fx_chain_order(p.fx_order.value()),
+        FontId::new(font_size(9.0, zoom), bold()),
+        palette().muted,
+    );
+}
+
 /// The FX page: a two-row rack of the six effect modules.
 ///
-/// The rack uses the whole area between the header and the footer. Each of
-/// the two bands holds three modules, and every module spreads its faders
-/// over the full width of its card. The caption above the rack lists the
-/// signal order.
+/// The rack uses the whole area between the header and the footer. A slim
+/// chain strip on top holds the order control, the live chain caption and the
+/// global wet fader. Each of the two bands below it holds three modules, and
+/// every module spreads its faders over the full width of its card.
 fn row_fx(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let top = layout.scale(layout.base_rows[0]).left_top();
     let bottom = layout.scale(layout.base_rows[3]).right_bottom();
     let rack = Rect::from_min_max(top, bottom);
 
-    // The rack header: the name of the rack on the left and the processing
-    // order of the six modules on the right. It is a caption, not a band, so
-    // the modules below it still get nearly the whole height of the page.
-    let painter = ui.painter_at(rack);
     let header_bottom = rack.top() + FX_RACK_HEADER_HEIGHT * zoom;
-    let header_center = (rack.top() + header_bottom) * 0.5;
-    painter.text(
-        egui::pos2(rack.left() + (GROUP_PADDING + 2.0) * zoom, header_center),
-        Align2::LEFT_CENTER,
-        "FX RACK",
-        FontId::new(font_size(13.0, zoom), bold()),
-        palette().title_blue,
-    );
-    painter.text(
-        egui::pos2(rack.right() - (GROUP_PADDING + 2.0) * zoom, header_center),
-        Align2::RIGHT_CENTER,
-        FX_CHAIN_ORDER,
-        FontId::new(font_size(8.0, zoom), bold()),
-        palette().muted,
-    );
-    painter.line_segment(
+    let header_rect = Rect::from_min_max(rack.min, egui::pos2(rack.right(), header_bottom));
+    fx_chain_strip(ui, header_rect, ctx);
+
+    ui.painter_at(rack).line_segment(
         [
             egui::pos2(rack.left(), header_bottom),
             egui::pos2(rack.right(), header_bottom),
@@ -2528,7 +2935,16 @@ fn row_fx(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             );
             let module = row * 3 + column;
             group(ui, rect, title, zoom, |ui, part| match part {
-                Part::Header => {}
+                Part::Header => {
+                    let p = ctx.params;
+                    ctx.int_bit_check(
+                        ui,
+                        FX_BYPASS_IDS[module],
+                        &p.fx_bypass_mask,
+                        module as u32,
+                        "BYPASS",
+                    );
+                }
                 Part::Body => fx_module_controls(ui, ctx, module),
             });
         }
@@ -2729,6 +3145,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
     ) {
         #[cfg(test)]
         self.state.count(Widget::Slider);
+        #[cfg(test)]
+        self.state.slider_ids.push(id);
 
         let zoom = self.zoom;
 
@@ -2787,6 +3205,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
     ) {
         #[cfg(test)]
         self.state.count(Widget::Slider);
+        #[cfg(test)]
+        self.state.slider_ids.push(id);
 
         let zoom = self.zoom;
 
@@ -2833,6 +3253,198 @@ impl<'a, 'b> Ctx<'a, 'b> {
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
+    /// Draws the compact order control of the FX chain strip. Every click
+    /// rotates the chain by one stage, and the last step wraps back to the
+    /// original order.
+    fn fx_order_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        id: &'static str,
+        param: &IntParam,
+    ) {
+        let zoom = self.zoom;
+        #[cfg(test)]
+        {
+            self.state.fx_order_rect = Some(rect);
+        }
+
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("sushi-fx-order", id)),
+            Sense::click(),
+        );
+        let painter = ui.painter_at(rect);
+        let fill = if response.hovered() || response.is_pointer_button_down_on() {
+            palette().button_active
+        } else {
+            palette().button_bg
+        };
+        flat_box(&painter, rect, fill);
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            format!("ORDER {}", param.value()),
+            FontId::new(font_size(9.0, zoom), bold()),
+            palette().text,
+        );
+
+        if response.hovered() {
+            self.state.readout = Some((
+                "FX ORDER".to_string(),
+                format!("{} of {}", param.value(), FX_STAGES.len() - 1),
+            ));
+        }
+
+        if response.clicked() {
+            self.mark_edit();
+            self.setter
+                .set_parameter(param, next_fx_order(param.value()));
+            self.state.dirty = true;
+        }
+        self.commit_edit();
+    }
+
+    /// Draws a compact horizontal fader in a given rectangle. The caption sits
+    /// on the left, the value on the right and the track in between.
+    fn h_fader(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        id: &'static str,
+        label: &str,
+        param: &FloatParam,
+        knob: &Knob,
+    ) {
+        #[cfg(test)]
+        self.state.count(Widget::Slider);
+        #[cfg(test)]
+        self.state.slider_ids.push(id);
+
+        let zoom = self.zoom;
+        let label_rect = Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.left() + FX_GLOBAL_LABEL_WIDTH * zoom, rect.bottom()),
+        );
+        let value_rect = Rect::from_min_max(
+            egui::pos2(rect.right() - FX_GLOBAL_VALUE_WIDTH * zoom, rect.top()),
+            rect.max,
+        );
+        let track = Rect::from_min_max(
+            egui::pos2(label_rect.right() + 4.0 * zoom, rect.top() + 4.0 * zoom),
+            egui::pos2(value_rect.left() - 4.0 * zoom, rect.bottom() - 4.0 * zoom),
+        );
+        #[cfg(test)]
+        {
+            self.state.fx_global_wet_rect = Some(track);
+        }
+
+        let painter = ui.painter_at(rect);
+        painter.text(
+            label_rect.left_center(),
+            Align2::LEFT_CENTER,
+            label.to_ascii_uppercase(),
+            FontId::proportional(font_size(9.0, zoom)),
+            palette().label,
+        );
+        let value = format_number(knob.display(param.value()), knob.decimals);
+        painter.text(
+            value_rect.center(),
+            Align2::CENTER_CENTER,
+            format!("{}{}", value, param.unit()),
+            FontId::proportional(font_size(9.0, zoom)),
+            palette().text,
+        );
+
+        let mut value = param.value();
+        let response = h_slider(ui, track, &mut value, knob, zoom);
+        let reset = response.double_clicked();
+        if self.begin_gesture(id, &response, ui) {
+            self.setter.begin_set_parameter(param);
+        }
+        if response.changed() {
+            self.mark_edit();
+            self.setter.set_parameter(param, value);
+            self.state.dirty = true;
+        }
+        if reset {
+            self.reset_to_default(id, param);
+        }
+        if self.end_gesture(id, &response, ui) {
+            self.setter.end_set_parameter(param);
+        }
+
+        self.value_popup_float(ui, id, label, param, knob, &response);
+        self.commit_edit();
+        let value = format_number(knob.display(param.value()), knob.decimals);
+        if response.hovered() || response.dragged() {
+            *self.readout() = Some((
+                label.to_ascii_uppercase(),
+                format!("{}{}", value, param.unit()),
+            ));
+        }
+        response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
+    }
+
+    /// Draws a check box for one bit of an integer parameter. A click toggles
+    /// only that bit and leaves every other bit untouched. A double click
+    /// clears the bit again, which is its factory default.
+    fn int_bit_check(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        param: &IntParam,
+        bit: u32,
+        label: &str,
+    ) {
+        #[cfg(test)]
+        self.state.count(Widget::Check);
+        #[cfg(test)]
+        self.state.check_ids.push(id);
+
+        let zoom = self.zoom;
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(CHECK_SIZE, CHECK_SIZE) * zoom, Sense::hover());
+        #[cfg(test)]
+        self.state.check_rects.push(rect);
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with(("sushi-bit-check", id)),
+            Sense::click(),
+        );
+        let painter = ui.painter_at(rect);
+        let set = param.value() & (1 << bit) != 0;
+        draw_check_box(&painter, rect, set, zoom);
+
+        if response.hovered() {
+            self.state.readout = Some((
+                label.to_ascii_uppercase(),
+                if set { "ON" } else { "OFF" }.to_string(),
+            ));
+        }
+
+        if response.double_clicked() {
+            self.mark_edit();
+            self.undo.merge_double_click(self.params, self.state);
+            let mask = param.value() & !(1 << bit);
+            self.setter.set_parameter(param, mask);
+            self.state.dirty = true;
+        } else if response.clicked() {
+            self.mark_edit();
+            let mask = param.value();
+            let next = if set {
+                mask & !(1 << bit)
+            } else {
+                mask | (1 << bit)
+            };
+            self.setter.set_parameter(param, next);
+            self.state.dirty = true;
+        }
+        self.commit_edit();
+
+        text_label(ui, label, 9.0, zoom, palette().text);
+    }
+
     /// Draws the horizontal bipolar amount of one route of the modulation
     /// table. It is the SH-101 bender bar turned on its side: a pale fill, a
     /// centre tick and a black handle. Drag changes the amount, Shift drags
@@ -2854,6 +3466,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
             ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         #[cfg(test)]
         self.state.amount_rects.push(rect);
+
+        // Reaching the amount bar means reaching its route. The selection is
+        // only a view state; it does not open an edit by itself.
+        if response.clicked() || response.is_pointer_button_down_on() {
+            self.state.mod_selected = slot;
+        }
 
         let painter = ui.painter_at(rect);
         let track = Rect::from_center_size(
@@ -3152,7 +3770,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         param: &EnumParam<T>,
         width: f32,
     ) {
-        self.popup_with_text(ui, id, param, width, None);
+        let _ = self.popup_with_text(ui, id, param, width, None);
     }
 
     /// The same popup, but with a text that can differ from the value. The
@@ -3165,9 +3783,11 @@ impl<'a, 'b> Ctx<'a, 'b> {
         param: &EnumParam<T>,
         width: f32,
         selected: Option<&str>,
-    ) {
+    ) -> egui::Response {
         #[cfg(test)]
         self.state.count(Widget::Popup);
+        #[cfg(test)]
+        self.state.popup_ids.push(id);
 
         let current = param.value();
         let variants = T::variants();
@@ -3210,12 +3830,15 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.commit_edit();
+        response
     }
 
     /// Draws a check box with a label. Clicking it switches the parameter.
     fn check(&mut self, ui: &mut egui::Ui, id: &'static str, param: &BoolParam, label: &str) {
         #[cfg(test)]
         self.state.count(Widget::Check);
+        #[cfg(test)]
+        self.state.check_ids.push(id);
 
         let zoom = self.zoom;
 
@@ -3230,16 +3853,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         );
         let painter = ui.painter_at(rect);
         // A flat white square with a thin outline and a black check mark.
-        flat_box(&painter, rect, palette().track);
-        if param.value() {
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                "X",
-                FontId::monospace(font_size(9.0, zoom)),
-                palette().text,
-            );
-        }
+        draw_check_box(&painter, rect, param.value(), zoom);
 
         if response.hovered() {
             self.state.readout = Some((
@@ -4221,6 +4835,249 @@ fn live_marker_rect(
     ))
 }
 
+/// A number with a sign for positive and negative values. Zero stays bare, so
+/// a route that is at rest does not print a plus sign.
+fn format_signed_number(value: f32, decimals: usize) -> String {
+    let text = format_number(value, decimals);
+    if text == "0" {
+        text
+    } else if value > 0.0 {
+        format!("+{text}")
+    } else {
+        text
+    }
+}
+
+/// The live value of a global source. Two decimals are kept, because an LFO
+/// moves continuously even when its rounded value would look still.
+fn format_live_source_value(value: f32) -> String {
+    if value.abs() < 0.005 {
+        "0.00".to_string()
+    } else {
+        format!("{value:+.2}")
+    }
+}
+
+/// A whole percentage without a sign. It is used for the absolute value of a
+/// `0..1` target such as resonance or a pulse width.
+fn format_whole_percent(value: f32) -> String {
+    let percent = (value * 100.0).round();
+    if percent == 0.0 {
+        "0%".to_string()
+    } else {
+        format!("{percent:.0}%")
+    }
+}
+
+/// A signed whole percentage for a bipolar target or a modulation offset.
+fn format_signed_percent(value: f32) -> String {
+    let percent = (value * 100.0).round();
+    if percent == 0.0 {
+        "0%".to_string()
+    } else {
+        format!("{percent:+.0}%")
+    }
+}
+
+/// A percentage range, always symmetrical around the current target.
+fn format_percent_range(value: f32) -> String {
+    let percent = (value.abs() * 100.0).round();
+    format!("±{percent:.0}%")
+}
+
+/// A frequency in the compact units of the panel: hertz below one kilohertz
+/// and kilohertz above it.
+fn format_frequency(hz: f32) -> String {
+    if hz >= 1_000.0 {
+        format!("{} kHz", format_number(hz / 1_000.0, 1))
+    } else {
+        format!("{} Hz", format_number(hz, 0))
+    }
+}
+
+/// A gain in decibels, with the scale of the volume fader.
+fn format_gain_db(gain: f32) -> String {
+    format!("{} dB", format_signed_number(util::gain_to_db(gain), 1))
+}
+
+/// A semitone value, used by the pitch destinations.
+fn format_semitones(semitones: f32) -> String {
+    format!("{} st", format_signed_number(semitones, 1))
+}
+
+/// A cents value, used by the fine pitch and detune destinations.
+fn format_cents(cents: f32) -> String {
+    format!("{} cents", format_signed_number(cents, 1))
+}
+
+/// A range in octaves. The singular is kept for a range of exactly one.
+fn format_octave_range(octaves: f32) -> String {
+    let text = format_number(octaves.abs(), 1);
+    if text == "1" {
+        format!("±{text} octave")
+    } else {
+        format!("±{text} octaves")
+    }
+}
+
+/// The current value of the parameter that a destination modulates.
+///
+/// `Pitch` has no single scalar parameter: it offsets every oscillator at
+/// once. It therefore gets a description instead of the tune value, which
+/// would look like a real target that the route does not actually move.
+fn target_current_text(dest: ModDest, params: &SushiParams) -> String {
+    match dest {
+        ModDest::Off => "No modulation".to_string(),
+        ModDest::Pitch => "All oscillators".to_string(),
+        ModDest::Pulse1 => format_whole_percent(params.osc1_pw.value()),
+        ModDest::Pulse2 => format_whole_percent(params.osc2_pw.value()),
+        ModDest::Cutoff => format_frequency(params.cutoff.value()),
+        ModDest::Resonance => format_whole_percent(params.resonance.value()),
+        ModDest::Drive => format_whole_percent(params.filter_drive.value()),
+        ModDest::Pan => format_signed_percent(params.vca_pan.value()),
+        ModDest::Volume => format_gain_db(params.volume.value()),
+        ModDest::Osc2Pitch => format_semitones(
+            params.osc2_octave.value() as f32 * 12.0 + params.osc2_semi.value() as f32,
+        ),
+        ModDest::Osc2Fine => format_cents(params.osc2_fine.value()),
+        ModDest::SubLevel => format_whole_percent(params.sub_level.value()),
+        ModDest::NoiseLevel => format_whole_percent(params.noise_level.value()),
+        ModDest::Detune => format_cents(params.detune.value()),
+        ModDest::FilterEnv => format_signed_percent(params.filter_env_amount.value()),
+        ModDest::Osc1Pitch => format_semitones(
+            params.osc1_octave.value() as f32 * 12.0 + params.osc1_semi.value() as f32,
+        ),
+        ModDest::Osc1Fine => format_cents(params.osc1_fine.value()),
+        ModDest::FilterDrive => format_whole_percent(params.filter_drive.value()),
+        ModDest::FilterKeytrack => format_whole_percent(params.filter_keytrack.value()),
+        ModDest::RingMod => format_whole_percent(params.ring_mod.value()),
+    }
+}
+
+/// The range that a route can add to its target. The amount scales the full
+/// range of the destination, and the sign of the amount does not change the
+/// width of the range.
+fn target_range_text(dest: ModDest, amount: f32) -> String {
+    let scale = amount.abs();
+    match dest {
+        ModDest::Off => "0".to_string(),
+        ModDest::Pitch | ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
+            format!("±{} st", format_number(TARGET_PITCH_RANGE * scale, 1))
+        }
+        ModDest::Pulse1 | ModDest::Pulse2 => format_percent_range(TARGET_PULSE_WIDTH_RANGE * scale),
+        ModDest::Cutoff | ModDest::FilterEnv => format_octave_range(TARGET_CUTOFF_RANGE * scale),
+        ModDest::Resonance
+        | ModDest::Drive
+        | ModDest::Pan
+        | ModDest::Volume
+        | ModDest::SubLevel
+        | ModDest::FilterDrive
+        | ModDest::FilterKeytrack
+        | ModDest::RingMod => format_percent_range(TARGET_UNIT_RANGE * scale),
+        ModDest::NoiseLevel => format_percent_range(TARGET_NOISE_RANGE * scale),
+        ModDest::Osc2Fine | ModDest::Osc1Fine => {
+            format!("±{} cents", format_number(TARGET_FINE_RANGE * scale, 1))
+        }
+        ModDest::Detune => format!("±{} cents", format_number(TARGET_DETUNE_RANGE * scale, 1)),
+    }
+}
+
+/// The modulation that one route currently adds to its target, in the units
+/// of that target. The value is the normalized matrix value multiplied by the
+/// range of the destination.
+fn target_offset_text(dest: ModDest, value: f32) -> String {
+    match dest {
+        ModDest::Off => "0".to_string(),
+        ModDest::Pitch | ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
+            format_semitones(value * TARGET_PITCH_RANGE)
+        }
+        ModDest::Pulse1 | ModDest::Pulse2 => {
+            format_signed_percent(value * TARGET_PULSE_WIDTH_RANGE)
+        }
+        ModDest::Cutoff => format!(
+            "{} oct",
+            format_signed_number(value * TARGET_CUTOFF_RANGE, 2)
+        ),
+        ModDest::FilterEnv => format!(
+            "{} oct",
+            format_signed_number(value * TARGET_FILTER_ENV_RANGE, 2)
+        ),
+        ModDest::Resonance
+        | ModDest::Drive
+        | ModDest::Pan
+        | ModDest::Volume
+        | ModDest::SubLevel
+        | ModDest::FilterDrive
+        | ModDest::FilterKeytrack
+        | ModDest::RingMod => format_signed_percent(value * TARGET_UNIT_RANGE),
+        ModDest::NoiseLevel => format_signed_percent(value * TARGET_NOISE_RANGE),
+        ModDest::Osc2Fine | ModDest::Osc1Fine => format_cents(value * TARGET_FINE_RANGE),
+        ModDest::Detune => format_cents(value * TARGET_DETUNE_RANGE),
+    }
+}
+
+/// The live line of the inspector. A global source has one value that the
+/// editor can read and one contribution that the route makes. A per-voice
+/// source has neither outside a note, so it says so instead of inventing one.
+fn target_live_text(
+    source: ModSource,
+    dest: ModDest,
+    amount: f32,
+    feedback: &ModFeedback,
+) -> String {
+    if source == ModSource::Off || dest == ModDest::Off {
+        return "No modulation".to_string();
+    }
+    match live_source_value(source, feedback) {
+        Some(value) => format!(
+            "{} > {}",
+            format_live_source_value(value),
+            target_offset_text(dest, value * amount)
+        ),
+        None => "per-voice".to_string(),
+    }
+}
+
+/// The source, destination and amount of one route of the matrix.
+fn mod_route_values(params: &SushiParams, slot: usize) -> (ModSource, ModDest, f32) {
+    let sources = [
+        &params.mod1_source,
+        &params.mod2_source,
+        &params.mod3_source,
+        &params.mod4_source,
+        &params.mod5_source,
+        &params.mod6_source,
+        &params.mod7_source,
+        &params.mod8_source,
+    ];
+    let dests = [
+        &params.mod1_dest,
+        &params.mod2_dest,
+        &params.mod3_dest,
+        &params.mod4_dest,
+        &params.mod5_dest,
+        &params.mod6_dest,
+        &params.mod7_dest,
+        &params.mod8_dest,
+    ];
+    let amounts = [
+        &params.mod1_amount,
+        &params.mod2_amount,
+        &params.mod3_amount,
+        &params.mod4_amount,
+        &params.mod5_amount,
+        &params.mod6_amount,
+        &params.mod7_amount,
+        &params.mod8_amount,
+    ];
+    let slot = slot.min(crate::params::MOD_SLOTS - 1);
+    (
+        sources[slot].value(),
+        dests[slot].value(),
+        amounts[slot].value(),
+    )
+}
+
 /// The geometry of one two-lane fader. The thumb width is a ratio of the
 /// inner lane width and the thumb is always centered in that lane, so the
 /// blank margins are identical by construction no matter how wide the panel
@@ -4437,6 +5294,56 @@ fn v_slider(
     response.on_hover_cursor(egui::CursorIcon::ResizeVertical)
 }
 
+/// A compact horizontal fader for the FX chain strip. The whole track is the
+/// click and drag target; the handle never leaves the track.
+fn h_slider(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    value: &mut f32,
+    knob: &Knob,
+    zoom: f32,
+) -> egui::Response {
+    let mut response = ui.interact(
+        rect,
+        ui.scope_id().with("sushi-h-slider"),
+        Sense::click_and_drag(),
+    );
+    let painter = ui.painter_at(rect);
+    flat_box(&painter, rect, palette().track);
+
+    let normalized = value_to_normalized(*value, knob.min, knob.max, knob.log);
+    let handle_x = rect.left() + normalized * rect.width();
+    let fill = Rect::from_min_max(
+        egui::pos2(rect.left() + zoom, rect.top() + zoom),
+        egui::pos2(handle_x, rect.bottom() - zoom),
+    );
+    painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
+    let handle = Rect::from_center_size(
+        egui::pos2(handle_x, rect.center().y),
+        egui::vec2(5.0 * zoom, (rect.height() - 2.0 * zoom).max(2.0)),
+    );
+    painter.rect_filled(handle, CornerRadius::ZERO, palette().handle);
+
+    let pointer = response
+        .interact_pointer_pos()
+        .or_else(|| ui.input(|input| input.pointer.hover_pos()));
+    let primary_down = ui.input(|input| input.pointer.primary_down());
+    if (response.clicked_by(egui::PointerButton::Primary)
+        || response.dragged_by(egui::PointerButton::Primary)
+        || (response.is_pointer_button_down_on() && primary_down))
+        && let Some(pointer) = pointer
+    {
+        let position = ((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let next = position_to_value(position, knob.min, knob.max, knob.log);
+        if next != *value {
+            *value = next;
+            response.mark_changed();
+        }
+    }
+
+    response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+}
+
 /// Normalizes typed numeric input. Full-width digits, decimal commas and the
 /// symbols produced by a stuck Shift key on the number row all become usable
 /// ASCII digits. A numeric field has no use for any other character.
@@ -4589,6 +5496,28 @@ fn text_width(painter: &egui::Painter, text: &str, font: &FontId) -> f32 {
         .layout_no_wrap(text.to_owned(), font.clone(), palette().lcd_fg)
         .size()
         .x
+}
+
+/// Fits a text into a width by cutting it off with an explicit ellipsis. The
+/// target inspector uses it for the route summary, so a long combination of a
+/// source and a destination can never run into the amount on the right.
+fn fit_text(painter: &egui::Painter, text: &str, max_width: f32, font: &FontId) -> String {
+    if text_width(painter, text, font) <= max_width {
+        return text.to_owned();
+    }
+
+    let mut chars: Vec<char> = text.chars().collect();
+    loop {
+        chars.pop();
+        let mut fitted: String = chars.iter().collect();
+        fitted.push_str(LCD_ELLIPSIS);
+        if text_width(painter, &fitted, font) <= max_width {
+            return fitted;
+        }
+        if chars.is_empty() {
+            return String::new();
+        }
+    }
 }
 
 /// Fits a name into the preset display: the largest font that works is used,
@@ -4971,6 +5900,20 @@ fn flat_box(painter: &egui::Painter, rect: Rect, fill: Color32) {
     );
 }
 
+/// Draws the square of a check box and its check mark when it is set.
+fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32) {
+    flat_box(painter, rect, palette().track);
+    if checked {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "X",
+            FontId::monospace(font_size(9.0, zoom)),
+            palette().text,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::undo::UNDO_LIMIT;
@@ -5319,13 +6262,13 @@ mod tests {
     /// The index of the slider of the cutoff in the list of the sliders of a
     /// frame. It is the first slider of the filter, the fourth group of the
     /// first row.
-    const CUTOFF_SLIDER: usize = 17;
+    const CUTOFF_SLIDER: usize = 18;
     /// The index of the slider of the master tune. It is the first slider of
     /// the panel.
     const TUNE_SLIDER: usize = 0;
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
-    const VOICES_SLIDER: usize = 38;
+    const VOICES_SLIDER: usize = 44;
 
     #[test]
     fn fader_thumbs_keep_equal_side_margins() {
@@ -5350,9 +6293,9 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 44, "unexpected number of sliders");
-        assert_eq!(counts.popups, 7, "unexpected number of popups");
-        assert_eq!(counts.checks, 3, "unexpected number of check boxes");
+        assert_eq!(counts.sliders, 52, "unexpected number of sliders");
+        assert_eq!(counts.popups, 8, "unexpected number of popups");
+        assert_eq!(counts.checks, 4, "unexpected number of check boxes");
         assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
     }
 
@@ -5362,19 +6305,340 @@ mod tests {
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let counts = editor.state.counts;
-        // The normal page has 55 visible patch parameters: 44 sliders, 7
-        // choices, 3 switches and one pair of buttons. The two LFO editors,
+        // The normal page has 65 visible patch parameters: 52 sliders, 8
+        // choices, 4 switches and one pair of buttons. The two LFO editors,
         // the modulation matrix and the FX rack live on their own pages and
         // have their own tests. The LFO target and amount are hidden legacy
         // parameters now, and the two divisions appear only while their sync
         // switch is on. The Legacy DSP flag is a host parameter kept for
         // state compatibility; it is no longer exposed on the panel.
         let continuous = counts.sliders;
-        assert_eq!(continuous, 44);
+        assert_eq!(continuous, 52);
         assert_eq!(
             continuous + counts.popups + counts.checks + counts.radios,
-            55
+            65
         );
+    }
+
+    #[test]
+    fn every_new_dsp_parameter_is_reachable() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The faders of the normal page. The identifiers are recorded by the
+        // widgets themselves, so a fader that is drawn but not wired to its
+        // parameter cannot make this test pass.
+        for id in [
+            "hpf_cutoff",
+            "vca_width",
+            "vca_pan",
+            "ae_curve",
+            "fe_curve",
+            "ring_mod",
+            "arp_strum",
+            "arp_probability",
+        ] {
+            assert!(
+                editor.state.slider_ids.contains(&id),
+                "the normal page has no {id} fader: {:?}",
+                editor.state.slider_ids
+            );
+        }
+        assert!(
+            editor.state.popup_ids.contains(&"arp_chord"),
+            "the normal page has no arp chord popup: {:?}",
+            editor.state.popup_ids
+        );
+        assert!(
+            editor.state.check_ids.contains(&"osc_phase_reset"),
+            "the normal page has no oscillator phase reset switch: {:?}",
+            editor.state.check_ids
+        );
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for label in ["HPF", "RING", "STRUM", "PROB", "WIDTH", "PAN", "RESET"] {
+            assert!(
+                names.iter().any(|text| text == label),
+                "the normal page has no {label} control: {names:?}"
+            );
+        }
+        assert_eq!(
+            names.iter().filter(|text| *text == "CURVE").count(),
+            2,
+            "the two envelopes do not both show a curve fader: {names:?}"
+        );
+
+        // The LFO phase and curve faders live with the LFO editors on the
+        // modulation page.
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        for id in ["lfo1_phase", "lfo1_curve", "lfo2_phase", "lfo2_curve"] {
+            assert!(
+                editor.state.slider_ids.contains(&id),
+                "the modulation page has no {id} fader: {:?}",
+                editor.state.slider_ids
+            );
+        }
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for label in ["RATE", "PHASE", "CURVE"] {
+            assert!(
+                names.iter().any(|text| text == label),
+                "the modulation page has no {label} control: {names:?}"
+            );
+        }
+        assert_eq!(
+            names.iter().filter(|text| *text == "CURVE").count(),
+            4,
+            "the envelopes and both LFOs do not all show a curve fader: {names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|text| *text == "PHASE").count(),
+            2,
+            "both LFOs do not show a phase fader: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_new_envelope_and_lfo_curve_faders_exist() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let sliders = slider_rects(&ctx, &output);
+
+        // Both envelopes have five faders. The last one is the curve, and it
+        // is wired to the matching curve parameter.
+        for (section_index, curve, curve_name) in [
+            (1, &params.fe_curve, "MOD ENV"),
+            (2, &params.ae_curve, "AMP ENV"),
+        ] {
+            let section = layout.group(1, section_index);
+            let mut bank: Vec<egui::Rect> = sliders
+                .iter()
+                .filter(|rect| section.contains_rect(**rect))
+                .copied()
+                .collect();
+            bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+            assert_eq!(bank.len(), 5, "{curve_name} lost a fader: {bank:?}");
+
+            let top = egui::pos2(bank[4].center().x, bank[4].top() + 2.0);
+            run_frames(&ctx, &mut editor, click(top));
+            assert!(
+                curve.value() > 0.9,
+                "the curve fader of {curve_name} is not connected: {}",
+                curve.value()
+            );
+            run_frames(&ctx, &mut editor, wait());
+            run_frames(&ctx, &mut editor, double_click(bank[4].center()));
+            assert!(
+                curve.value().abs() < 0.001,
+                "the curve fader of {curve_name} did not reset: {}",
+                curve.value()
+            );
+        }
+
+        // Each LFO editor has exactly three faders: rate, phase and curve.
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let sliders = slider_rects(&ctx, &output);
+        for (section_index, phase, curve, lfo_name) in [
+            (0, &params.lfo1_phase, &params.lfo1_curve, "LFO 1"),
+            (1, &params.lfo2_phase, &params.lfo2_curve, "LFO 2"),
+        ] {
+            let section = layout.group(2, section_index);
+            let mut bank: Vec<egui::Rect> = sliders
+                .iter()
+                .filter(|rect| section.contains_rect(**rect))
+                .copied()
+                .collect();
+            bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+            assert_eq!(bank.len(), 3, "{lfo_name} lost a fader: {bank:?}");
+
+            let phase_top = egui::pos2(bank[1].center().x, bank[1].top() + 2.0);
+            run_frames(&ctx, &mut editor, click(phase_top));
+            assert!(
+                phase.value() > 0.9,
+                "the phase fader of {lfo_name} is not connected: {}",
+                phase.value()
+            );
+
+            let curve_top = egui::pos2(bank[2].center().x, bank[2].top() + 2.0);
+            run_frames(&ctx, &mut editor, click(curve_top));
+            assert!(
+                curve.value() > 0.9,
+                "the curve fader of {lfo_name} is not connected: {}",
+                curve.value()
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_arp_controls_exist() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+
+        // Seven ARP faders and the chord popup in the header.
+        let section = layout.group(2, 0);
+        let mut bank: Vec<egui::Rect> = slider_rects(&ctx, &output)
+            .into_iter()
+            .filter(|rect| section.contains_rect(*rect))
+            .collect();
+        bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        assert_eq!(bank.len(), 7, "the ARP section lost a fader: {bank:?}");
+
+        let strum = egui::pos2(bank[5].center().x, bank[5].top() + 2.0);
+        run_frames(&ctx, &mut editor, click(strum));
+        assert!(
+            params.arp_strum.value() > 79.0,
+            "the strum fader is not connected: {}",
+            params.arp_strum.value()
+        );
+
+        // The probability fader goes from fully playing to never playing.
+        let probability = egui::pos2(bank[6].center().x, bank[6].bottom() - 3.0);
+        run_frames(&ctx, &mut editor, click(probability));
+        assert!(
+            params.arp_probability.value() < 0.01,
+            "the probability fader is not connected: {}",
+            params.arp_probability.value()
+        );
+
+        // The chord popup offers every chord of the parameter enum.
+        let popup = editor
+            .state
+            .popup_ids
+            .iter()
+            .position(|id| *id == "arp_chord")
+            .expect("the ARP section has no chord popup");
+        let button = editor.state.popup_rects[popup].center();
+        run_frames(&ctx, &mut editor, click(button));
+        // The popup is only painted from the next frame on.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, major) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "Major")
+            .expect("the chord popup has no major chord");
+        run_frames(&ctx, &mut editor, click(major + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.arp_chord.value(), crate::params::ArpChord::Major);
+    }
+
+    #[test]
+    fn the_new_filter_voice_and_oscillator_controls_exist() {
+        let (ctx, mut editor, params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let sliders = slider_rects(&ctx, &output);
+
+        // The VCF has six faders now. The highpass is the second one.
+        let vcf = layout.group(1, 0);
+        let mut bank: Vec<egui::Rect> = sliders
+            .iter()
+            .filter(|rect| vcf.contains_rect(**rect))
+            .copied()
+            .collect();
+        bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        assert_eq!(bank.len(), 6, "the VCF lost a fader: {bank:?}");
+        let top = egui::pos2(bank[1].center().x, bank[1].top() + 2.0);
+        run_frames(&ctx, &mut editor, click(top));
+        assert!(
+            params.hpf_cutoff.value() > 1_900.0,
+            "the highpass fader is not connected: {}",
+            params.hpf_cutoff.value()
+        );
+
+        // VCO 2 has five faders. The ring modulator is the last one, and the
+        // RESET switch sits next to SYNC in the header.
+        let vco2 = layout.group(0, 1);
+        let mut bank: Vec<egui::Rect> = sliders
+            .iter()
+            .filter(|rect| vco2.contains_rect(**rect))
+            .copied()
+            .collect();
+        bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        assert_eq!(bank.len(), 5, "VCO 2 lost a fader: {bank:?}");
+        let top = egui::pos2(bank[4].center().x, bank[4].top() + 2.0);
+        run_frames(&ctx, &mut editor, click(top));
+        assert!(
+            params.ring_mod.value() > 0.9,
+            "the ring modulator fader is not connected: {}",
+            params.ring_mod.value()
+        );
+
+        run_frames(&ctx, &mut editor, wait());
+        let reset = editor.state.check_rects[1];
+        run_frames(&ctx, &mut editor, click(reset.center()));
+        assert!(
+            params.osc_phase_reset.value(),
+            "the RESET switch is not connected"
+        );
+
+        // The VCA has four faders: volume, tone, width and pan.
+        let vca = layout.group(3, 1);
+        let mut bank: Vec<egui::Rect> = sliders
+            .iter()
+            .filter(|rect| vca.contains_rect(**rect))
+            .copied()
+            .collect();
+        bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        assert_eq!(bank.len(), 4, "the VCA lost a fader: {bank:?}");
+        let width = egui::pos2(bank[2].center().x, bank[2].top() + 2.0);
+        run_frames(&ctx, &mut editor, click(width));
+        assert!(
+            params.vca_width.value() > 1.9,
+            "the VCA width fader is not connected: {}",
+            params.vca_width.value()
+        );
+        let pan = egui::pos2(bank[3].center().x, bank[3].top() + 2.0);
+        run_frames(&ctx, &mut editor, click(pan));
+        assert!(
+            params.vca_pan.value() > 0.9,
+            "the VCA pan fader is not connected: {}",
+            params.vca_pan.value()
+        );
+    }
+
+    #[test]
+    fn the_main_and_mod_pages_fit_at_every_zoom() {
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            for page in [Page::Main, Page::Mod] {
+                let (ctx, mut editor, _params) = make_editor();
+                editor.state.page = page;
+                let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+                let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+                let panel = Rect::from_min_size(egui::Pos2::ZERO, size);
+                assert_the_widgets_fit(&ctx, &output, panel);
+
+                let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+                if page == Page::Main {
+                    for label in ["HPF", "RING", "STRUM", "PROB", "WIDTH", "PAN"] {
+                        assert!(
+                            names.iter().any(|text| text == label),
+                            "the normal page has no {label} control at {percent}%: {names:?}"
+                        );
+                    }
+                } else {
+                    for label in ["RATE", "PHASE", "CURVE"] {
+                        assert!(
+                            names.iter().any(|text| text == label),
+                            "the modulation page has no {label} control at {percent}%: {names:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -5401,14 +6665,20 @@ mod tests {
                 "the modulation page has no LFO control {shown}: {names:?}"
             );
         }
-        // The legacy Target/Amount pair is gone from the faceplate; the
-        // matrix page is the only place that routes an LFO.
-        for hidden in ["Target", "TARGET", "Amount", "AMOUNT"] {
+        // The legacy Target/Amount pair is gone from the LFO editors; the
+        // matrix page is the only place that routes an LFO. TARGET itself is
+        // the new read-only inspector title, so it is allowed (and expected)
+        // in the lower band.
+        for hidden in ["Target", "Amount", "AMOUNT"] {
             assert!(
                 !names.iter().any(|text| text == hidden),
                 "the modulation page still shows the old LFO {hidden}: {names:?}"
             );
         }
+        assert!(
+            names.iter().any(|text| text == "TARGET"),
+            "the modulation page has no target inspector: {names:?}"
+        );
         // The division only appears once sync is on.
         assert!(!names.iter().any(|text| text == "1/4"));
 
@@ -5541,7 +6811,7 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let sliders = slider_rects(&ctx, &output);
-        assert_eq!(sliders.len(), 44, "unexpected number of sliders");
+        assert_eq!(sliders.len(), 52, "unexpected number of sliders");
         // The cutoff slider is the first one of the fourth group of the
         // first row.
         let rect = sliders[CUTOFF_SLIDER];
@@ -6318,9 +7588,9 @@ mod tests {
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The check boxes are VCO 2 SYNC, then the ARP ON and LATCH
-        // switches. This test uses the first ARP switch.
-        let rect = editor.state.check_rects[1];
+        // The check boxes are VCO 2 SYNC and RESET, then the ARP ON and
+        // LATCH switches. This test uses the first ARP switch.
+        let rect = editor.state.check_rects[2];
         let pos = rect.center();
 
         // A single click switches the check box on.
@@ -6489,9 +7759,9 @@ mod tests {
 
         let counts = editor.state.counts;
         assert_eq!(
-            counts.sliders, 23,
-            "the matrix needs eight bars, eight envelope faders, two LFO rates \
-and the lower band"
+            counts.sliders, 27,
+            "the matrix needs eight bars, ten envelope faders, six LFO faders \
+and the three macros; the VCA is main-page only"
         );
         assert_eq!(counts.popups, 18, "unexpected number of matrix popups");
         assert_eq!(
@@ -6500,7 +7770,7 @@ and the lower band"
             "the matrix page left stale popup rectangles behind"
         );
         assert_eq!(counts.checks, 4);
-        assert_eq!(counts.radios, 1);
+        assert_eq!(counts.radios, 0);
         assert_eq!(
             editor.state.amount_rects.len(),
             8,
@@ -6508,7 +7778,7 @@ and the lower band"
         );
         assert_eq!(
             slider_rects(&ctx, &output).len(),
-            15,
+            19,
             "the matrix lost a vertical fader"
         );
 
@@ -6524,8 +7794,8 @@ and the lower band"
         assert_eq!(editor.state.page, Page::Main);
         editor.state.counts = Counts::default();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(editor.state.counts.sliders, 44);
-        assert_eq!(editor.state.counts.popups, 7);
+        assert_eq!(editor.state.counts.sliders, 52);
+        assert_eq!(editor.state.counts.popups, 8);
         assert_eq!(
             editor.state.popup_rects.len(),
             editor.state.counts.popups,
@@ -6593,29 +7863,29 @@ and the lower band"
             );
         }
 
-        // Eight envelope faders are back: four in each of the two upper bands,
+        // Ten envelope faders are back: five in each of the two upper bands,
         // with the height of the envelope faders of the normal panel.
         let sliders = slider_rects(&ctx, &output);
         let envelopes: Vec<egui::Rect> = sliders
             .into_iter()
             .filter(|rect| rect.center().y < 318.0 * zoom && rect.left() >= 664.0 * zoom)
             .collect();
-        assert_eq!(envelopes.len(), 8, "unexpected envelope faders");
+        assert_eq!(envelopes.len(), 10, "unexpected envelope faders");
         assert_eq!(
             envelopes
                 .iter()
                 .filter(|rect| rect.center().y < 187.0 * zoom)
                 .count(),
-            4,
-            "MOD ENV does not have four faders in the upper band"
+            5,
+            "MOD ENV does not have five faders in the upper band"
         );
         assert_eq!(
             envelopes
                 .iter()
                 .filter(|rect| rect.center().y > 195.0 * zoom)
                 .count(),
-            4,
-            "AMP ENV does not have four faders in the lower band"
+            5,
+            "AMP ENV does not have five faders in the lower band"
         );
         for rect in envelopes {
             assert!(
@@ -6653,8 +7923,9 @@ and the lower band"
         let normal_texts = texts(&normal);
         let normal_names: Vec<String> = normal_texts.iter().map(|(text, _)| text.clone()).collect();
 
-        // The normal page owns ARP and VOICE, while the modulation page owns
-        // the two LFO editors. Both pages share MACROS and VCA.
+        // The normal page owns ARP, VOICE and the VCA. The modulation page
+        // owns the two LFO editors and the target inspector, and keeps the
+        // macros on the right of its lower band.
         for title in ["ARP", "VOICE"] {
             assert!(
                 normal_names.iter().any(|text| text == title),
@@ -6685,21 +7956,423 @@ and the lower band"
             );
         }
 
-        // The shared lower band has not moved between the two pages.
-        for title in ["MACROS", "VCA"] {
-            let (_, position) = normal_texts
-                .iter()
-                .find(|(text, _)| text == title)
-                .unwrap_or_else(|| panic!("the normal page has no {title}"));
-            let (_, other) = matrix_texts
-                .iter()
-                .find(|(text, _)| text == title)
-                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
-            assert_eq!(
-                other, position,
-                "the modulation page moved the shared section {title}"
+        // The modulation page owns the target inspector and the LFO editors.
+        // The VCA stays on the normal page; the macros remain on the right of
+        // the inspector so a routed macro can still be moved here.
+        for title in ["TARGET", "MACROS"] {
+            assert!(
+                matrix_names.iter().any(|text| text == title),
+                "the modulation page has no {title}"
             );
         }
+        assert!(
+            !matrix_names.iter().any(|text| text == "VCA"),
+            "the modulation page still has the main-page VCA"
+        );
+
+        // The macro bank keeps the right-hand place of the lower band. Only
+        // its partner changes from the VCA to the target inspector.
+        let (_, normal_macros) = normal_texts
+            .iter()
+            .find(|(text, _)| text == "MACROS")
+            .expect("the normal page has no MACROS");
+        let (_, matrix_macros) = matrix_texts
+            .iter()
+            .find(|(text, _)| text == "MACROS")
+            .expect("the modulation page has no MACROS");
+        assert!((normal_macros.y - matrix_macros.y).abs() < 1.0);
+        assert!(
+            matrix_macros.x > 480.0,
+            "the macros did not stay on the right: {matrix_macros:?}"
+        );
+        let (_, target) = matrix_texts
+            .iter()
+            .find(|(text, _)| text == "TARGET")
+            .expect("the modulation page has no TARGET");
+        assert!(
+            target.x < 20.0 && (target.y - matrix_macros.y).abs() < 1.0,
+            "the target inspector does not share the lower-left band: {target:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_a_matrix_row_selects_it_without_an_undo_step() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Mod;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert_eq!(editor.state.mod_selected, 0);
+
+        let rows = editor.state.mod_row_rects.clone();
+        assert_eq!(rows.len(), 8, "the table did not expose its eight rows");
+        let row = rows[3];
+        let index_area = egui::pos2(row.left() + 3.0, row.center().y);
+        run_frames(&ctx, &mut editor, click(index_area));
+
+        assert_eq!(
+            editor.state.mod_selected, 3,
+            "clicking a route row did not select it"
+        );
+        assert!(
+            !editor.undo_history.can_undo(),
+            "selecting a route must not create an undo step"
+        );
+        assert!(
+            !editor.state.dirty,
+            "selecting a route must not mark the sound dirty"
+        );
+
+        // The selected row gets exactly one thin accent line, and the line
+        // stays inside that row.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let zoom = zoom_of(&ctx);
+        let accents: Vec<Rect> = rect_fills(&output)
+            .into_iter()
+            .filter(|(rect, fill)| {
+                *fill == palette().title_blue
+                    && (rect.width() - MOD_SELECTED_LINE_WIDTH * zoom).abs() < 0.1
+                    && rect.height() > row.height() * 0.5
+            })
+            .map(|(rect, _)| rect)
+            .collect();
+        assert_eq!(accents.len(), 1, "unexpected route accents: {accents:?}");
+        assert!(
+            row.contains_rect(accents[0]),
+            "the accent of the selected route is outside its row"
+        );
+    }
+
+    #[test]
+    fn editing_a_route_keeps_its_selection() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Mod;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rows = editor.state.mod_row_rects.clone();
+        let index_area = egui::pos2(rows[2].left() + 3.0, rows[2].center().y);
+        run_frames(&ctx, &mut editor, click(index_area));
+        assert_eq!(editor.state.mod_selected, 2);
+
+        // Dragging the amount bar of the selected route edits it but does not
+        // move the inspector to another route.
+        let rect = editor.state.amount_rects[2];
+        let zoom = zoom_of(&ctx);
+        let travel = amount_travel(rect, zoom);
+        let start = egui::pos2(rect.center().x - travel * 0.1, rect.center().y);
+        let end = egui::pos2(rect.center().x + travel * 0.25, rect.center().y);
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(start, end, egui::Modifiers::default()),
+        );
+
+        assert!(
+            params.mod3_amount.value() > 0.3,
+            "the dragged amount did not reach route 3: {}",
+            params.mod3_amount.value()
+        );
+        assert_eq!(
+            editor.state.mod_selected, 2,
+            "editing the route lost its selection"
+        );
+
+        // Changing the destination through its popup is a second edit of the
+        // same route and still keeps the inspector on it. The popup list is
+        // not opened here; the parameter setter is the same edit path.
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod3_source, ModSource::Lfo2);
+        setter.set_parameter(&params.mod3_dest, ModDest::Pitch);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.iter().any(|text| text == "LFO 2 > Pitch"),
+            "the inspector did not follow the edited route: {names:?}"
+        );
+        assert_eq!(editor.state.mod_selected, 2);
+    }
+
+    #[test]
+    fn the_target_inspector_follows_the_selected_route() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.62);
+        setter.set_parameter(&params.mod2_source, ModSource::ModWheel);
+        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
+        setter.set_parameter(&params.mod2_amount, -0.5);
+        editor.state.page = Page::Mod;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let rows = editor.state.mod_row_rects.clone();
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rows[0].left() + 3.0, rows[0].center().y)),
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for expected in ["01", "LFO 1 > Cutoff", "+62%", "3 kHz", "±3.1 octaves"] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the inspector has no {expected:?}: {names:?}"
+            );
+        }
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rows[1].left() + 3.0, rows[1].center().y)),
+        );
+        assert_eq!(editor.state.mod_selected, 1);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for expected in ["02", "Mod Wheel > Volume", "-50%", "-6 dB", "±50%"] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the inspector has no {expected:?}: {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|text| text == "LFO 1 > Cutoff"),
+            "the inspector kept the old route: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_target_inspector_uses_the_units_of_the_destination() {
+        let (_ctx, editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_200.0);
+        setter.set_parameter(&params.resonance, 0.45);
+        setter.set_parameter(&params.osc1_pw, 0.5);
+        setter.set_parameter(&params.osc2_octave, 0);
+        setter.set_parameter(&params.osc2_semi, 7);
+        setter.set_parameter(&params.detune, 50.0);
+
+        assert_eq!(target_current_text(ModDest::Cutoff, &params), "1.2 kHz");
+        assert_eq!(target_current_text(ModDest::Resonance, &params), "45%");
+        assert_eq!(target_current_text(ModDest::Volume, &params), "-6 dB");
+        assert_eq!(target_current_text(ModDest::Pulse1, &params), "50%");
+        assert_eq!(target_current_text(ModDest::Osc2Pitch, &params), "+7 st");
+        assert_eq!(target_current_text(ModDest::Detune, &params), "+50 cents");
+        assert_eq!(
+            target_current_text(ModDest::Pitch, &params),
+            "All oscillators",
+            "Pitch has no single scalar parameter and must say so"
+        );
+
+        assert_eq!(target_range_text(ModDest::Cutoff, 1.0), "±5 octaves");
+        assert_eq!(target_range_text(ModDest::Pitch, 1.0), "±12 st");
+        assert_eq!(target_range_text(ModDest::Resonance, 1.0), "±100%");
+        assert_eq!(target_range_text(ModDest::Detune, 1.0), "±50 cents");
+        assert_eq!(target_range_text(ModDest::Pulse1, 1.0), "±45%");
+        assert_eq!(target_range_text(ModDest::NoiseLevel, 1.0), "±50%");
+        assert_eq!(target_range_text(ModDest::Cutoff, 0.62), "±3.1 octaves");
+    }
+
+    #[test]
+    fn the_target_inspector_shows_live_global_sources_and_per_voice_sources() {
+        let feedback = ModFeedback::default();
+        feedback.store(ModFeedbackValues {
+            lfo1: 0.8,
+            lfo2: -0.4,
+            macro1: 0.25,
+            macro2: 0.5,
+            macro3: 0.75,
+            mod_wheel: 1.0,
+        });
+
+        // The live line contains the source value and the exact contribution
+        // in the units of the destination.
+        assert_eq!(
+            target_live_text(ModSource::Lfo1, ModDest::Cutoff, 0.5, &feedback),
+            "+0.80 > +2 oct"
+        );
+        assert_eq!(
+            target_live_text(ModSource::Macro1, ModDest::Pitch, 0.5, &feedback),
+            "+0.25 > +1.5 st"
+        );
+        assert_eq!(
+            target_live_text(ModSource::ModWheel, ModDest::Volume, 0.5, &feedback),
+            "+1.00 > +50%"
+        );
+        for source in [
+            ModSource::ModEnv,
+            ModSource::AmpEnv,
+            ModSource::Velocity,
+            ModSource::Key,
+            ModSource::Random,
+        ] {
+            assert_eq!(
+                target_live_text(source, ModDest::Cutoff, 0.5, &feedback),
+                "per-voice",
+                "{source:?} must not invent a global value"
+            );
+        }
+        assert_eq!(
+            target_live_text(ModSource::Off, ModDest::Cutoff, 0.5, &feedback),
+            "No modulation"
+        );
+
+        // The same values appear in the panel for the selected route, and a
+        // per-voice route replaces them with the explicit message.
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.5);
+        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
+        setter.set_parameter(&params.mod2_amount, 0.5);
+        editor.state.page = Page::Mod;
+        editor.mod_feedback.store(ModFeedbackValues {
+            lfo1: 0.8,
+            lfo2: -0.4,
+            macro1: 0.25,
+            macro2: 0.5,
+            macro3: 0.75,
+            mod_wheel: 1.0,
+        });
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.iter().any(|text| text == "+0.80 > +2 oct"));
+        assert!(names.iter().any(|text| text == "±2.5 octaves"));
+
+        let rows = editor.state.mod_row_rects.clone();
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rows[1].left() + 3.0, rows[1].center().y)),
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.iter().any(|text| text == "per-voice"),
+            "the per-voice route has no explicit message: {names:?}"
+        );
+    }
+
+    #[test]
+    fn the_target_inspector_has_a_quiet_empty_state() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for expected in ["Select a route", "No modulation"] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the empty inspector has no {expected:?}: {names:?}"
+            );
+        }
+        for hidden in ["CURRENT", "RANGE", "LIVE"] {
+            assert!(
+                !names.iter().any(|text| text == hidden),
+                "the empty inspector shows a fake {hidden}: {names:?}"
+            );
+        }
+
+        // A route with only one side set is still Off, and stays quiet.
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.iter().any(|text| text == "Select a route"));
+        assert!(names.iter().any(|text| text == "No modulation"));
+    }
+
+    #[test]
+    fn the_target_inspector_fits_its_section_at_every_zoom() {
+        for percent in (100..=400).step_by(5) {
+            let zoom = percent as f32 / 100.0;
+            let (ctx, mut editor, params) = make_editor();
+            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+            let setter = gui_ctx.param_setter();
+            // The longest source and destination names, a negative amount and
+            // a live global source exercise the widest inspector text.
+            setter.set_parameter(&params.mod8_source, ModSource::ModWheel);
+            setter.set_parameter(&params.mod8_dest, ModDest::FilterKeytrack);
+            setter.set_parameter(&params.mod8_amount, -1.0);
+            editor.state.page = Page::Mod;
+            editor.state.mod_selected = 7;
+            editor.mod_feedback.store(ModFeedbackValues {
+                mod_wheel: 1.0,
+                ..Default::default()
+            });
+
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
+                .expect("the window is big enough");
+            let target = layout.group(3, 0);
+            let macros = layout.group(3, 1);
+
+            let target_texts: Vec<(String, Rect)> = text_shapes(&output)
+                .into_iter()
+                .filter(|(_, pos, _)| target.contains(*pos))
+                .map(|(text, pos, text_size)| (text, Rect::from_min_size(pos, text_size)))
+                .collect();
+            for expected in ["TARGET", "CURRENT", "RANGE", "LIVE", "±100%"] {
+                assert!(
+                    target_texts.iter().any(|(text, _)| text == expected),
+                    "the inspector has no {expected:?} at {percent}%: {target_texts:?}"
+                );
+            }
+            for (first, first_rect) in &target_texts {
+                assert!(
+                    target.contains_rect(*first_rect),
+                    "the inspector text {first:?} leaves its section at {percent}%: \
+{first_rect:?} / {target:?}"
+                );
+                assert!(
+                    first_rect.right() <= macros.left() + 1.0,
+                    "the inspector text {first:?} runs into the macros at {percent}%"
+                );
+            }
+            for (index, (first, first_rect)) in target_texts.iter().enumerate() {
+                for (second, second_rect) in target_texts.iter().skip(index + 1) {
+                    let overlap = first_rect.intersect(*second_rect);
+                    assert!(
+                        overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                        "the inspector texts {first:?} and {second:?} overlap at {percent}%: \
+{first_rect:?} / {second_rect:?}"
+                    );
+                }
+            }
+
+            // The macros remain usable: three faders in the right-hand band.
+            let macro_faders = slider_rects(&ctx, &output)
+                .into_iter()
+                .filter(|rect| macros.contains_rect(*rect))
+                .count();
+            assert_eq!(macro_faders, 3, "the macros lost a fader at {percent}%");
+        }
+    }
+
+    #[test]
+    fn the_target_inspector_does_not_touch_the_main_page() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.mod_selected = 5;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<(String, egui::Pos2)> = texts(&output);
+        assert!(
+            !names.iter().any(|(text, _)| text == "TARGET"),
+            "the main page shows the modulation inspector"
+        );
+        for title in ["MACROS", "VCA"] {
+            assert!(
+                names.iter().any(|(text, _)| text == title),
+                "the main page lost {title}"
+            );
+        }
+        assert_eq!(
+            editor.state.counts.sliders, 52,
+            "the main page lost a fader"
+        );
     }
 
     #[test]
@@ -7386,15 +9059,28 @@ and the lower band"
 
         // Two rows of three modules: two drive faders, three phaser faders,
         // three chorus faders, three delay faders, two reverb faders and
-        // three EQ faders.
-        assert_eq!(editor.state.counts.sliders, 16);
+        // three EQ faders, plus the global wet fader of the chain strip. Each
+        // module header also has its own bypass check box.
+        assert_eq!(editor.state.counts.sliders, 17);
         assert_eq!(editor.state.counts.popups, 0);
-        assert_eq!(editor.state.counts.checks, 0);
+        assert_eq!(editor.state.counts.checks, 6);
         assert_eq!(editor.state.counts.radios, 0);
         assert_eq!(
             slider_rects(&ctx, &output).len(),
             16,
             "the FX rack lost a fader"
+        );
+        for id in FX_BYPASS_IDS {
+            assert!(
+                editor.state.check_ids.contains(&id),
+                "the FX page has no bypass check box {id}: {:?}",
+                editor.state.check_ids
+            );
+        }
+        assert!(
+            editor.state.slider_ids.contains(&"fx_global_mix"),
+            "the FX page has no global wet fader: {:?}",
+            editor.state.slider_ids
         );
 
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
@@ -7486,7 +9172,161 @@ and the lower band"
                 rack.contains_rect(text),
                 "the chain caption is outside the rack at {percent}%: {text:?} / {rack:?}"
             );
+
+            // All six modules are still drawn, and each of their header check
+            // boxes stays inside the panel at every zoom.
+            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+            for title in FX_RACK_TITLES.iter().flatten() {
+                assert!(
+                    names.contains(&title.to_string()),
+                    "the {title} module is missing at {percent}%: {names:?}"
+                );
+            }
+            assert_eq!(
+                editor.state.check_rects.len(),
+                FX_BYPASS_IDS.len(),
+                "the bypass check boxes are missing at {percent}%"
+            );
+            for rect in &editor.state.check_rects {
+                assert!(
+                    Rect::from_min_size(Pos2::ZERO, size).contains_rect(*rect),
+                    "a bypass check box is outside the panel at {percent}%: {rect:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn the_fx_order_control_cycles_and_updates_the_chain_caption() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.contains(&"ORDER 0".to_string()), "{names:?}");
+        assert!(names.contains(&FX_CHAIN_ORDER.to_string()), "{names:?}");
+
+        let order = editor
+            .state
+            .fx_order_rect
+            .expect("the FX chain strip has no order control");
+        for expected in 1..=5 {
+            run_frames(&ctx, &mut editor, click(order.center()));
+            assert_eq!(params.fx_order.value(), expected);
+
+            let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+            assert!(
+                names.contains(&format!("ORDER {expected}")),
+                "the order control does not show {expected}: {names:?}"
+            );
+            assert!(
+                names.contains(&fx_chain_order(expected)),
+                "the chain caption does not follow order {expected}: {names:?}"
+            );
+            assert!(
+                !names.contains(&fx_chain_order(expected - 1)),
+                "the chain caption still shows the old order {expected}: {names:?}"
+            );
+        }
+
+        // The last step wraps back to the original chain.
+        run_frames(&ctx, &mut editor, click(order.center()));
+        assert_eq!(params.fx_order.value(), 0);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.contains(&FX_CHAIN_ORDER.to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn every_fx_bypass_bit_toggles_only_its_own_stage() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert_eq!(editor.state.check_ids, FX_BYPASS_IDS);
+
+        // Turn every bit on, one check box after another. Every step has to
+        // keep the bits that were set before it.
+        for bit in 0..FX_BYPASS_IDS.len() {
+            let rect = editor.state.check_rects[bit];
+            run_frames(&ctx, &mut editor, click(rect.center()));
+            let expected = (1 << (bit + 1)) - 1;
+            assert_eq!(
+                params.fx_bypass_mask.value(),
+                expected,
+                "toggling bit {bit} did not preserve the other bits"
+            );
+            run_frames(&ctx, &mut editor, wait());
+        }
+
+        // Clearing one bit leaves the other five untouched.
+        let all = (1 << FX_BYPASS_IDS.len()) - 1;
+        let chorus = editor.state.check_rects[2];
+        run_frames(&ctx, &mut editor, click(chorus.center()));
+        assert_eq!(params.fx_bypass_mask.value(), all & !(1 << 2));
+
+        // The toggle is a normal discrete edit, so it has an undo step of its
+        // own and undo restores only the bit that was cleared.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert_eq!(params.fx_bypass_mask.value(), all);
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert_eq!(params.fx_bypass_mask.value(), all & !(1 << 2));
+
+        // A sparse mask with unrelated bits stays sparse except for the one
+        // bit that the user clicked.
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.fx_bypass_mask, 0b10_1010);
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let drive = editor.state.check_rects[0];
+        run_frames(&ctx, &mut editor, click(drive.center()));
+        assert_eq!(params.fx_bypass_mask.value(), 0b10_1011);
+    }
+
+    #[test]
+    fn the_global_wet_fader_is_reachable_and_updates_its_parameter() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.contains(&"GLOBAL WET".to_string()),
+            "the FX chain strip has no global wet caption: {names:?}"
+        );
+        assert!(names.contains(&"100%".to_string()), "{names:?}");
+
+        let track = editor
+            .state
+            .fx_global_wet_rect
+            .expect("the FX chain strip has no global wet fader");
+        assert!(track.width() > 0.0);
+
+        // A click at a quarter of the track sets the mix to about a quarter.
+        let quarter = egui::pos2(track.left() + track.width() * 0.25, track.center().y);
+        run_frames(&ctx, &mut editor, click(quarter));
+        let value = params.fx_global_mix.value();
+        assert!(
+            (0.2..0.3).contains(&value),
+            "the global wet fader did not reach 25%: {value}"
+        );
+
+        // A click near the right end opens it fully again.
+        let end = egui::pos2(track.right() - 1.0, track.center().y);
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(end));
+        assert!(
+            params.fx_global_mix.value() > 0.95,
+            "the global wet fader did not reach the wet end: {}",
+            params.fx_global_mix.value()
+        );
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        let shown = format!("{}%", (params.fx_global_mix.value() * 100.0).round() as i32);
+        assert!(
+            names.contains(&shown),
+            "the global wet readout does not show {shown}: {names:?}"
+        );
     }
 
     #[test]
@@ -8575,7 +10415,7 @@ and the lower band"
 
         // The two lower bands hold ARP / VOICE and MACROS / VCA. Every bank
         // has to sit in the middle of its section and spread across it.
-        for (row, index, count) in [(2, 0, 5), (2, 1, 4), (3, 0, 3), (3, 1, 2)] {
+        for (row, index, count) in [(2, 0, 7), (2, 1, 4), (3, 0, 3), (3, 1, 4)] {
             let section = layout.group(row, index);
             let mut bank: Vec<egui::Rect> = sliders
                 .iter()
@@ -8627,9 +10467,9 @@ and the lower band"
         // left edge of its section and the top of its row.
         let expected = [
             ("VCO 1", 12.0, 64.0),
-            ("VCO 2", 264.0, 64.0),
-            ("PULSE WIDTH", 468.0, 64.0),
-            ("SOURCE MIXER", 604.0, 64.0),
+            ("VCO 2", 252.0, 64.0),
+            ("PULSE WIDTH", 488.0, 64.0),
+            ("SOURCE MIXER", 624.0, 64.0),
             ("VCF", 12.0, 195.0),
             ("MOD ENV", 372.0, 195.0),
             ("AMP ENV", 668.0, 195.0),
@@ -8694,16 +10534,29 @@ and the lower band"
             );
         }
 
-        // Their rate faders are in the same band, one per editor.
+        // The rate, phase and curve faders of both editors are in the same
+        // band, three per editor.
         let zoom = zoom_of(&ctx);
-        let rate_faders: Vec<egui::Rect> = slider_rects(&ctx, &output)
+        let lfo_faders: Vec<egui::Rect> = slider_rects(&ctx, &output)
             .into_iter()
             .filter(|rect| rect.center().y > 326.0 * zoom && rect.center().y < 448.0 * zoom)
             .collect();
-        assert_eq!(rate_faders.len(), 2, "the LFO rate faders are not in row C");
+        assert_eq!(lfo_faders.len(), 6, "the LFO faders are not in row C");
         assert!(
-            rate_faders[0].center().x < rate_faders[1].center().x,
-            "the LFO rate faders are in the wrong order"
+            lfo_faders[0].center().x < lfo_faders[1].center().x
+                && lfo_faders[1].center().x < lfo_faders[2].center().x
+                && lfo_faders[2].center().x < lfo_faders[3].center().x
+                && lfo_faders[3].center().x < lfo_faders[4].center().x
+                && lfo_faders[4].center().x < lfo_faders[5].center().x,
+            "the LFO faders are in the wrong order"
+        );
+        assert!(
+            lfo_faders[2].center().x < 480.0 * zoom,
+            "the first LFO does not have three faders"
+        );
+        assert!(
+            lfo_faders[3].center().x > 480.0 * zoom,
+            "the second LFO does not have three faders"
         );
     }
 
@@ -9056,7 +10909,7 @@ and the lower band"
         // The default size.
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let small = slider_rects(&ctx, &output);
-        assert_eq!(small.len(), 44, "unexpected number of sliders");
+        assert_eq!(small.len(), 52, "unexpected number of sliders");
 
         // A bigger window: the sliders are taller and the sections are
         // wider.
@@ -9066,7 +10919,7 @@ and the lower band"
             vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
         );
         let big = slider_rects(&ctx, &output);
-        assert_eq!(big.len(), 44, "unexpected number of sliders");
+        assert_eq!(big.len(), 52, "unexpected number of sliders");
 
         for (small, big) in small.iter().zip(big.iter()) {
             assert!(

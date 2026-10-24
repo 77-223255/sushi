@@ -4,6 +4,11 @@
 //! All the delay lines are allocated up front (in [`Fx::new`]) so that the
 //! processing itself never allocates. The new effects default to completely
 //! neutral settings, so old patches and presets keep sounding the same.
+//!
+//! The six stages have a fixed original order, `stage_order(0)`. The
+//! `order` parameter rotates that sequence, and `bypass_mask` skips individual
+//! stages. `global_mix` is a dry/wet crossfade around the whole chain; its
+//! default of `1.0` returns the wet signal untouched, bit for bit.
 
 use std::f32::consts::PI;
 
@@ -51,9 +56,85 @@ const EQ_MAX_GAIN_DB: f32 = 12.0;
 /// A band gain closer to 0 dB than this is treated as neutral.
 const EQ_BYPASS_DB: f32 = 1e-4;
 
+/// The number of stages in the effect chain.
+pub const FX_STAGE_COUNT: usize = 6;
+
+/// The mask with every stage bit set.
+pub const FX_BYPASS_ALL: u32 = (1 << FX_STAGE_COUNT) - 1;
+
+/// A stage of the effect chain.
+///
+/// The discriminant is also the bit that bypasses the stage in
+/// [`FxParams::bypass_mask`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FxStage {
+    Drive = 0,
+    Phaser = 1,
+    Chorus = 2,
+    Delay = 3,
+    Reverb = 4,
+    Eq = 5,
+}
+
+impl FxStage {
+    /// Every stage in the original order.
+    pub const ALL: [Self; FX_STAGE_COUNT] = [
+        Self::Drive,
+        Self::Phaser,
+        Self::Chorus,
+        Self::Delay,
+        Self::Reverb,
+        Self::Eq,
+    ];
+
+    /// The bit that bypasses this stage in the mask.
+    #[inline]
+    pub const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+
+    /// The index of this stage in the original order.
+    #[inline]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The six stages in the order selected by a rotation offset.
+///
+/// Offset `0` is the original order `Drive > Phaser > Chorus > Delay >
+/// Reverb > EQ`. Every step takes the first stage and appends it at the end:
+///
+/// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ
+/// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive
+/// - `2`: Chorus > Delay > Reverb > EQ > Drive > Phaser
+/// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus
+/// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay
+/// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
+///
+/// Out-of-range offsets are clamped, so a bad host value can never index past
+/// the end of the chain.
+#[inline]
+pub fn stage_order(rotation: i32) -> [FxStage; FX_STAGE_COUNT] {
+    let rotation = rotation.clamp(0, FX_STAGE_COUNT as i32 - 1) as usize;
+    let mut order = FxStage::ALL;
+    order.rotate_left(rotation);
+    order
+}
+
 /// The parameters of the effect chain.
 #[derive(Debug, Clone, Copy)]
 pub struct FxParams {
+    /// The rotation offset of the six-stage chain, `0..=5`.
+    pub order: i32,
+    /// The bypass mask. Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay,
+    /// 4 Reverb and 5 EQ.
+    pub bypass_mask: i32,
+    /// The dry/wet crossfade around the entire chain, `0..=1`. At `1` the
+    /// chain output is returned bit-for-bit; at `0` the dry input is returned
+    /// and the effects are cleared.
+    pub global_mix: f32,
     pub drive_amount: f32,
     pub drive_mix: f32,
     pub phaser_rate: f32,
@@ -78,6 +159,9 @@ pub struct FxParams {
 impl Default for FxParams {
     fn default() -> Self {
         Self {
+            order: 0,
+            bypass_mask: 0,
+            global_mix: 1.0,
             drive_amount: 0.0,
             drive_mix: 0.0,
             phaser_rate: 0.3,
@@ -96,6 +180,56 @@ impl Default for FxParams {
             reverb_decay: 0.6,
             legacy: false,
         }
+    }
+}
+
+impl FxParams {
+    /// The global mix, clamped to the valid range. A non-finite host value
+    /// falls back to fully wet instead of poisoning the audio path.
+    #[inline]
+    pub fn clamped_global_mix(&self) -> f32 {
+        if self.global_mix.is_finite() {
+            self.global_mix.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    /// The bypass mask with every bit outside the six stages cleared.
+    #[inline]
+    pub fn clamped_bypass_mask(&self) -> u32 {
+        self.bypass_mask.clamp(0, FX_BYPASS_ALL as i32) as u32
+    }
+
+    /// Whether a single stage would change the signal. The bypass mask and
+    /// the global mix are not considered here; see [`Self::is_active`].
+    #[inline]
+    pub fn stage_active(&self, stage: FxStage) -> bool {
+        match stage {
+            FxStage::Drive => self.drive_mix.clamp(0.0, 1.0) > BYPASS_MIX,
+            FxStage::Phaser => self.phaser_mix.clamp(0.0, 1.0) > BYPASS_MIX,
+            FxStage::Chorus => self.chorus_mix.clamp(0.0, 1.0) > BYPASS_MIX,
+            FxStage::Delay => self.delay_mix.clamp(0.0, 1.0) > BYPASS_MIX,
+            FxStage::Reverb => self.reverb_mix.clamp(0.0, 1.0) > BYPASS_MIX,
+            FxStage::Eq => {
+                let low = self.eq_low.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+                let mid = self.eq_mid.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+                let high = self.eq_high.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
+                !(low.abs() <= EQ_BYPASS_DB
+                    && mid.abs() <= EQ_BYPASS_DB
+                    && high.abs() <= EQ_BYPASS_DB)
+            }
+        }
+    }
+
+    /// Whether the chain can change the signal: the global mix is above zero
+    /// and at least one stage is active and not bypassed.
+    pub fn is_active(&self) -> bool {
+        let mask = self.clamped_bypass_mask();
+        self.clamped_global_mix() > 0.0
+            && FxStage::ALL
+                .iter()
+                .any(|&stage| mask & stage.bit() == 0 && self.stage_active(stage))
     }
 }
 
@@ -204,6 +338,10 @@ pub struct Fx {
     /// first bypassed sample clears all the state, so re-enabling an effect
     /// cannot replay an old tail.
     bypassed: bool,
+    /// The bypass mask that was applied on the previous sample. A stage that
+    /// is newly bypassed is cleared once, at the transition, so it cannot
+    /// replay stale audio when it is enabled again.
+    last_bypass_mask: u32,
 }
 
 impl Fx {
@@ -250,38 +388,61 @@ impl Fx {
             legacy_reverb: LegacyReverb::new(sample_rate),
             last_legacy: None,
             bypassed: true,
+            last_bypass_mask: 0,
         }
     }
 
     /// Clears all the delay lines and the state of the other effects.
     pub fn reset(&mut self) {
-        self.drive_adaa_left.reset();
-        self.drive_adaa_right.reset();
-        self.phaser_phase = 0.0;
-        self.phaser_left = [0.0; PHASER_STAGES];
-        self.phaser_right = [0.0; PHASER_STAGES];
-        self.eq_low_left = 0.0;
-        self.eq_low_right = 0.0;
-        self.eq_high_left = 0.0;
-        self.eq_high_right = 0.0;
-        self.chorus_left.fill(0.0);
-        self.chorus_right.fill(0.0);
-        self.chorus_index = 0;
-        self.chorus_phase = 0.0;
-        self.chorus_lp_left = 0.0;
-        self.chorus_lp_right = 0.0;
-        self.delay_left.fill(0.0);
-        self.delay_right.fill(0.0);
-        self.delay_index = 0;
-        self.delay_time_samples = None;
-        self.delay_lp_left = 0.0;
-        self.delay_lp_right = 0.0;
-        self.delay_adaa_left = AdaaTanh::default();
-        self.delay_adaa_right = AdaaTanh::default();
-        self.reverb.reset();
-        self.legacy_reverb.reset();
+        for stage in FxStage::ALL {
+            self.reset_stage(stage);
+        }
         self.last_legacy = None;
         self.bypassed = true;
+        self.last_bypass_mask = 0;
+    }
+
+    /// Clears the state of one stage without touching the other stages.
+    fn reset_stage(&mut self, stage: FxStage) {
+        match stage {
+            FxStage::Drive => {
+                self.drive_adaa_left.reset();
+                self.drive_adaa_right.reset();
+            }
+            FxStage::Phaser => {
+                self.phaser_phase = 0.0;
+                self.phaser_left = [0.0; PHASER_STAGES];
+                self.phaser_right = [0.0; PHASER_STAGES];
+            }
+            FxStage::Chorus => {
+                self.chorus_left.fill(0.0);
+                self.chorus_right.fill(0.0);
+                self.chorus_index = 0;
+                self.chorus_phase = 0.0;
+                self.chorus_lp_left = 0.0;
+                self.chorus_lp_right = 0.0;
+            }
+            FxStage::Delay => {
+                self.delay_left.fill(0.0);
+                self.delay_right.fill(0.0);
+                self.delay_index = 0;
+                self.delay_time_samples = None;
+                self.delay_lp_left = 0.0;
+                self.delay_lp_right = 0.0;
+                self.delay_adaa_left = AdaaTanh::default();
+                self.delay_adaa_right = AdaaTanh::default();
+            }
+            FxStage::Reverb => {
+                self.reverb.reset();
+                self.legacy_reverb.reset();
+            }
+            FxStage::Eq => {
+                self.eq_low_left = 0.0;
+                self.eq_low_right = 0.0;
+                self.eq_high_left = 0.0;
+                self.eq_high_right = 0.0;
+            }
+        }
     }
 
     /// Processes a single stereo sample.
@@ -291,39 +452,37 @@ impl Fx {
             return (left, right);
         }
 
-        // Clamp first, so a fully bypassed chain is detected before any
-        // effect updates its state.
-        let drive_mix = params.drive_mix.clamp(0.0, 1.0);
-        let phaser_mix = params.phaser_mix.clamp(0.0, 1.0);
-        let chorus_mix = params.chorus_mix.clamp(0.0, 1.0);
-        let delay_mix = params.delay_mix.clamp(0.0, 1.0);
-        let reverb_mix = params.reverb_mix.clamp(0.0, 1.0);
-        let eq_low = params.eq_low.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
-        let eq_mid = params.eq_mid.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
-        let eq_high = params.eq_high.clamp(-EQ_MAX_GAIN_DB, EQ_MAX_GAIN_DB);
-        let eq_neutral = eq_low.abs() <= EQ_BYPASS_DB
-            && eq_mid.abs() <= EQ_BYPASS_DB
-            && eq_high.abs() <= EQ_BYPASS_DB;
-        let all_bypassed = drive_mix <= BYPASS_MIX
-            && phaser_mix <= BYPASS_MIX
-            && chorus_mix <= BYPASS_MIX
-            && delay_mix <= BYPASS_MIX
-            && reverb_mix <= BYPASS_MIX
-            && eq_neutral;
-
-        if all_bypassed {
+        // `is_active` includes the per-stage mix and EQ neutral checks, the
+        // bypass mask and the global mix. With the default fully wet chain it
+        // is exactly the old full-FX bypass test.
+        if !params.is_active() {
             if !self.bypassed {
                 // Entering bypass clears every delay line, the reverb and
                 // the new effects, so a later enable starts from silence
                 // instead of replaying an old tail.
                 self.reset();
             }
+            // The whole chain is clean. Remember the mask so that a later
+            // unmask still starts from a cleared stage.
+            self.last_bypass_mask = params.clamped_bypass_mask();
             return (left, right);
         }
 
         // The reset on entering bypass left the state clean, including
         // `last_legacy`. The first active sample can therefore start here.
         self.bypassed = false;
+
+        // A stage that becomes bypassed is cleared once at the transition,
+        // never on every sample.
+        let bypass_mask = params.clamped_bypass_mask();
+        if bypass_mask != self.last_bypass_mask {
+            for stage in FxStage::ALL {
+                if bypass_mask & stage.bit() != 0 {
+                    self.reset_stage(stage);
+                }
+            }
+            self.last_bypass_mask = bypass_mask;
+        }
 
         if self.last_legacy != Some(params.legacy) {
             // Switching flavor resets both reverb engines and the delay
@@ -335,12 +494,40 @@ impl Fx {
             self.last_legacy = Some(params.legacy);
         }
 
-        let (left, right) = self.process_drive(left, right, params);
-        let (left, right) = self.process_phaser(left, right, params);
-        let (left, right) = self.process_chorus(left, right, params);
-        let (left, right) = self.process_delay(left, right, params);
-        let (left, right) = self.process_reverb(left, right, params);
-        self.process_eq(left, right, params)
+        let (dry_left, dry_right) = (left, right);
+        let mut wet_left = left;
+        let mut wet_right = right;
+
+        // The stage order is a fixed stack array, so reordering allocates
+        // nothing and an out-of-range rotation simply clamps.
+        for stage in stage_order(params.order) {
+            if bypass_mask & stage.bit() != 0 {
+                continue;
+            }
+            let processed = match stage {
+                FxStage::Drive => self.process_drive(wet_left, wet_right, params),
+                FxStage::Phaser => self.process_phaser(wet_left, wet_right, params),
+                FxStage::Chorus => self.process_chorus(wet_left, wet_right, params),
+                FxStage::Delay => self.process_delay(wet_left, wet_right, params),
+                FxStage::Reverb => self.process_reverb(wet_left, wet_right, params),
+                FxStage::Eq => self.process_eq(wet_left, wet_right, params),
+            };
+            wet_left = processed.0;
+            wet_right = processed.1;
+        }
+
+        // At unity the wet signal is returned directly, bit for bit. Any
+        // other value is a crossfade between the chain input and output.
+        if params.clamped_global_mix() >= 1.0 {
+            (wet_left, wet_right)
+        } else {
+            let mix = params.clamped_global_mix();
+            let dry_gain = 1.0 - mix;
+            (
+                dry_left * dry_gain + wet_left * mix,
+                dry_right * dry_gain + wet_right * mix,
+            )
+        }
     }
 
     /// An anti-aliased tanh drive with a dry/wet crossfade.
@@ -672,6 +859,7 @@ impl Default for Fx {
             legacy_reverb: LegacyReverb::default(),
             last_legacy: None,
             bypassed: true,
+            last_bypass_mask: 0,
         }
     }
 }
@@ -684,6 +872,9 @@ mod tests {
     fn an_impulse_produces_finite_output() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
+            order: 0,
+            bypass_mask: 0,
+            global_mix: 1.0,
             drive_amount: 0.0,
             drive_mix: 0.0,
             phaser_rate: 0.3,
@@ -1029,6 +1220,9 @@ mod tests {
     fn the_wet_path_stays_bounded() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
+            order: 0,
+            bypass_mask: 0,
+            global_mix: 1.0,
             drive_amount: 1.0,
             drive_mix: 1.0,
             phaser_rate: 5.0,
@@ -1064,6 +1258,60 @@ mod tests {
     fn noise(state: &mut u32) -> f32 {
         *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         ((*state >> 8) as f32 / (1u32 << 23) as f32) * 2.0 - 1.0
+    }
+
+    /// The settings used by the order and bypass tests: every stage is
+    /// audible, so a reorder or a bypass has something to change.
+    fn all_stages_active() -> FxParams {
+        FxParams {
+            order: 0,
+            bypass_mask: 0,
+            global_mix: 1.0,
+            drive_amount: 0.7,
+            drive_mix: 0.6,
+            phaser_rate: 1.2,
+            phaser_depth: 0.8,
+            phaser_mix: 0.5,
+            eq_low: 8.0,
+            eq_mid: -5.0,
+            eq_high: 4.0,
+            chorus_mix: 0.5,
+            chorus_rate: 0.7,
+            chorus_depth: 0.8,
+            delay_time_s: 0.071,
+            delay_feedback: 0.5,
+            delay_mix: 0.45,
+            reverb_mix: 0.4,
+            reverb_decay: 0.8,
+            legacy: false,
+        }
+    }
+
+    /// Renders a deterministic stereo signal and hashes the output bits.
+    fn fx_hash(params: &FxParams, samples: usize) -> u64 {
+        let mut fx = Fx::new(48_000.0);
+        let mut state = 0x1234_5678;
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+
+        for sample in 0..samples {
+            let left = if sample % 9_600 == 0 {
+                0.9
+            } else {
+                noise(&mut state) * 0.35
+            };
+            let right = if sample % 9_600 == 0 {
+                -0.9
+            } else {
+                noise(&mut state) * 0.35
+            };
+            let (out_left, out_right) = fx.process(left, right, params);
+            for bits in [out_left.to_bits(), out_right.to_bits()] {
+                hash ^= bits as u64;
+                hash = hash.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+
+        hash
     }
 
     #[test]
@@ -1296,5 +1544,309 @@ mod tests {
         assert_eq!(fx.eq_low_right, 0.0);
         assert_eq!(fx.eq_high_left, 0.0);
         assert_eq!(fx.eq_high_right, 0.0);
+    }
+
+    #[test]
+    fn the_default_order_bypass_and_mix_keep_the_old_output() {
+        // The hash was taken from the unmodified fixed-order chain. The
+        // default order 0, bypass mask 0 and global mix 1 must reproduce it
+        // bit for bit.
+        let params = FxParams {
+            drive_amount: 0.6,
+            drive_mix: 0.5,
+            phaser_rate: 1.1,
+            phaser_depth: 0.7,
+            phaser_mix: 0.5,
+            eq_low: 6.0,
+            eq_mid: -4.0,
+            eq_high: 3.0,
+            chorus_mix: 0.5,
+            chorus_rate: 0.6,
+            chorus_depth: 0.7,
+            delay_time_s: 0.123,
+            delay_feedback: 0.45,
+            delay_mix: 0.4,
+            reverb_mix: 0.35,
+            reverb_decay: 0.7,
+            legacy: false,
+            ..FxParams::default()
+        };
+
+        assert_eq!(params.order, 0);
+        assert_eq!(params.bypass_mask, 0);
+        assert_eq!(params.global_mix, 1.0);
+        assert_eq!(fx_hash(&params, 96_000), 0x3d47_20ee_a889_07fe);
+    }
+
+    #[test]
+    fn the_stage_order_rotates_exactly_as_documented() {
+        use FxStage::{Chorus, Delay, Drive, Eq, Phaser, Reverb};
+
+        assert_eq!(
+            stage_order(0),
+            [Drive, Phaser, Chorus, Delay, Reverb, Eq],
+            "order 0 must be the original chain"
+        );
+        assert_eq!(stage_order(1), [Phaser, Chorus, Delay, Reverb, Eq, Drive]);
+        assert_eq!(stage_order(2), [Chorus, Delay, Reverb, Eq, Drive, Phaser]);
+        assert_eq!(stage_order(3), [Delay, Reverb, Eq, Drive, Phaser, Chorus]);
+        assert_eq!(stage_order(4), [Reverb, Eq, Drive, Phaser, Chorus, Delay]);
+        assert_eq!(stage_order(5), [Eq, Drive, Phaser, Chorus, Delay, Reverb]);
+
+        // Bad host values cannot index outside the fixed chain.
+        assert_eq!(stage_order(-1), stage_order(0));
+        assert_eq!(stage_order(99), stage_order(5));
+    }
+
+    #[test]
+    fn rotating_the_order_changes_the_result() {
+        let original = all_stages_active();
+        let rotated = FxParams {
+            order: 1,
+            ..original
+        };
+        let mut straight = Fx::new(48_000.0);
+        let mut wrapped = Fx::new(48_000.0);
+        let mut state = 0x0BAD_5EED;
+        let mut difference = 0.0f32;
+
+        for _ in 0..48_000 {
+            let left = noise(&mut state) * 0.4;
+            let right = noise(&mut state) * 0.4;
+            let (straight_left, straight_right) = straight.process(left, right, &original);
+            let (wrapped_left, wrapped_right) = wrapped.process(left, right, &rotated);
+            difference +=
+                (straight_left - wrapped_left).abs() + (straight_right - wrapped_right).abs();
+        }
+
+        assert!(
+            difference > 1.0,
+            "the rotated chain sounded identical ({difference})"
+        );
+    }
+
+    #[test]
+    fn every_bypass_bit_matches_a_zero_mix_for_its_stage() {
+        for stage in FxStage::ALL {
+            let base = all_stages_active();
+            let mut bypassed = Fx::new(48_000.0);
+            let mut zeroed = Fx::new(48_000.0);
+            let mut active = Fx::new(48_000.0);
+            let bypass_params = FxParams {
+                bypass_mask: stage.bit() as i32,
+                ..base
+            };
+            let mut zero_params = base;
+            match stage {
+                FxStage::Drive => zero_params.drive_mix = 0.0,
+                FxStage::Phaser => zero_params.phaser_mix = 0.0,
+                FxStage::Chorus => zero_params.chorus_mix = 0.0,
+                FxStage::Delay => zero_params.delay_mix = 0.0,
+                FxStage::Reverb => zero_params.reverb_mix = 0.0,
+                FxStage::Eq => {
+                    zero_params.eq_low = 0.0;
+                    zero_params.eq_mid = 0.0;
+                    zero_params.eq_high = 0.0;
+                }
+            }
+
+            let mut state = 0xB17B_17B1;
+            let mut active_difference = 0.0f32;
+            for sample in 0..48_000 {
+                let left = noise(&mut state) * 0.4;
+                let right = noise(&mut state) * 0.4;
+                let (bypassed_left, bypassed_right) = bypassed.process(left, right, &bypass_params);
+                let (zeroed_left, zeroed_right) = zeroed.process(left, right, &zero_params);
+                let (active_left, active_right) = active.process(left, right, &base);
+
+                assert_eq!(
+                    bypassed_left.to_bits(),
+                    zeroed_left.to_bits(),
+                    "{stage:?} left at sample {sample}"
+                );
+                assert_eq!(
+                    bypassed_right.to_bits(),
+                    zeroed_right.to_bits(),
+                    "{stage:?} right at sample {sample}"
+                );
+                active_difference +=
+                    (bypassed_left - active_left).abs() + (bypassed_right - active_right).abs();
+            }
+
+            assert!(
+                active_difference > 1e-3,
+                "bypassing {stage:?} did not change the chain"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_global_mix_returns_dry_and_clears_every_stage() {
+        let mut params = all_stages_active();
+        let mut fx = Fx::new(48_000.0);
+        let mut state = 0x5EED_CAFE;
+
+        // Fill every line and filter with a long, loud signal.
+        for sample in 0..48_000 {
+            let left = if sample == 0 {
+                1.0
+            } else {
+                noise(&mut state) * 0.6
+            };
+            let right = if sample == 0 {
+                -1.0
+            } else {
+                noise(&mut state) * 0.6
+            };
+            fx.process(left, right, &params);
+        }
+
+        params.global_mix = 0.0;
+        for _ in 0..1_000 {
+            let left = noise(&mut state) * 0.8;
+            let right = noise(&mut state) * 0.8;
+            let (out_left, out_right) = fx.process(left, right, &params);
+            assert_eq!(out_left.to_bits(), left.to_bits());
+            assert_eq!(out_right.to_bits(), right.to_bits());
+        }
+
+        assert!(fx.delay_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.delay_right.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_right.iter().all(|&sample| sample == 0.0));
+        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
+        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
+        assert_eq!(fx.eq_low_left, 0.0);
+        assert_eq!(fx.eq_low_right, 0.0);
+        assert_eq!(fx.eq_high_left, 0.0);
+        assert_eq!(fx.eq_high_right, 0.0);
+
+        // Turning the chain back on starts from silence instead of a tail.
+        params.global_mix = 1.0;
+        let mut peak: f32 = 0.0;
+        for _ in 0..10_000 {
+            let (left, right) = fx.process(0.0, 0.0, &params);
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+        assert!(peak < 1e-6, "a stale tail came back (peak {peak})");
+    }
+
+    #[test]
+    fn a_global_mix_of_one_is_the_exact_wet_signal() {
+        let params = all_stages_active();
+        let unity = FxParams {
+            global_mix: 1.0,
+            ..params
+        };
+        let half = FxParams {
+            global_mix: 0.5,
+            ..params
+        };
+        let mut wet = Fx::new(48_000.0);
+        let mut crossfaded = Fx::new(48_000.0);
+        let mut state = 0xC0FF_EE00;
+
+        for sample in 0..48_000 {
+            let left = noise(&mut state) * 0.5;
+            let right = noise(&mut state) * 0.5;
+            let (wet_left, wet_right) = wet.process(left, right, &unity);
+            let (out_left, out_right) = crossfaded.process(left, right, &half);
+
+            let expected_left = left * 0.5 + wet_left * 0.5;
+            let expected_right = right * 0.5 + wet_right * 0.5;
+            assert_eq!(
+                out_left.to_bits(),
+                expected_left.to_bits(),
+                "sample {sample}"
+            );
+            assert_eq!(
+                out_right.to_bits(),
+                expected_right.to_bits(),
+                "sample {sample}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_stage_bypass_mask_returns_dry_and_clears_the_tail() {
+        let mut params = all_stages_active();
+        let mut fx = Fx::new(48_000.0);
+        let mut state = 0xDEAD_BEEF;
+
+        // Build up delay and reverb tails.
+        for sample in 0..48_000 {
+            let left = if sample % 4_800 == 0 {
+                0.9
+            } else {
+                noise(&mut state) * 0.4
+            };
+            let right = if sample % 4_800 == 0 {
+                -0.9
+            } else {
+                noise(&mut state) * 0.4
+            };
+            fx.process(left, right, &params);
+        }
+
+        params.bypass_mask = FX_BYPASS_ALL as i32;
+        for _ in 0..1_000 {
+            let left = noise(&mut state) * 0.7;
+            let right = noise(&mut state) * 0.7;
+            let (out_left, out_right) = fx.process(left, right, &params);
+            assert_eq!(out_left.to_bits(), left.to_bits());
+            assert_eq!(out_right.to_bits(), right.to_bits());
+        }
+        assert!(fx.delay_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.delay_right.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_left.iter().all(|&sample| sample == 0.0));
+        assert!(fx.chorus_right.iter().all(|&sample| sample == 0.0));
+
+        // Unmasking the chain while the input is silent must not replay the
+        // audio that was captured before the bypass.
+        params.bypass_mask = 0;
+        let mut peak: f32 = 0.0;
+        for _ in 0..10_000 {
+            let (left, right) = fx.process(0.0, 0.0, &params);
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+        assert!(peak < 1e-6, "the unmasked chain replayed a tail ({peak})");
+    }
+
+    #[test]
+    fn order_bypass_and_mix_changes_stay_finite() {
+        let mut params = all_stages_active();
+        params.drive_amount = 1.0;
+        params.delay_feedback = 0.95;
+        params.reverb_decay = 1.0;
+        let mut fx = Fx::new(48_000.0);
+        let mut state = 0x1357_9BDF;
+        let mixes = [1.0, 0.75, 0.25, 0.0, 0.5];
+        let mut peak: f32 = 0.0;
+
+        for sample in 0..192_000 {
+            if sample % 1_024 == 0 {
+                let block = sample / 1_024;
+                params.order = (block % FX_STAGE_COUNT) as i32;
+                params.bypass_mask = ((block * 13) % 64) as i32;
+                params.global_mix = mixes[block % mixes.len()];
+            }
+
+            let left = if sample % 480 == 0 {
+                0.9
+            } else {
+                noise(&mut state) * 0.5
+            };
+            let right = if sample % 720 == 0 {
+                -0.9
+            } else {
+                noise(&mut state) * 0.5
+            };
+            let (out_left, out_right) = fx.process(left, right, &params);
+            assert!(out_left.is_finite() && out_right.is_finite());
+            peak = peak.max(out_left.abs()).max(out_right.abs());
+        }
+
+        assert!(peak < 20.0, "the changing chain ran away ({peak})");
+        assert!(fx.sample_rate.is_finite());
     }
 }

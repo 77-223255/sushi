@@ -4,7 +4,7 @@
 //! a repeating pattern. Its clock is driven by the host's tempo, so the
 //! pattern always stays in time with the song.
 
-use crate::params::ArpPattern;
+use crate::params::{ArpChord, ArpPattern};
 
 /// The maximum number of notes that can be held at the same time. Notes beyond
 /// this limit are ignored.
@@ -19,8 +19,24 @@ const MAX_OCTAVES: usize = 3;
 /// The maximum number of retriggers of a step.
 const MAX_RATCHET: usize = 4;
 
+/// The maximum number of notes that one arpeggiator step can start. The
+/// chord modes currently need at most two, but the scheduler and the voice
+/// bookkeeping in the host keep room for a four-note chord without allocating.
+pub const MAX_CHORD_NOTES: usize = 4;
+
 /// The seed of the random number generator.
 const RNG_SEED: u32 = 0x2545_F491;
+
+/// A chord note that has been scheduled by the strum and has not started yet.
+#[derive(Debug, Clone, Copy)]
+struct PendingNote {
+    /// The key of the note.
+    key: u8,
+    /// The velocity of the note.
+    velocity: f32,
+    /// The number of samples until the note starts.
+    samples: u32,
+}
 
 /// A note that is held by the arpeggiator.
 #[derive(Debug, Clone, Copy)]
@@ -49,12 +65,41 @@ impl Default for HeldNote {
 }
 
 /// The result of a single arpeggiator tick.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ArpTick {
-    /// The note that should be started, with its key and velocity.
+    /// The base note of a new pattern step, with its key and velocity. This is
+    /// kept separate from `chord` so that the host can flash the step LED once
+    /// and update the pattern position even when the chord is strummed.
     pub trigger: Option<(u8, f32)>,
-    /// Whether the note that is currently sounding should be released.
+    /// Every note that should start on this sample, including the base note.
+    /// Strummed notes appear here on the sample they are due.
+    pub chord: [Option<(u8, f32)>; MAX_CHORD_NOTES],
+    /// The number of valid entries at the start of `chord`.
+    pub chord_len: usize,
+    /// Whether every note of the current step should be released. Pending
+    /// strummed notes are cancelled at the same time.
     pub release: bool,
+}
+
+impl ArpTick {
+    /// The notes that should start on this sample.
+    pub fn notes(&self) -> impl Iterator<Item = (u8, f32)> + '_ {
+        self.chord[..self.chord_len].iter().flatten().copied()
+    }
+
+    /// Adds a note to the chord that starts on this sample.
+    fn push_note(&mut self, key: u8, velocity: f32) {
+        if self.chord_len < MAX_CHORD_NOTES {
+            self.chord[self.chord_len] = Some((key, velocity));
+            self.chord_len += 1;
+        }
+    }
+
+    /// Forgets the notes of a previous step in the same tick.
+    fn clear_chord(&mut self) {
+        self.chord = [None; MAX_CHORD_NOTES];
+        self.chord_len = 0;
+    }
 }
 
 /// A simple arpeggiator with an up, down, up-down, random and as-played
@@ -92,6 +137,8 @@ pub struct Arp {
     pattern: Option<ArpPattern>,
     /// The random number generator.
     rng: u32,
+    /// The strummed notes that have not started yet.
+    pending: [Option<PendingNote>; MAX_CHORD_NOTES],
 }
 
 impl Default for Arp {
@@ -117,6 +164,7 @@ impl Arp {
             current: None,
             pattern: None,
             rng: RNG_SEED,
+            pending: [None; MAX_CHORD_NOTES],
         }
     }
 
@@ -136,6 +184,7 @@ impl Arp {
         self.current = None;
         self.pattern = None;
         self.rng = RNG_SEED;
+        self.clear_pending();
     }
 
     /// Stops the clock without forgetting the held notes. Used when the host
@@ -147,6 +196,7 @@ impl Arp {
         self.sub_beats = 0.0;
         self.sub_index = 0;
         self.parity = false;
+        self.clear_pending();
     }
 
     /// Aligns the next step with the host's beat grid. Called after a
@@ -167,6 +217,7 @@ impl Arp {
         self.current = None;
         self.gate_samples = 0;
         self.parity = false;
+        self.clear_pending();
     }
 
     /// The position of the pattern that is currently sounding.
@@ -260,9 +311,15 @@ impl Arp {
         }
     }
 
-    /// Whether a note is currently sounding.
+    /// Whether a note is currently sounding, or a strummed note is waiting to
+    /// start on a later sample.
     pub fn is_sounding(&self) -> bool {
-        self.current.is_some()
+        self.current.is_some() || self.has_pending_notes()
+    }
+
+    /// Whether the strum scheduler still has notes waiting to start.
+    pub fn has_pending_notes(&self) -> bool {
+        self.pending.iter().any(Option::is_some)
     }
 
     /// Whether the arpeggiator still holds any notes. This is used to keep
@@ -271,15 +328,8 @@ impl Arp {
         self.held_len > 0
     }
 
-    /// Advances the arpeggiator by a single sample.
-    ///
-    /// `beats_per_sample` is the tempo of the host in beats per sample and
-    /// `division_beats` the length of one step of the pattern.
-    /// `gate_percent` is the length of the note as a percentage of the step,
-    /// `pattern` the way the notes are walked through, `octaves` the number of
-    /// octaves that the pattern covers, `swing_percent` the swing of the
-    /// steps, `length` the number of steps of the pattern and `ratchet` the
-    /// number of times every step is repeated.
+    /// Advances the arpeggiator by a single sample with the old single-note,
+    /// unstrummed and always-playing behavior.
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
@@ -292,6 +342,50 @@ impl Arp {
         length: usize,
         ratchet: usize,
     ) -> ArpTick {
+        self.tick_extended(
+            beats_per_sample,
+            division_beats,
+            gate_percent,
+            pattern,
+            octaves,
+            swing_percent,
+            length,
+            ratchet,
+            ArpChord::Off,
+            0.0,
+            1.0,
+            48_000.0,
+        )
+    }
+
+    /// Advances the arpeggiator by a single sample.
+    ///
+    /// `beats_per_sample` is the tempo of the host in beats per sample and
+    /// `division_beats` the length of one step of the pattern.
+    /// `gate_percent` is the length of the note as a percentage of the step,
+    /// `pattern` the way the notes are walked through, `octaves` the number of
+    /// octaves that the pattern covers, `swing_percent` the swing of the
+    /// steps, `length` the number of steps of the pattern and `ratchet` the
+    /// number of times every step is repeated. `chord` adds an interval to
+    /// every step, `strum_ms` delays the added chord notes and `probability`
+    /// decides whether a step starts at all. The strum time is converted to
+    /// samples with `sample_rate`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_extended(
+        &mut self,
+        beats_per_sample: f64,
+        division_beats: f64,
+        gate_percent: f32,
+        pattern: ArpPattern,
+        octaves: u8,
+        swing_percent: f32,
+        length: usize,
+        ratchet: usize,
+        chord: ArpChord,
+        strum_ms: f32,
+        probability: f32,
+        sample_rate: f32,
+    ) -> ArpTick {
         let mut result = ArpTick::default();
 
         let division_beats = division_beats.max(1e-9);
@@ -299,6 +393,22 @@ impl Arp {
         let ratchet = ratchet.clamp(1, MAX_RATCHET);
         let length = length.clamp(1, MAX_LENGTH);
         let swing = (swing_percent.clamp(0.0, 75.0) as f64) / 100.0;
+        let probability = if probability.is_finite() {
+            probability.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let strum_ms = if strum_ms.is_finite() {
+            strum_ms.clamp(0.0, 80.0)
+        } else {
+            0.0
+        };
+        let sample_rate = if sample_rate.is_finite() {
+            sample_rate.max(0.0)
+        } else {
+            0.0
+        };
+        let strum_samples = (strum_ms as f64 * 0.001 * sample_rate as f64).round() as u32;
 
         if self.pattern != Some(pattern) {
             // The pattern changed, so the pattern starts from the beginning
@@ -318,8 +428,10 @@ impl Arp {
             self.sub_index = 0;
             self.parity = false;
             self.beats_to_boundary = 0.0;
-            if self.current.is_some() {
-                self.current = None;
+            let was_sounding = self.is_sounding();
+            self.clear_pending();
+            self.current = None;
+            if was_sounding {
                 result.release = true;
             }
             return result;
@@ -327,9 +439,21 @@ impl Arp {
 
         let beats_per_sample = beats_per_sample.max(0.0);
         if beats_per_sample <= 0.0 {
-            // The host does not play, so the clock does not move.
+            // The host does not play, so the clock does not move. A strummed
+            // note must not be left waiting forever, though.
+            if self.has_pending_notes() {
+                self.clear_pending();
+                self.current = None;
+                self.gate_samples = 0;
+                result.release = true;
+            }
             return result;
         }
+
+        // The strummed notes count down in samples, independent of the host
+        // tempo. The due notes are held back until the clock and the gate have
+        // been processed: a new step or a gate close cancels them instead.
+        let (due, due_len) = self.take_due_pending();
 
         self.beats_to_boundary -= beats_per_sample;
         while self.beats_to_boundary <= 0.0 {
@@ -349,14 +473,34 @@ impl Arp {
             let Some((key, velocity)) = self.note_at(self.position, pattern, octaves) else {
                 break;
             };
-            self.current = Some((key, velocity));
-            self.current_step = self.position;
-            result.trigger = Some((key, velocity));
 
-            // The gate closes at the end of the sub step.
-            let gate =
-                interval * (gate_percent.clamp(0.0, 100.0) as f64 / 100.0) / beats_per_sample;
-            self.gate_samples = gate.round().max(1.0) as u32;
+            if self.accept_trigger(probability) {
+                self.current = Some((key, velocity));
+                self.current_step = self.position;
+                result.trigger = Some((key, velocity));
+                result.release = false;
+                result.clear_chord();
+
+                // A new step replaces the previous chord. Any pending strum
+                // note from the old step is cancelled, including one that
+                // happened to be due on this very sample.
+                self.clear_pending();
+                self.push_chord_notes(&mut result, key, velocity, chord, strum_samples);
+
+                // The gate closes at the end of the sub step.
+                let gate =
+                    interval * (gate_percent.clamp(0.0, 100.0) as f64 / 100.0) / beats_per_sample;
+                self.gate_samples = gate.round().max(1.0) as u32;
+            } else {
+                // The step was skipped by the probability. The previous chord
+                // and every pending strummed note are released at once.
+                self.clear_pending();
+                self.current = None;
+                self.gate_samples = 0;
+                result.trigger = None;
+                result.clear_chord();
+                result.release = true;
+            }
 
             // The next sub step.
             self.sub_index += 1;
@@ -370,15 +514,113 @@ impl Arp {
 
         // The gate. The countdown does not start on the sample that triggers
         // the note, so that the note sounds for the whole length of the gate.
-        if result.trigger.is_none() && self.gate_samples > 0 {
+        if result.trigger.is_none() && !result.release && self.gate_samples > 0 {
             self.gate_samples -= 1;
             if self.gate_samples == 0 && self.current.is_some() {
                 self.current = None;
+                self.clear_pending();
                 result.release = true;
             }
         }
 
+        // Notes that were due on this sample only start when the step did not
+        // trigger a new chord and the gate did not close. This is the
+        // sample-accurate part of the strum.
+        if result.trigger.is_none() && !result.release {
+            for note in due[..due_len].iter().flatten() {
+                result.push_note(note.0, note.1);
+            }
+        }
+
         result
+    }
+
+    /// Decides whether a step starts. The default of one is an exact bypass,
+    /// so it never consumes a random number and old patches keep their random
+    /// pattern sequence.
+    fn accept_trigger(&mut self, probability: f32) -> bool {
+        if probability >= 1.0 {
+            true
+        } else if probability <= 0.0 {
+            false
+        } else {
+            let value = f64::from(self.next_random()) / 4_294_967_296.0;
+            value < f64::from(probability)
+        }
+    }
+
+    /// Builds the chord of a step and puts its notes into the result or into
+    /// the pending scheduler.
+    ///
+    /// The base note is always immediate. With a strum, the added notes are
+    /// spread evenly over the strum time in the order of the chord intervals.
+    fn push_chord_notes(
+        &mut self,
+        result: &mut ArpTick,
+        key: u8,
+        velocity: f32,
+        chord: ArpChord,
+        strum_samples: u32,
+    ) {
+        let mut notes = [None; MAX_CHORD_NOTES];
+        let note_count = build_chord(key, velocity, chord, &mut notes);
+
+        if note_count <= 1 || strum_samples == 0 {
+            for note in notes[..note_count].iter().flatten() {
+                result.push_note(note.0, note.1);
+            }
+            return;
+        }
+
+        // The base note starts immediately.
+        result.push_note(key, velocity);
+
+        let extra_count = note_count - 1;
+        for (index, note) in notes[1..note_count].iter().flatten().enumerate() {
+            let delay = (u64::from(strum_samples) * (index as u64 + 1) / extra_count as u64) as u32;
+            if delay == 0 {
+                result.push_note(note.0, note.1);
+            } else {
+                self.schedule_pending(note.0, note.1, delay);
+            }
+        }
+    }
+
+    /// Puts a strummed note into the first free slot of the pending array.
+    fn schedule_pending(&mut self, key: u8, velocity: f32, samples: u32) {
+        if let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(PendingNote {
+                key,
+                velocity,
+                samples,
+            });
+        }
+    }
+
+    /// Counts every pending note down by one sample and returns the notes that
+    /// are due now.
+    fn take_due_pending(&mut self) -> ([Option<(u8, f32)>; MAX_CHORD_NOTES], usize) {
+        let mut due = [None; MAX_CHORD_NOTES];
+        let mut due_len = 0;
+
+        for slot in self.pending.iter_mut() {
+            let Some(note) = slot else {
+                continue;
+            };
+            note.samples = note.samples.saturating_sub(1);
+            if note.samples == 0 {
+                due[due_len] = Some((note.key, note.velocity));
+                due_len += 1;
+                *slot = None;
+            }
+        }
+
+        (due, due_len)
+    }
+
+    /// Cancels every strummed note that has not started yet.
+    fn clear_pending(&mut self) {
+        self.pending = [None; MAX_CHORD_NOTES];
     }
 
     /// The note that is played at the given position of the pattern.
@@ -466,6 +708,55 @@ impl Arp {
         self.rng = x;
         x
     }
+}
+
+/// The intervals that a chord mode adds to the base note.
+///
+/// The modes are deliberately simple: each one adds its named interval to
+/// every arpeggiator step. The fixed array in the audio thread leaves room for
+/// richer chords later without changing the scheduler.
+fn chord_intervals(chord: ArpChord) -> &'static [i32] {
+    match chord {
+        ArpChord::Off => &[],
+        ArpChord::Octave => &[12],
+        ArpChord::Fifth => &[7],
+        ArpChord::Minor => &[3, 7],
+        ArpChord::Major => &[4, 7],
+    }
+}
+
+/// Builds the notes of a chord step. Notes above the MIDI range are skipped
+/// instead of wrapped, and a key is only added once.
+fn build_chord(
+    key: u8,
+    velocity: f32,
+    chord: ArpChord,
+    notes: &mut [Option<(u8, f32)>; MAX_CHORD_NOTES],
+) -> usize {
+    notes[0] = Some((key, velocity));
+    let mut len = 1;
+
+    for interval in chord_intervals(chord) {
+        let note = key as i32 + interval;
+        if !(0..=127).contains(&note) {
+            continue;
+        }
+        let note = note as u8;
+        if notes[..len]
+            .iter()
+            .flatten()
+            .any(|(existing, _)| *existing == note)
+        {
+            continue;
+        }
+
+        if len < MAX_CHORD_NOTES {
+            notes[len] = Some((note, velocity));
+            len += 1;
+        }
+    }
+
+    len
 }
 
 #[cfg(test)]
@@ -1168,5 +1459,285 @@ mod tests {
         arp.note_on(67, 1.0, false);
         arp.note_on(60, 1.0, false);
         assert_eq!(next_note(&mut arp, ArpPattern::Up), 60);
+    }
+
+    /// Ticks the arpeggiator with the extended chord, strum and probability
+    /// controls.
+    fn extended_tick(
+        arp: &mut Arp,
+        chord: ArpChord,
+        strum_ms: f32,
+        probability: f32,
+        gate_percent: f32,
+    ) -> ArpTick {
+        arp.tick_extended(
+            beats_per_sample(),
+            0.25,
+            gate_percent,
+            ArpPattern::Up,
+            1,
+            0.0,
+            16,
+            1,
+            chord,
+            strum_ms,
+            probability,
+            SAMPLE_RATE,
+        )
+    }
+
+    #[test]
+    fn the_defaults_of_the_extended_tick_are_exactly_the_old_tick() {
+        let mut old = Arp::new();
+        let mut extended = Arp::new();
+        for arp in [&mut old, &mut extended] {
+            arp.note_on(60, 0.8, false);
+            arp.note_on(64, 0.6, false);
+            arp.note_on(67, 0.9, false);
+        }
+
+        // Every sample of several steps has to match, including the gate and
+        // the random pattern state.
+        for sample in 0..(step_samples() * 3) {
+            for pattern in [ArpPattern::Up, ArpPattern::Random] {
+                let old_tick = old.tick(beats_per_sample(), 0.25, 60.0, pattern, 2, 20.0, 16, 1);
+                let new_tick = extended.tick_extended(
+                    beats_per_sample(),
+                    0.25,
+                    60.0,
+                    pattern,
+                    2,
+                    20.0,
+                    16,
+                    1,
+                    ArpChord::Off,
+                    0.0,
+                    1.0,
+                    SAMPLE_RATE,
+                );
+                assert_eq!(old_tick, new_tick, "the ticks differ at sample {sample}");
+                assert_eq!(old.position(), extended.position());
+            }
+        }
+    }
+
+    #[test]
+    fn a_probability_of_one_never_consumes_the_probability_random_number() {
+        // The random pattern has its own sequence. At a probability of one,
+        // the new control must be an exact bypass so that old patches keep the
+        // same random notes.
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+        arp.note_on(64, 1.0, false);
+        arp.note_on(67, 1.0, false);
+
+        let mut keys = Vec::new();
+        for _ in 0..(step_samples() * 8) {
+            if let Some((key, _)) = extended_tick(&mut arp, ArpChord::Off, 0.0, 1.0, 100.0).trigger
+            {
+                keys.push(key);
+            }
+        }
+
+        assert!(keys.len() >= 6, "only {} notes were played", keys.len());
+        assert!(keys.iter().all(|key| [60, 64, 67].contains(key)));
+    }
+
+    #[test]
+    fn a_probability_of_zero_is_silent() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+
+        let mut released = false;
+        for _ in 0..(step_samples() * 3) {
+            let tick = extended_tick(&mut arp, ArpChord::Off, 0.0, 0.0, 100.0);
+            assert!(tick.trigger.is_none(), "a note was triggered");
+            assert_eq!(tick.chord_len, 0);
+            released |= tick.release;
+        }
+
+        assert!(released, "skipped steps did not release the old note");
+        assert!(!arp.is_sounding());
+    }
+
+    #[test]
+    fn the_probability_is_deterministic() {
+        fn sequence(probability: f32) -> Vec<(usize, u8)> {
+            let mut arp = Arp::new();
+            arp.note_on(60, 1.0, false);
+            arp.note_on(64, 1.0, false);
+            arp.note_on(67, 1.0, false);
+
+            let mut notes = Vec::new();
+            for sample in 0..(step_samples() * 12) {
+                let tick = extended_tick(&mut arp, ArpChord::Off, 0.0, probability, 100.0);
+                for (key, _) in tick.notes() {
+                    notes.push((sample, key));
+                }
+            }
+            notes
+        }
+
+        let first = sequence(0.5);
+        let second = sequence(0.5);
+        assert_eq!(first, second, "the probability is not repeatable");
+        assert!(!first.is_empty(), "nothing was accepted");
+        assert!(
+            first.len() < 12,
+            "a probability of one half accepted every step"
+        );
+    }
+
+    #[test]
+    fn every_chord_mode_adds_its_interval_to_the_step() {
+        let cases = [
+            (ArpChord::Off, vec![60]),
+            (ArpChord::Octave, vec![60, 72]),
+            (ArpChord::Fifth, vec![60, 67]),
+            (ArpChord::Minor, vec![60, 63, 67]),
+            (ArpChord::Major, vec![60, 64, 67]),
+        ];
+
+        for (chord, expected) in cases {
+            let mut arp = Arp::new();
+            arp.note_on(60, 0.75, false);
+            let tick = extended_tick(&mut arp, chord, 0.0, 1.0, 100.0);
+
+            assert_eq!(tick.trigger, Some((60, 0.75)));
+            assert_eq!(tick.chord_len, expected.len(), "{chord:?}");
+            let notes: Vec<u8> = tick.notes().map(|(key, _)| key).collect();
+            assert_eq!(notes, expected, "{chord:?}");
+        }
+    }
+
+    #[test]
+    fn chord_notes_stay_in_range_and_are_not_duplicated() {
+        for key in [0, 120, 124, 125, 126, 127] {
+            for chord in [
+                ArpChord::Off,
+                ArpChord::Octave,
+                ArpChord::Fifth,
+                ArpChord::Minor,
+                ArpChord::Major,
+            ] {
+                let mut arp = Arp::new();
+                arp.note_on(key, 1.0, false);
+                let tick = extended_tick(&mut arp, chord, 0.0, 1.0, 100.0);
+                let notes: Vec<u8> = tick.notes().map(|(note, _)| note).collect();
+
+                assert!(notes.iter().all(|note| *note <= 127));
+                let mut unique = notes.clone();
+                unique.sort_unstable();
+                unique.dedup();
+                assert_eq!(unique, notes, "{chord:?} duplicated a key at {key}");
+                assert_eq!(notes[0], key);
+            }
+        }
+
+        // A note that would leave the MIDI range is skipped, not wrapped.
+        let mut arp = Arp::new();
+        arp.note_on(120, 1.0, false);
+        let tick = extended_tick(&mut arp, ArpChord::Octave, 0.0, 1.0, 100.0);
+        let notes: Vec<u8> = tick.notes().map(|(key, _)| key).collect();
+        assert_eq!(notes, [120]);
+    }
+
+    #[test]
+    fn the_strum_delays_the_added_notes_sample_accurately() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+
+        // Ten milliseconds at 48 kHz are exactly 480 samples. The octave is
+        // the only added note, so it arrives after the whole strum time.
+        let mut started = Vec::new();
+        for sample in 0..1_000 {
+            let tick = extended_tick(&mut arp, ArpChord::Octave, 10.0, 1.0, 100.0);
+            for (key, _) in tick.notes() {
+                started.push((sample, key));
+            }
+        }
+
+        assert_eq!(started, [(0, 60), (480, 72)]);
+        assert!(!arp.has_pending_notes());
+    }
+
+    #[test]
+    fn a_strum_of_zero_starts_the_whole_chord_together() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+
+        let tick = extended_tick(&mut arp, ArpChord::Major, 0.0, 1.0, 100.0);
+        let notes: Vec<u8> = tick.notes().map(|(key, _)| key).collect();
+        assert_eq!(notes, [60, 64, 67]);
+        assert!(!arp.has_pending_notes());
+    }
+
+    #[test]
+    fn the_gate_cancels_pending_strum_notes() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+
+        let mut release_sample = None;
+        let mut trigger_after_release = false;
+        for sample in 0..5_000 {
+            let tick = extended_tick(&mut arp, ArpChord::Octave, 80.0, 1.0, 10.0);
+            if tick.release {
+                release_sample = Some(sample);
+            }
+            if release_sample.is_some() && tick.notes().next().is_some() {
+                trigger_after_release = true;
+            }
+        }
+
+        let release_sample = release_sample.expect("the gate never closed");
+        assert!(
+            release_sample < 3_000,
+            "the gate closed after {release_sample} samples"
+        );
+        assert!(
+            !trigger_after_release,
+            "a pending strum note started after the gate closed"
+        );
+        assert!(!arp.has_pending_notes());
+        assert!(!arp.is_sounding());
+    }
+
+    #[test]
+    fn resetting_the_arp_clears_the_chord_and_the_strum() {
+        let mut arp = Arp::new();
+        arp.note_on(60, 1.0, false);
+        let tick = extended_tick(&mut arp, ArpChord::Octave, 80.0, 1.0, 100.0);
+        assert_eq!(tick.chord_len, 1);
+        assert!(arp.has_pending_notes());
+        assert!(arp.is_sounding());
+
+        arp.reset();
+
+        assert!(!arp.has_pending_notes());
+        assert!(!arp.is_sounding());
+        assert!(!arp.has_notes());
+
+        let tick = extended_tick(&mut arp, ArpChord::Octave, 80.0, 1.0, 100.0);
+        assert_eq!(tick.chord_len, 0);
+        assert!(tick.trigger.is_none());
+    }
+
+    #[test]
+    fn pausing_or_resyncing_the_arp_clears_the_strum() {
+        for pause in [true, false] {
+            let mut arp = Arp::new();
+            arp.note_on(60, 1.0, false);
+            extended_tick(&mut arp, ArpChord::Octave, 80.0, 1.0, 100.0);
+            assert!(arp.has_pending_notes());
+
+            if pause {
+                arp.pause();
+            } else {
+                arp.resync(1.1, 0.25);
+            }
+
+            assert!(!arp.has_pending_notes());
+            assert!(!arp.is_sounding());
+        }
     }
 }

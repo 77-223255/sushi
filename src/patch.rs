@@ -658,6 +658,23 @@ sushi_params! {
     "eq_low" => eq_low,
     "eq_mid" => eq_mid,
     "eq_high" => eq_high,
+    "hpf_cutoff" => hpf_cutoff,
+    "vca_width" => vca_width,
+    "vca_pan" => vca_pan,
+    "ae_curve" => ae_curve,
+    "fe_curve" => fe_curve,
+    "ring_mod" => ring_mod,
+    "osc_phase_reset" => osc_phase_reset,
+    "lfo1_phase" => lfo1_phase,
+    "lfo2_phase" => lfo2_phase,
+    "lfo1_curve" => lfo1_curve,
+    "lfo2_curve" => lfo2_curve,
+    "arp_chord" => arp_chord,
+    "arp_strum" => arp_strum,
+    "arp_probability" => arp_probability,
+    "fx_order" => fx_order,
+    "fx_bypass_mask" => fx_bypass_mask,
+    "fx_global_mix" => fx_global_mix,
 }
 
 /// Collects the values of all the parameters into a JSON document.
@@ -914,12 +931,12 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 109);
+        assert_eq!(PARAM_IDS.len(), 126);
 
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 109, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 126, "the ids of the parameters are not unique");
     }
 
     #[test]
@@ -930,8 +947,8 @@ mod tests {
         reset_count();
         apply_defaults(&params, &setter);
 
-        // Every one of the 109 parameters is written.
-        assert_eq!(set_count(), 109);
+        // Every one of the 126 parameters is written.
+        assert_eq!(set_count(), 126);
     }
 
     #[test]
@@ -994,7 +1011,7 @@ mod tests {
         assert_eq!(document["name"], "TEST");
 
         let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 109);
+        assert_eq!(map.len(), 126);
         for id in PARAM_IDS {
             assert!(map.contains_key(*id), "the parameter {id} is missing");
         }
@@ -1022,6 +1039,69 @@ mod tests {
             params.arp_pattern.value(),
             crate::params::ArpPattern::AsPlayed
         );
+    }
+
+    #[test]
+    fn the_arp_chord_strum_and_probability_survive_a_patch() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        apply_json(
+            &params,
+            &setter,
+            &json!({
+                "params": {
+                    "arp_chord": "minor",
+                    "arp_strum": 37.5,
+                    "arp_probability": 0.25
+                }
+            }),
+        )
+        .expect("the arp patch could not be applied");
+
+        assert_eq!(params.arp_chord.value(), crate::params::ArpChord::Minor);
+        assert!((params.arp_strum.value() - 37.5).abs() < 0.01);
+        assert!((params.arp_probability.value() - 0.25).abs() < 0.01);
+
+        let document = to_json(&params, "ARP");
+        assert_eq!(document["params"]["arp_chord"], "Minor");
+        assert!((document["params"]["arp_probability"].as_f64().unwrap() - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_fx_chain_controls_survive_a_patch() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        apply_json(
+            &params,
+            &setter,
+            &json!({
+                "params": {
+                    "fx_order": 3,
+                    "fx_bypass_mask": 40,
+                    "fx_global_mix": 0.25
+                }
+            }),
+        )
+        .expect("the FX patch could not be applied");
+
+        assert_eq!(params.fx_order.value(), 3);
+        assert_eq!(params.fx_bypass_mask.value(), 40);
+        assert!((params.fx_global_mix.value() - 0.25).abs() < 0.01);
+
+        let document = to_json(&params, "FX");
+        assert_eq!(document["params"]["fx_order"], 3);
+        assert_eq!(document["params"]["fx_bypass_mask"], 40);
+        assert!((document["params"]["fx_global_mix"].as_f64().unwrap() - 0.25).abs() < 0.01);
+
+        // A patch from before the new controls keeps the original chain.
+        let old = SushiParams::default();
+        apply_json(&old, &setter, &json!({ "params": { "cutoff": 1234.0 } }))
+            .expect("the old patch could not be applied");
+        assert_eq!(old.fx_order.value(), 0);
+        assert_eq!(old.fx_bypass_mask.value(), 0);
+        assert_eq!(old.fx_global_mix.value(), 1.0);
     }
 
     #[test]

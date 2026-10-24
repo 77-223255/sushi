@@ -24,6 +24,25 @@ impl Lfo {
     /// well.
     #[inline]
     pub fn next(&mut self, frequency: f32, sample_rate: f32, waveform: LfoWaveform) -> f32 {
+        self.next_shaped(frequency, sample_rate, waveform, 0.0, 0.0)
+    }
+
+    /// Renders the next sample with an output phase offset and a curve.
+    ///
+    /// The phase offset only changes the phase at which the waveform is read;
+    /// the internal phase still advances by the same amount. This keeps every
+    /// voice and every block on the same clock. The curve is a safe signed
+    /// power shaper: zero is exactly the old waveform, so old patches keep
+    /// their sound bit for bit.
+    #[inline]
+    pub fn next_shaped(
+        &mut self,
+        frequency: f32,
+        sample_rate: f32,
+        waveform: LfoWaveform,
+        phase_offset: f32,
+        curve: f32,
+    ) -> f32 {
         let sample_rate = sample_rate.max(1.0);
         let phase = self.phase;
 
@@ -36,19 +55,28 @@ impl Lfo {
             wrapped = true;
         }
 
+        // The offset is applied to the read position only. A sign of the
+        // sample & hold cannot be shifted, because its value is tied to the
+        // random update at each wrap, so it deliberately ignores the offset.
+        let output_phase = if phase_offset == 0.0 {
+            phase
+        } else {
+            (phase + phase_offset).rem_euclid(1.0)
+        };
+
         let value = match waveform {
-            LfoWaveform::Sine => (phase * TAU).sin(),
+            LfoWaveform::Sine => (output_phase * TAU).sin(),
             LfoWaveform::Triangle => {
                 // The two halves meet at `+1`, so the shape is continuous.
-                if phase < 0.5 {
-                    4.0 * phase - 1.0
+                if output_phase < 0.5 {
+                    4.0 * output_phase - 1.0
                 } else {
-                    3.0 - 4.0 * phase
+                    3.0 - 4.0 * output_phase
                 }
             }
-            LfoWaveform::Saw => 2.0 * phase - 1.0,
+            LfoWaveform::Saw => 2.0 * output_phase - 1.0,
             LfoWaveform::Square => {
-                if phase < 0.5 {
+                if output_phase < 0.5 {
                     1.0
                 } else {
                     -1.0
@@ -63,7 +91,7 @@ impl Lfo {
             }
         };
 
-        value.clamp(-1.0, 1.0)
+        shape_lfo(value, curve).clamp(-1.0, 1.0)
     }
 
     /// Restarts the waveform at the beginning of its cycle.
@@ -97,6 +125,29 @@ impl Lfo {
 impl Default for Lfo {
     fn default() -> Self {
         Self::new(0x2545_F491)
+    }
+}
+
+/// The exponent of the LFO curve for a bipolar `-1..1` parameter. Zero is
+/// exactly one, so the default curve is a pass-through.
+#[inline]
+fn curve_exponent(curve: f32) -> f32 {
+    if curve == 0.0 {
+        1.0
+    } else {
+        2f32.powf(curve.clamp(-1.0, 1.0))
+    }
+}
+
+/// Shapes an LFO value with a signed power. The sign is kept, the endpoints
+/// `-1`, `0` and `1` stay fixed, and a curve of exactly zero returns the
+/// input untouched.
+#[inline]
+fn shape_lfo(value: f32, curve: f32) -> f32 {
+    if curve == 0.0 {
+        value
+    } else {
+        value.signum() * value.abs().powf(curve_exponent(curve))
     }
 }
 
@@ -160,5 +211,63 @@ mod tests {
         lfo.retrigger();
         assert_eq!(lfo.phase(), 0.0);
         assert_eq!(lfo.next(5.0, SAMPLE_RATE, LfoWaveform::Sine), 0.0);
+    }
+
+    #[test]
+    fn a_zero_curve_keeps_the_old_output_exactly() {
+        for waveform in [
+            LfoWaveform::Sine,
+            LfoWaveform::Triangle,
+            LfoWaveform::Saw,
+            LfoWaveform::Square,
+            LfoWaveform::SampleHold,
+        ] {
+            let mut plain = Lfo::new(123);
+            let mut shaped = Lfo::new(123);
+            for _ in 0..2_000 {
+                let a = plain.next(3.7, SAMPLE_RATE, waveform);
+                let b = shaped.next_shaped(3.7, SAMPLE_RATE, waveform, 0.0, 0.0);
+                assert_eq!(a.to_bits(), b.to_bits(), "{waveform:?} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn the_phase_offset_shifts_the_output_but_not_the_advance() {
+        let mut plain = Lfo::new(99);
+        let mut shifted = Lfo::new(99);
+
+        // A quarter-cycle offset turns the first sine sample into the top of
+        // the cycle, while both phases advance by exactly the same amount.
+        let plain_first = plain.next(5.0, SAMPLE_RATE, LfoWaveform::Sine);
+        let shifted_first = shifted.next_shaped(5.0, SAMPLE_RATE, LfoWaveform::Sine, 0.25, 0.0);
+        assert!(plain_first.abs() < 1e-6);
+        assert!((shifted_first - 1.0).abs() < 1e-6);
+        assert_eq!(plain.phase(), shifted.phase());
+
+        for _ in 0..2_000 {
+            plain.next(5.0, SAMPLE_RATE, LfoWaveform::Sine);
+            shifted.next_shaped(5.0, SAMPLE_RATE, LfoWaveform::Sine, 0.25, 0.0);
+            assert_eq!(plain.phase(), shifted.phase());
+        }
+    }
+
+    #[test]
+    fn the_curve_is_a_safe_signed_power() {
+        assert_eq!(shape_lfo(0.25, 0.0), 0.25);
+        assert!((shape_lfo(0.25, 1.0) - 0.0625).abs() < 1e-6);
+        assert!((shape_lfo(-0.25, 1.0) + 0.0625).abs() < 1e-6);
+        assert_eq!(shape_lfo(1.0, 1.0), 1.0);
+        assert_eq!(shape_lfo(-1.0, 1.0), -1.0);
+        assert_eq!(shape_lfo(0.0, -1.0), 0.0);
+
+        let mut lfo = Lfo::new(5);
+        for curve in [-1.0, -0.5, 0.5, 1.0] {
+            for _ in 0..2_000 {
+                let value = lfo.next_shaped(7.0, SAMPLE_RATE, LfoWaveform::Sine, 0.0, curve);
+                assert!(value.is_finite());
+                assert!((-1.0..=1.0).contains(&value), "curve {curve}: {value}");
+            }
+        }
     }
 }

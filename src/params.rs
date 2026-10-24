@@ -125,6 +125,16 @@ pub enum ModDest {
     Detune,
     #[name = "Filter Env"]
     FilterEnv,
+    #[name = "Osc1 Pitch"]
+    Osc1Pitch,
+    #[name = "Osc1 Fine"]
+    Osc1Fine,
+    #[name = "Filter Drive"]
+    FilterDrive,
+    #[name = "Filter Keytrack"]
+    FilterKeytrack,
+    #[name = "Ring Mod"]
+    RingMod,
 }
 
 /// The number of slots of the modulation matrix.
@@ -171,6 +181,22 @@ pub enum ArpPattern {
     /// The notes are played in the order in which they were pressed down.
     #[name = "As Played"]
     AsPlayed,
+}
+
+/// The chord that every arpeggiator trigger adds to its base note.
+///
+/// The variants are appended as a new enum, so the indices of every existing
+/// parameter and enum stay the same. The interval of each chord is applied to
+/// the note that the pattern selected, and notes outside the MIDI range are
+/// skipped instead of wrapped.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ArpChord {
+    #[default]
+    Off,
+    Octave,
+    Fifth,
+    Minor,
+    Major,
 }
 
 /// The note division of the arpeggiator and of the synced LFOs.
@@ -641,6 +667,86 @@ pub struct SushiParams {
     #[id = "eq_high"]
     pub eq_high: FloatParam,
 
+    // --- Global highpass, VCA and envelope curves -------------------------
+    // These are appended to the parameter list, so every existing parameter
+    // keeps its host automation index. Their defaults are completely neutral.
+    #[id = "hpf_cutoff"]
+    pub hpf_cutoff: FloatParam,
+
+    #[id = "vca_width"]
+    pub vca_width: FloatParam,
+
+    #[id = "vca_pan"]
+    pub vca_pan: FloatParam,
+
+    #[id = "ae_curve"]
+    pub ae_curve: FloatParam,
+
+    #[id = "fe_curve"]
+    pub fe_curve: FloatParam,
+
+    #[id = "ring_mod"]
+    pub ring_mod: FloatParam,
+
+    #[id = "osc_phase_reset"]
+    pub osc_phase_reset: BoolParam,
+
+    #[id = "lfo1_phase"]
+    pub lfo1_phase: FloatParam,
+
+    #[id = "lfo2_phase"]
+    pub lfo2_phase: FloatParam,
+
+    #[id = "lfo1_curve"]
+    pub lfo1_curve: FloatParam,
+
+    #[id = "lfo2_curve"]
+    pub lfo2_curve: FloatParam,
+
+    // --- Arpeggiator chord, strum and probability -------------------------
+    // These are appended after every existing parameter, so the host
+    // automation indices of old parameters do not move. Their defaults are
+    // the old single-note, unstrummed, always-playing behavior.
+    #[id = "arp_chord"]
+    pub arp_chord: EnumParam<ArpChord>,
+
+    #[id = "arp_strum"]
+    pub arp_strum: FloatParam,
+
+    #[id = "arp_probability"]
+    pub arp_probability: FloatParam,
+
+    // --- Effect chain order, bypass and global mix -------------------------
+    // These are appended after every existing parameter, so the host
+    // automation indices of old parameters do not move. Their defaults keep
+    // the original chain order, no bypass and a fully wet signal.
+    /// A rotation offset of the six-stage effect chain.
+    ///
+    /// `0` is the original order `Drive > Phaser > Chorus > Delay > Reverb >
+    /// EQ`; every step rotates the first stage to the end:
+    ///
+    /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ
+    /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive
+    /// - `2`: Chorus > Delay > Reverb > EQ > Drive > Phaser
+    /// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus
+    /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay
+    /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
+    #[id = "fx_order"]
+    pub fx_order: IntParam,
+
+    /// The stages that are bypassed completely.
+    ///
+    /// Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay, 4 Reverb and 5 EQ. A set
+    /// bit skips its stage and clears the state of that stage.
+    #[id = "fx_bypass_mask"]
+    pub fx_bypass_mask: IntParam,
+
+    /// The dry/wet crossfade around the entire effect chain. `1` is the fully
+    /// wet output of the chain and is bit-exact with the old behavior; `0` is
+    /// exactly the dry input and clears the effects.
+    #[id = "fx_global_mix"]
+    pub fx_global_mix: FloatParam,
+
     // --- Persistent editor state ------------------------------------------
     // These fields are not parameters; nice-plug stores them with the plugin
     // state so a reopened project keeps showing the loaded patch even though
@@ -976,6 +1082,64 @@ impl Default for SushiParams {
             eq_mid: db_param("EQ Mid", 0.0),
             eq_high: db_param("EQ High", 0.0),
 
+            // --- Global highpass, VCA and envelope curves --------------------
+            hpf_cutoff: FloatParam::new(
+                "HPF Cutoff",
+                20.0,
+                FloatRange::Skewed {
+                    min: 20.0,
+                    max: 2_000.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz())
+            .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            vca_width: FloatParam::new("VCA Width", 1.0, FloatRange::Linear { min: 0.0, max: 2.0 })
+                .with_value_to_string(formatters::v2s_f32_rounded(2))
+                .with_unit(" x")
+                .with_smoother(SmoothingStyle::Linear(10.0)),
+            vca_pan: bipolar_param("VCA Pan", 0.0),
+            ae_curve: bipolar_param("Amp Env Curve", 0.0),
+            fe_curve: bipolar_param("Filter Env Curve", 0.0),
+            ring_mod: percentage_param("Ring Mod", 0.0),
+            osc_phase_reset: BoolParam::new("Osc Phase Reset", false),
+            lfo1_phase: percentage_param("LFO 1 Phase", 0.0),
+            lfo2_phase: percentage_param("LFO 2 Phase", 0.0),
+            lfo1_curve: bipolar_param("LFO 1 Curve", 0.0),
+            lfo2_curve: bipolar_param("LFO 2 Curve", 0.0),
+
+            // --- Arpeggiator chord, strum and probability --------------------
+            arp_chord: EnumParam::new("Arp Chord", ArpChord::Off),
+            arp_strum: FloatParam::new(
+                "Arp Strum",
+                0.0,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 80.0,
+                },
+            )
+            .with_value_to_string(formatters::v2s_f32_rounded(1))
+            .with_string_to_value(Arc::new(|text: &str| {
+                text.trim()
+                    .trim_end_matches("ms")
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+            }))
+            .with_unit(" ms"),
+            arp_probability: percentage_param("Arp Probability", 1.0),
+
+            // --- Effect chain order, bypass and global mix --------------------
+            fx_order: IntParam::new("FX Order", 0, IntRange::Linear { min: 0, max: 5 }),
+            fx_bypass_mask: IntParam::new(
+                "FX Bypass Mask",
+                0,
+                IntRange::Linear { min: 0, max: 63 },
+            ),
+            fx_global_mix: percentage_param("FX Global Mix", 1.0),
+
             patch_name: Mutex::new(None),
             patch_path: Mutex::new(None),
             preset_index: Mutex::new(0),
@@ -1106,6 +1270,20 @@ mod tests {
         assert_eq!(params.eq_mid.value(), 0.0);
         assert_eq!(params.eq_high.value(), 0.0);
 
+        // The global highpass is parked at its minimum, which is an exact
+        // bypass, and the VCA is centered with a width of one.
+        assert_eq!(params.hpf_cutoff.value(), 20.0);
+        assert_eq!(params.vca_width.value(), 1.0);
+        assert_eq!(params.vca_pan.value(), 0.0);
+        assert_eq!(params.ae_curve.value(), 0.0);
+        assert_eq!(params.fe_curve.value(), 0.0);
+        assert_eq!(params.ring_mod.value(), 0.0);
+        assert!(!params.osc_phase_reset.value());
+        assert_eq!(params.lfo1_phase.value(), 0.0);
+        assert_eq!(params.lfo2_phase.value(), 0.0);
+        assert_eq!(params.lfo1_curve.value(), 0.0);
+        assert_eq!(params.lfo2_curve.value(), 0.0);
+
         // The EQ gains are shown and read in decibels.
         assert_eq!(params.eq_low.to_string(), "0.0 dB");
         let normalized = params
@@ -1138,6 +1316,18 @@ mod tests {
         assert_eq!(params.arp_swing.value(), 0.0);
         assert_eq!(params.arp_length.value(), 16);
         assert_eq!(params.arp_ratchet.value(), 1);
+
+        // The appended arp controls keep the old sound: no chord, no strum
+        // and every step is played.
+        assert_eq!(params.arp_chord.value(), ArpChord::Off);
+        assert_eq!(params.arp_strum.value(), 0.0);
+        assert_eq!(params.arp_probability.value(), 1.0);
+
+        // The effect chain starts in its original order, without a bypass
+        // and fully wet, so old patches keep their sound.
+        assert_eq!(params.fx_order.value(), 0);
+        assert_eq!(params.fx_bypass_mask.value(), 0);
+        assert_eq!(params.fx_global_mix.value(), 1.0);
     }
 
     #[test]
@@ -1235,6 +1425,11 @@ mod tests {
         assert_eq!(ModDest::variants()[12], "Noise Level");
         assert_eq!(ModDest::variants()[13], "Detune");
         assert_eq!(ModDest::variants()[14], "Filter Env");
+        assert_eq!(ModDest::variants()[15], "Osc1 Pitch");
+        assert_eq!(ModDest::variants()[16], "Osc1 Fine");
+        assert_eq!(ModDest::variants()[17], "Filter Drive");
+        assert_eq!(ModDest::variants()[18], "Filter Keytrack");
+        assert_eq!(ModDest::variants()[19], "Ring Mod");
     }
 
     #[test]
@@ -1271,7 +1466,12 @@ mod tests {
         assert_eq!(ModDest::to_index(ModDest::NoiseLevel), 12);
         assert_eq!(ModDest::to_index(ModDest::Detune), 13);
         assert_eq!(ModDest::to_index(ModDest::FilterEnv), 14);
-        assert_eq!(ModDest::variants().len(), 15);
+        assert_eq!(ModDest::to_index(ModDest::Osc1Pitch), 15);
+        assert_eq!(ModDest::to_index(ModDest::Osc1Fine), 16);
+        assert_eq!(ModDest::to_index(ModDest::FilterDrive), 17);
+        assert_eq!(ModDest::to_index(ModDest::FilterKeytrack), 18);
+        assert_eq!(ModDest::to_index(ModDest::RingMod), 19);
+        assert_eq!(ModDest::variants().len(), 20);
     }
 
     #[test]
@@ -1305,6 +1505,12 @@ mod tests {
             ArpPattern::variants(),
             ["Up", "Down", "UpDown", "Random", "As Played"]
         );
+        assert_eq!(
+            ArpChord::variants(),
+            ["Off", "Octave", "Fifth", "Minor", "Major"]
+        );
+        assert_eq!(ArpChord::to_index(ArpChord::Off), 0);
+        assert_eq!(ArpChord::to_index(ArpChord::Major), 4);
         assert_eq!(Character::variants(), ["Silk", "Grit"]);
         assert_eq!(FilterSlope::variants(), ["12 dB", "24 dB OLD", "24 dB"]);
         // Old host states address the old ladder by its index.

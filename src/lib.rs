@@ -18,11 +18,13 @@ pub mod params;
 pub mod patch;
 
 use dsp::adaa::{AdaaTanh, AdaaTanhAsym};
-use dsp::adsr::EnvCoeffs;
-use dsp::arp::Arp;
+use dsp::adsr::{EnvCoeffs, curve_exponent};
+use dsp::arp::{Arp, MAX_CHORD_NOTES};
 use dsp::fx::{Fx, FxParams};
+use dsp::highpass::GlobalHighpass;
 use dsp::lfo::Lfo;
 use dsp::mod_feedback::{ModFeedback, ModFeedbackValues};
+use dsp::vca::apply_width_pan;
 use dsp::voice::{CONTROL_RATE, DcBlocker, OscSettings, Voice, VoiceSettings};
 use editor::{SushiEditor, WINDOW_HEIGHT, WINDOW_WIDTH};
 use params::{Character, ModDest, ModSource, NoteDiv, PolyMode};
@@ -182,6 +184,10 @@ pub struct Sushi {
     /// The effect chain. All of its buffers are allocated in `activate`.
     fx: Fx,
 
+    /// The global highpass on the summed voices. Its default cutoff is an
+    /// exact bypass, so old patches keep their sound.
+    hpf: GlobalHighpass,
+
     /// The arpeggiator.
     arp: Arp,
     /// The number of arpeggiator triggers. The GUI uses it to flash a light.
@@ -195,8 +201,10 @@ pub struct Sushi {
     /// The last values of the global modulation sources. The GUI uses them to
     /// draw the live markers of the modulation matrix.
     mod_feedback: Arc<ModFeedback>,
-    /// The voice that the arpeggiator is currently playing.
-    arp_voice_id: Option<i32>,
+    /// The voices of the arpeggiator chord that is currently playing. A fixed
+    /// array keeps the audio thread free of allocations, and every entry is
+    /// released together so a chord can never leave a stuck voice behind.
+    arp_voice_ids: [Option<i32>; MAX_CHORD_NOTES],
     /// The ID of the next voice of the arpeggiator.
     next_arp_voice_id: i32,
     /// Whether the arpeggiator was enabled in the last block.
@@ -256,13 +264,14 @@ impl Default for Sushi {
             lfo1_sync_rate: 2.0,
             lfo2_sync_rate: 2.0,
             fx: Fx::default(),
+            hpf: GlobalHighpass::new(),
 
             arp: Arp::new(),
             arp_led: Arc::new(AtomicUsize::new(0)),
             arp_position: Arc::new(AtomicUsize::new(0)),
             voice_count: Arc::new(AtomicUsize::new(0)),
             mod_feedback: Arc::new(ModFeedback::default()),
-            arp_voice_id: None,
+            arp_voice_ids: [None; MAX_CHORD_NOTES],
             next_arp_voice_id: FIRST_ARP_VOICE_ID,
             arp_was_on: false,
             arp_was_playing: false,
@@ -333,6 +342,13 @@ impl Sushi {
             sample_rate,
         );
 
+        // The envelope curves are converted to an exponent here, once per
+        // block. Zero is exactly one, so the default envelope stays fully
+        // linear. The curve is applied to the final envelope value in the
+        // voice, never to its time coefficients.
+        let amp_env_curve = curve_exponent(params.ae_curve.smoothed.next_step(steps));
+        let filter_env_curve = curve_exponent(params.fe_curve.smoothed.next_step(steps));
+
         // The glide is a one-pole filter: the bigger the time, the slower the
         // pitch moves towards the target. The coefficient is applied at the
         // control rate.
@@ -362,8 +378,12 @@ impl Sushi {
             filter_env_octaves: params.filter_env_amount.value() * 5.0,
             filter_keytrack: params.filter_keytrack.value(),
             filter_drive: params.filter_drive.value(),
+            ring_mod: params.ring_mod.value(),
+            osc_phase_reset: params.osc_phase_reset.value(),
             amp_env,
             filter_env,
+            amp_env_curve,
+            filter_env_curve,
             unison: params
                 .unison
                 .value()
@@ -397,6 +417,9 @@ impl Sushi {
     fn fx_params(&self) -> FxParams {
         let params = &self.params;
         FxParams {
+            order: params.fx_order.value(),
+            bypass_mask: params.fx_bypass_mask.value(),
+            global_mix: params.fx_global_mix.value(),
             drive_amount: params.drive_amount.value(),
             drive_mix: params.drive_mix.value(),
             phaser_rate: params.phaser_rate.value(),
@@ -441,24 +464,22 @@ impl Sushi {
         self.mod_feedback.clone()
     }
 
-    /// Puts the voice of the arpeggiator into its release stage.
-    fn release_arp_voice(&mut self) {
-        let Some(voice_id) = self.arp_voice_id.take() else {
+    /// Puts every voice of the arpeggiator chord into its release stage.
+    fn release_arp_voices(&mut self) {
+        let voice_ids = self.arp_voice_ids;
+        if voice_ids.iter().all(Option::is_none) {
             return;
-        };
+        }
+        self.arp_voice_ids = [None; MAX_CHORD_NOTES];
 
-        for slot in self.voices.iter_mut() {
-            let matches = slot
-                .as_ref()
-                .is_some_and(|voice| voice.voice_id() == voice_id);
-            if !matches {
-                continue;
-            }
-
-            if let Some(voice) = slot.as_mut() {
+        for voice in self.voices.iter_mut().flatten() {
+            if voice_ids
+                .iter()
+                .flatten()
+                .any(|voice_id| *voice_id == voice.voice_id())
+            {
                 voice.release();
             }
-            return;
         }
     }
 
@@ -491,8 +512,32 @@ impl Sushi {
         }
     }
 
-    /// Starts a new voice for the arpeggiator. The voice that the arpeggiator
-    /// was playing before is released.
+    /// Starts every note of an arpeggiator step.
+    ///
+    /// A new pattern step releases the previous chord first. A strummed note
+    /// that becomes due later only adds its own voice, because it belongs to
+    /// the same step and must not release the base note.
+    fn start_arp_notes(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        sample_offset: u32,
+        notes: &[Option<(u8, f32)>],
+        new_step: bool,
+        settings: &VoiceSettings,
+    ) {
+        if new_step {
+            // An arpeggiated phrase retriggers on its first note just like a
+            // played phrase does.
+            self.retrigger_lfos_if_silent();
+            self.release_arp_voices();
+        }
+
+        for (key, velocity) in notes.iter().flatten() {
+            self.start_arp_voice(context, sample_offset, *key, *velocity, settings);
+        }
+    }
+
+    /// Starts one arpeggiator voice and remembers its ID for the chord release.
     fn start_arp_voice(
         &mut self,
         context: &mut impl ProcessContext<Self>,
@@ -501,11 +546,14 @@ impl Sushi {
         velocity: f32,
         settings: &VoiceSettings,
     ) {
-        // An arpeggiated phrase retriggers on its first note just like a
-        // played phrase does.
-        self.retrigger_lfos_if_silent();
-        self.release_arp_voice();
         self.free_finished_voices(context, sample_offset);
+
+        // Do not start a note that cannot be released because all four chord
+        // slots are already taken. This cannot happen with the four-note
+        // limit, but keeps the audio path safe if a future chord is larger.
+        let Some(chord_slot) = self.arp_voice_ids.iter().position(Option::is_none) else {
+            return;
+        };
 
         // The voice of the arpeggiator is not part of the limit of the voices,
         // so it always uses a free slot.
@@ -517,8 +565,7 @@ impl Sushi {
 
         let voice_id = self.next_arp_voice_id;
         self.next_arp_voice_id = self.next_arp_voice_id.wrapping_add(1);
-        self.arp_voice_id = Some(voice_id);
-        self.arp_led.fetch_add(1, Ordering::Relaxed);
+        self.arp_voice_ids[chord_slot] = Some(voice_id);
 
         let internal_voice_id = self.next_internal_voice_id;
         self.next_internal_voice_id = self.next_internal_voice_id.wrapping_add(1);
@@ -965,9 +1012,13 @@ impl Sushi {
     /// the host have to be released when it is switched on. Otherwise they
     /// would stay stuck forever.
     fn release_normal_voices(&mut self) {
-        let arp_voice_id = self.arp_voice_id;
+        let arp_voice_ids = self.arp_voice_ids;
         for voice in self.voices.iter_mut().flatten() {
-            if arp_voice_id == Some(voice.voice_id()) {
+            let is_arp = arp_voice_ids
+                .iter()
+                .flatten()
+                .any(|voice_id| *voice_id == voice.voice_id());
+            if is_arp {
                 continue;
             }
             voice.release();
@@ -978,7 +1029,7 @@ impl Sushi {
     /// instead of killed, so their envelopes close without a click.
     fn all_notes_off(&mut self) {
         self.release_normal_voices();
-        self.release_arp_voice();
+        self.release_arp_voices();
         self.clear_mono_notes();
         self.arp.reset();
         self.sustain = false;
@@ -1162,6 +1213,7 @@ impl Plugin for Sushi {
         // The effect chain allocates all of its delay lines here, so that the
         // audio thread never has to allocate.
         self.fx = Fx::new(self.sample_rate);
+        self.hpf.reset();
         self.arp.reset();
         self.update_voice_limit();
         true
@@ -1177,8 +1229,9 @@ impl Plugin for Sushi {
         self.lfo1_sync_rate = 2.0;
         self.lfo2_sync_rate = 2.0;
         self.fx.reset();
+        self.hpf.reset();
         self.arp.reset();
-        self.arp_voice_id = None;
+        self.arp_voice_ids = [None; MAX_CHORD_NOTES];
         self.arp_was_on = false;
         self.arp_was_playing = false;
         self.arp_last_position = None;
@@ -1284,6 +1337,19 @@ impl Plugin for Sushi {
         let mut fx_params = self.fx_params();
         fx_params.legacy = legacy;
 
+        // The global highpass sits on the summed voices, before the character
+        // saturator. Its default 20 Hz cutoff is an exact bypass.
+        let hpf_cutoff = self.params.hpf_cutoff.smoothed.next_step(steps);
+        self.hpf.set_cutoff(hpf_cutoff, sample_rate);
+
+        // The LFO phase offsets and curves are block-rate controls. The
+        // offsets move only the read position; the phase advance itself is
+        // unchanged.
+        let lfo1_phase = self.params.lfo1_phase.value();
+        let lfo2_phase = self.params.lfo2_phase.value();
+        let lfo1_curve = self.params.lfo1_curve.value();
+        let lfo2_curve = self.params.lfo2_curve.value();
+
         // The brightness macro scales the cutoff and the resonance.
         let cutoff_multiplier = 2f32.powf((bright - 0.5) * 4.0);
         let resonance_offset = (bright - 0.5) * 0.2;
@@ -1315,6 +1381,9 @@ impl Plugin for Sushi {
         let arp_swing = self.params.arp_swing.value();
         let arp_length = self.params.arp_length.value().clamp(1, 16) as usize;
         let arp_ratchet = self.params.arp_ratchet.value().clamp(1, 4) as usize;
+        let arp_chord = self.params.arp_chord.value();
+        let arp_strum = self.params.arp_strum.value();
+        let arp_probability = self.params.arp_probability.value();
 
         // A change of the poly mode invalidates the held keys of the old
         // mode. The mode is also read here so the note off handling and the
@@ -1336,7 +1405,7 @@ impl Plugin for Sushi {
                 self.clear_mono_notes();
             } else {
                 // The arpeggiator was switched off, so its voice goes away.
-                self.release_arp_voice();
+                self.release_arp_voices();
                 self.arp.reset();
                 self.clear_mono_notes();
             }
@@ -1360,7 +1429,7 @@ impl Plugin for Sushi {
             };
 
             if !self.arp_was_playing || jumped {
-                self.release_arp_voice();
+                self.release_arp_voices();
                 if let Some(position) = transport_position {
                     self.arp.resync(position, arp_division);
                 } else {
@@ -1371,7 +1440,7 @@ impl Plugin for Sushi {
             self.arp_last_position = transport_position.map(|position| position + block_beats);
         } else {
             if self.arp_was_playing {
-                self.release_arp_voice();
+                self.release_arp_voices();
                 self.arp.pause();
             }
             self.arp_was_playing = false;
@@ -1475,7 +1544,7 @@ impl Plugin for Sushi {
                         key,
                     } => {
                         if arp_on {
-                            self.release_arp_voice();
+                            self.release_arp_voices();
                             self.arp.reset();
                         } else {
                             self.choke_voices(context, timing, voice_id, channel, key);
@@ -1513,8 +1582,11 @@ impl Plugin for Sushi {
             settings.noise_level = self.params.noise_level.smoothed.next();
             settings.fm_amount = self.params.fm_amount.smoothed.next();
             settings.filter_drive = self.params.filter_drive.smoothed.next();
+            settings.ring_mod = self.params.ring_mod.smoothed.next();
             settings.detune_cents = self.params.detune.smoothed.next();
             settings.spread = self.params.spread.smoothed.next();
+            let vca_width = self.params.vca_width.smoothed.next();
+            let vca_pan = self.params.vca_pan.smoothed.next();
             fx_params.drive_amount = self.params.drive_amount.smoothed.next();
             fx_params.drive_mix = self.params.drive_mix.smoothed.next();
             fx_params.phaser_rate = self.params.phaser_rate.smoothed.next();
@@ -1535,9 +1607,10 @@ impl Plugin for Sushi {
             fx_params.delay_mix = fx_params.delay_mix.clamp(0.0, 1.0);
             fx_params.reverb_mix = fx_params.reverb_mix.clamp(0.0, 1.0);
 
-            // The arpeggiator plays the next note of its pattern.
+            // The arpeggiator plays the next note, chord or strummed note of
+            // its pattern.
             if arp_running {
-                let tick = self.arp.tick(
+                let tick = self.arp.tick_extended(
                     beats_per_sample,
                     arp_division,
                     arp_gate,
@@ -1546,14 +1619,32 @@ impl Plugin for Sushi {
                     arp_swing,
                     arp_length,
                     arp_ratchet,
+                    arp_chord,
+                    arp_strum,
+                    arp_probability,
+                    sample_rate,
                 );
                 if tick.release {
-                    self.release_arp_voice();
+                    self.release_arp_voices();
                 }
-                if let Some((key, velocity)) = tick.trigger {
+
+                // The LED and the pattern position follow the base step, not
+                // every note of a strummed chord.
+                let new_step = tick.trigger.is_some();
+                if new_step {
                     self.arp_position
                         .store(self.arp.position() % 16, Ordering::Relaxed);
-                    self.start_arp_voice(context, sample_idx as u32, key, velocity, &settings);
+                    self.arp_led.fetch_add(1, Ordering::Relaxed);
+                }
+
+                if tick.chord_len > 0 {
+                    self.start_arp_notes(
+                        context,
+                        sample_idx as u32,
+                        &tick.chord[..tick.chord_len],
+                        new_step,
+                        &settings,
+                    );
                 }
             }
 
@@ -1574,12 +1665,20 @@ impl Plugin for Sushi {
             } else {
                 lfo2_free_rate
             };
-            let lfo1 = self
-                .lfo1
-                .next(lfo1_frequency, sample_rate, self.params.lfo1_wave.value());
-            let lfo2 = self
-                .lfo2
-                .next(lfo2_frequency, sample_rate, self.params.lfo2_wave.value());
+            let lfo1 = self.lfo1.next_shaped(
+                lfo1_frequency,
+                sample_rate,
+                self.params.lfo1_wave.value(),
+                lfo1_phase,
+                lfo1_curve,
+            );
+            let lfo2 = self.lfo2.next_shaped(
+                lfo2_frequency,
+                sample_rate,
+                self.params.lfo2_wave.value(),
+                lfo2_phase,
+                lfo2_curve,
+            );
             last_lfo1 = lfo1;
             last_lfo2 = lfo2;
 
@@ -1624,6 +1723,10 @@ impl Plugin for Sushi {
                 }
             }
 
+            // The global highpass on the summed voices, before the character
+            // saturator. It is an exact bypass at its default cutoff.
+            let (left, right) = self.hpf.process(left, right);
+
             // The character saturator, its DC blocker, the effect chain and
             // the tone tilt. Only the asymmetric grit character needs the DC
             // blocker; the symmetric silk character keeps its old low end.
@@ -1643,12 +1746,15 @@ impl Plugin for Sushi {
             let tone = self.params.tone.smoothed.next();
             let low_gain = 10f32.powf(tone * 6.0 / 20.0);
             let high_gain = 10f32.powf(-tone * 6.0 / 20.0);
-            let (mut left, mut right) =
-                self.tone_tilt(left, right, low_gain, high_gain, tilt_coefficient);
+            let (left, right) = self.tone_tilt(left, right, low_gain, high_gain, tilt_coefficient);
+
+            // The global VCA width and pan, after the tone tilt and before
+            // the master volume. Its neutral setting is bit-exact.
+            let (left, right) = apply_width_pan(left, right, vca_width, vca_pan);
 
             // The master volume.
-            left *= volume;
-            right *= volume;
+            let left = left * volume;
+            let right = right * volume;
 
             // Gentle saturation keeps stacked voices from clipping harshly.
             let left = if legacy {
@@ -1703,14 +1809,9 @@ impl Plugin for Sushi {
         let voices_active = self.voices.iter().any(Option::is_some)
             || self.fading_voices.iter().any(Option::is_some);
         let arp_active = arp_running && (self.arp.has_notes() || self.arp.is_sounding());
-        let fx_active = fx_params.drive_mix > 1e-4
-            || fx_params.phaser_mix > 1e-4
-            || fx_params.chorus_mix > 1e-4
-            || fx_params.delay_mix > 1e-4
-            || fx_params.reverb_mix > 1e-4
-            || fx_params.eq_low.abs() > 1e-4
-            || fx_params.eq_mid.abs() > 1e-4
-            || fx_params.eq_high.abs() > 1e-4;
+        // A masked stage, a silent effect and a zero global mix neither
+        // produce nor keep a tail alive.
+        let fx_active = fx_params.is_active();
 
         if voices_active || arp_active {
             ProcessStatus::KeepAlive
@@ -1749,7 +1850,7 @@ nice_export_vst3!(Sushi);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{LfoTarget, LfoWaveform, NoteDiv};
+    use crate::params::{ArpChord, LfoTarget, LfoWaveform, NoteDiv};
     use crate::patch::test_support::setter;
 
     const SAMPLE_RATE: f32 = 48_000.0;
@@ -2223,10 +2324,85 @@ mod tests {
             1.0,
             &settings,
         ));
+        sushi.voices[1] = Some(Voice::new(
+            2,
+            Channel::Number(0),
+            Key::Number(64),
+            1,
+            1.0,
+            &settings,
+        ));
+        sushi.arp_voice_ids[0] = Some(2);
         assert!(!sushi.voices[0].as_ref().is_some_and(Voice::is_releasing));
 
         sushi.release_normal_voices();
         assert!(sushi.voices[0].as_ref().is_some_and(Voice::is_releasing));
+        assert!(
+            !sushi.voices[1].as_ref().is_some_and(Voice::is_releasing),
+            "the arpeggiator voice was released with the normal voices"
+        );
+    }
+
+    #[test]
+    fn an_arp_chord_starts_and_releases_all_of_its_voices() {
+        let mut sushi = Sushi::default();
+        let settings = VoiceSettings::default();
+        let mut context = TestContext::new();
+        let chord = [
+            Some((60, 1.0)),
+            Some((64, 0.8)),
+            Some((67, 0.6)),
+            Some((72, 0.4)),
+        ];
+
+        sushi.start_arp_notes(&mut context, 0, &chord, true, &settings);
+
+        assert_eq!(sushi.arp_voice_ids.iter().flatten().count(), 4);
+        assert_eq!(sushi.voices.iter().flatten().count(), 4);
+        assert!(
+            sushi
+                .voices
+                .iter()
+                .flatten()
+                .all(|voice| !voice.is_releasing())
+        );
+
+        sushi.release_arp_voices();
+
+        assert!(sushi.arp_voice_ids.iter().all(Option::is_none));
+        assert!(sushi.voices.iter().flatten().all(Voice::is_releasing));
+    }
+
+    #[test]
+    fn a_strummed_note_does_not_release_the_base_note() {
+        let mut sushi = Sushi::default();
+        let settings = VoiceSettings::default();
+        let mut context = TestContext::new();
+
+        sushi.start_arp_notes(&mut context, 0, &[Some((60, 1.0))], true, &settings);
+        let base_id = sushi.arp_voice_ids[0];
+        assert!(base_id.is_some());
+
+        // The delayed octave belongs to the same step, so it is added without
+        // releasing the base note.
+        sushi.start_arp_notes(&mut context, 480, &[Some((72, 1.0))], false, &settings);
+
+        assert_eq!(sushi.arp_voice_ids.iter().flatten().count(), 2);
+        assert!(
+            sushi
+                .voices
+                .iter()
+                .flatten()
+                .all(|voice| !voice.is_releasing()),
+            "the base note was released by its strummed octave"
+        );
+        assert!(
+            sushi
+                .arp_voice_ids
+                .iter()
+                .flatten()
+                .any(|voice_id| *voice_id == base_id.unwrap())
+        );
     }
 
     #[test]
@@ -2250,11 +2426,27 @@ mod tests {
             1.0,
             &settings,
         ));
-        sushi.arp_voice_id = Some(2);
+        sushi.arp_voice_ids[0] = Some(2);
         sushi.sustain = true;
         sushi.arp.note_on(60, 0.5, false);
         sushi.arp.note_on(64, 0.5, false);
+        // Leave a strummed chord note pending as well.
+        sushi.arp.tick_extended(
+            120.0 / (60.0 * SAMPLE_RATE as f64),
+            0.25,
+            100.0,
+            crate::params::ArpPattern::Up,
+            1,
+            0.0,
+            16,
+            1,
+            ArpChord::Octave,
+            80.0,
+            1.0,
+            SAMPLE_RATE,
+        );
         assert!(sushi.arp.has_notes());
+        assert!(sushi.arp.has_pending_notes());
         sushi.push_mono_note(MonoNote {
             voice_id: VoiceID::Wildcard,
             channel: Channel::Number(0),
@@ -2265,10 +2457,41 @@ mod tests {
         sushi.all_notes_off();
 
         assert!(sushi.voices.iter().flatten().all(Voice::is_releasing));
-        assert_eq!(sushi.arp_voice_id, None);
+        assert!(sushi.arp_voice_ids.iter().all(Option::is_none));
         assert!(!sushi.arp.has_notes());
+        assert!(!sushi.arp.has_pending_notes());
+        assert!(!sushi.arp.is_sounding());
         assert_eq!(sushi.mono_len, 0);
         assert!(!sushi.sustain);
+    }
+
+    #[test]
+    fn resetting_the_plugin_clears_the_arp_chord_and_the_strum() {
+        let mut sushi = Sushi::default();
+        sushi.arp.note_on(60, 1.0, false);
+        sushi.arp.tick_extended(
+            120.0 / (60.0 * SAMPLE_RATE as f64),
+            0.25,
+            100.0,
+            crate::params::ArpPattern::Up,
+            1,
+            0.0,
+            16,
+            1,
+            ArpChord::Major,
+            80.0,
+            1.0,
+            SAMPLE_RATE,
+        );
+        sushi.arp_voice_ids[0] = Some(FIRST_ARP_VOICE_ID);
+        assert!(sushi.arp.has_pending_notes());
+
+        sushi.reset();
+
+        assert!(sushi.arp_voice_ids.iter().all(Option::is_none));
+        assert!(!sushi.arp.has_notes());
+        assert!(!sushi.arp.has_pending_notes());
+        assert!(!sushi.arp.is_sounding());
     }
 
     #[test]
@@ -2379,6 +2602,52 @@ mod tests {
         assert!((settings.macro1 - 0.2).abs() < 0.001);
         assert!((settings.macro2 - 0.4).abs() < 0.001);
         assert!((settings.macro3 - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_dsp_batch_parameters_reach_the_voice_settings() {
+        let params = SushiParams::default();
+        let setter = setter();
+        setter.set_parameter(&params.ring_mod, 0.6);
+        setter.set_parameter(&params.osc_phase_reset, true);
+        setter.set_parameter(&params.ae_curve, -0.5);
+        setter.set_parameter(&params.fe_curve, 0.5);
+
+        let sushi = Sushi {
+            params: Arc::new(params),
+            ..Default::default()
+        };
+        let settings = sushi.voice_settings(64, Macros::default());
+
+        assert!((settings.ring_mod - 0.6).abs() < 1e-6);
+        assert!(settings.osc_phase_reset);
+        assert!((settings.amp_env_curve - curve_exponent(-0.5)).abs() < 1e-6);
+        assert!((settings.filter_env_curve - curve_exponent(0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_fx_chain_parameters_reach_the_effect_chain() {
+        let params = Arc::new(SushiParams::default());
+        let setter = setter();
+        setter.set_parameter(&params.fx_order, 4);
+        setter.set_parameter(&params.fx_bypass_mask, 9);
+        setter.set_parameter(&params.fx_global_mix, 0.25);
+
+        let sushi = Sushi {
+            params,
+            ..Default::default()
+        };
+        let fx_params = sushi.fx_params();
+
+        assert_eq!(fx_params.order, 4);
+        assert_eq!(fx_params.bypass_mask, 9);
+        assert!((fx_params.global_mix - 0.25).abs() < 1e-6);
+
+        // The defaults keep the old chain and the old dry/wet behavior.
+        let defaults = Sushi::default().fx_params();
+        assert_eq!(defaults.order, 0);
+        assert_eq!(defaults.bypass_mask, 0);
+        assert_eq!(defaults.global_mix, 1.0);
     }
 
     #[test]

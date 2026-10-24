@@ -19,6 +19,34 @@ impl Default for EnvCoeffs {
     }
 }
 
+/// Converts the bipolar `-1..1` envelope curve parameter into the exponent of
+/// the final envelope shaper.
+///
+/// Zero is exactly one, which makes the shaper a plain pass-through. A
+/// negative curve gives a shallower exponent (more of the envelope is spent
+/// near the top), a positive curve gives a steeper one (the envelope sits
+/// lower for longer). The exponent is computed once per block, not once per
+/// sample.
+pub fn curve_exponent(curve: f32) -> f32 {
+    if curve == 0.0 {
+        1.0
+    } else {
+        2f32.powf(curve.clamp(-1.0, 1.0))
+    }
+}
+
+/// Shapes a finished envelope value with an exponent from
+/// [`curve_exponent`]. The result stays inside `0..1`; an exponent of exactly
+/// one returns the value untouched, so the default curve is bit-exact.
+#[inline]
+pub fn shape_envelope(value: f32, exponent: f32) -> f32 {
+    if exponent == 1.0 {
+        value
+    } else {
+        value.clamp(0.0, 1.0).powf(exponent)
+    }
+}
+
 impl EnvCoeffs {
     pub fn new(
         attack_ms: f32,
@@ -261,5 +289,47 @@ mod tests {
         }
         let level = env.next(&coeffs);
         assert!(level < 0.01, "the release was at {level} after 300 ms");
+    }
+
+    #[test]
+    fn a_zero_curve_is_the_old_linear_envelope() {
+        let exponent = curve_exponent(0.0);
+        assert_eq!(exponent, 1.0);
+
+        for value in [0.0, 1e-7, 0.1, 0.25, 0.5, 0.75, 0.999_999, 1.0] {
+            assert_eq!(
+                shape_envelope(value, exponent).to_bits(),
+                value.to_bits(),
+                "the neutral curve changed {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_curve_shapes_the_final_value_without_leaving_its_range() {
+        let shallow = shape_envelope(0.25, curve_exponent(-1.0));
+        let linear = shape_envelope(0.25, curve_exponent(0.0));
+        let steep = shape_envelope(0.25, curve_exponent(1.0));
+
+        assert!(shallow > linear, "the shallow curve did not lift 0.25");
+        assert!(steep < linear, "the steep curve did not lower 0.25");
+        assert!((shallow - 0.5).abs() < 1e-6);
+        assert!((steep - 0.0625).abs() < 1e-6);
+
+        // The endpoints stay fixed and the result is stable over the whole
+        // range of the curve.
+        for curve in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+            let exponent = curve_exponent(curve);
+            assert_eq!(shape_envelope(0.0, exponent), 0.0);
+            assert!((shape_envelope(1.0, exponent) - 1.0).abs() < 1e-6);
+            for step in 0..=100 {
+                let value = step as f32 / 100.0;
+                let shaped = shape_envelope(value, exponent);
+                assert!(
+                    (0.0..=1.0).contains(&shaped),
+                    "the curve {curve} produced {shaped} from {value}"
+                );
+            }
+        }
     }
 }

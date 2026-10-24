@@ -4,7 +4,7 @@ use nice_plug::midi::{Channel, Key};
 use nice_plug::util;
 use std::f32::consts::PI;
 
-use super::adsr::{Adsr, EnvCoeffs};
+use super::adsr::{Adsr, EnvCoeffs, shape_envelope};
 use super::filter::{Ladder, LadderModern, Svf};
 use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
@@ -153,8 +153,19 @@ pub struct VoiceSettings {
     pub filter_keytrack: f32,
     /// `0..1`.
     pub filter_drive: f32,
+    /// The level of the ring modulator, `0..1`. It is the product of the two
+    /// oscillator outputs, mixed into the voice signal.
+    pub ring_mod: f32,
+    /// Whether a retrigger puts the oscillator phases at zero instead of a
+    /// random starting phase.
+    pub osc_phase_reset: bool,
     pub amp_env: EnvCoeffs,
     pub filter_env: EnvCoeffs,
+    /// The exponent of the final amplitude envelope shaper. One is the old
+    /// linear envelope.
+    pub amp_env_curve: f32,
+    /// The exponent of the final filter envelope shaper.
+    pub filter_env_curve: f32,
     /// `1..=4`.
     pub unison: usize,
     pub detune_cents: f32,
@@ -216,8 +227,12 @@ impl Default for VoiceSettings {
             filter_env_octaves: 2.0,
             filter_keytrack: 0.3,
             filter_drive: 0.0,
+            ring_mod: 0.0,
+            osc_phase_reset: false,
             amp_env: EnvCoeffs::default(),
             filter_env: EnvCoeffs::default(),
+            amp_env_curve: 1.0,
+            filter_env_curve: 1.0,
             unison: 1,
             detune_cents: 12.0,
             spread: 0.5,
@@ -545,7 +560,11 @@ impl Voice {
             current_resonance: settings.resonance.clamp(0.0, 1.0),
         };
 
-        voice.reset_osc_phases();
+        if settings.osc_phase_reset {
+            voice.reset_osc_phases_fixed();
+        } else {
+            voice.reset_osc_phases();
+        }
         voice.update_pan_gains(settings.spread);
         voice
     }
@@ -624,6 +643,11 @@ impl Voice {
             // A retriggered note gets a fresh Random value. A legato or gliding
             // note keeps the value of the note that is already sounding.
             self.random_value = next_random(&mut self.random_rng);
+            // The phase reset is an explicit choice. With the switch off the
+            // phases keep running exactly as they always did.
+            if settings.osc_phase_reset {
+                self.reset_osc_phases_fixed();
+            }
         }
 
         let unison = settings.unison.clamp(1, MAX_UNISON);
@@ -697,8 +721,11 @@ impl Voice {
         // note that is already sounding.
         self.amp_env.set_legacy(settings.legacy);
         self.filter_env.set_legacy(settings.legacy);
-        let amp = self.amp_env.next(&settings.amp_env);
-        self.filter_env_level = self.filter_env.next(&settings.filter_env);
+        let amp = shape_envelope(self.amp_env.next(&settings.amp_env), settings.amp_env_curve);
+        self.filter_env_level = shape_envelope(
+            self.filter_env.next(&settings.filter_env),
+            settings.filter_env_curve,
+        );
 
         // The control rate. The pitch, the filter and the modulation matrix
         // are updated every eighth sample only, which saves a lot of CPU
@@ -792,6 +819,7 @@ impl Voice {
             &self.pan_right,
             pulse_width_offset + self.modulation.pulse_width1,
             pulse_width_offset + self.modulation.pulse_width2,
+            (settings.ring_mod + self.modulation.ring_mod).clamp(0.0, 1.0),
         );
 
         // The sub oscillator is one octave below VCO 1 and stays in the
@@ -819,11 +847,15 @@ impl Voice {
         // input of the filter is turned down a little.
         let attenuation = 1.0 / (1.0 + 0.35 * resonance);
 
-        // The harsh character adds a bit of drive to the filter.
+        // The harsh character adds a bit of drive to the filter. `Drive` is
+        // the original destination; `Filter Drive` is the appended one and
+        // adds on top of it, so old patches keep the exact old expression.
         let drive = if settings.character_grit {
-            (settings.filter_drive + 0.12 + self.modulation.drive).clamp(0.0, 1.0)
+            (settings.filter_drive + 0.12 + self.modulation.drive + self.modulation.filter_drive)
+                .clamp(0.0, 1.0)
         } else {
-            (settings.filter_drive + self.modulation.drive).clamp(0.0, 1.0)
+            (settings.filter_drive + self.modulation.drive + self.modulation.filter_drive)
+                .clamp(0.0, 1.0)
         };
 
         // The legacy flavor adds a tiny asymmetric quadratic term just before
@@ -987,8 +1019,9 @@ impl Voice {
         // The matrix offsets the amount of the filter envelope, before the
         // envelope level scales it.
         let filter_env_octaves = settings.filter_env_octaves + self.modulation.filter_env_octaves;
+        let keytrack = settings.filter_keytrack + self.modulation.filter_keytrack;
         let mut octaves = filter_env_octaves * self.filter_env_level
-            + settings.filter_keytrack * (key - 60.0) / 12.0
+            + keytrack * (key - 60.0) / 12.0
             + settings.velocity_amount * self.velocity_raw * 1.5
             + filter_octaves
             + drift_filter;
@@ -1029,7 +1062,10 @@ impl Voice {
         if unison != self.unison {
             self.unison = unison;
         }
-        let frequency1 = base_frequency * 2f32.powf(settings.osc1.semitones / 12.0);
+        let osc1_semitones = settings.osc1.semitones
+            + self.modulation.osc1_pitch_semitones
+            + self.modulation.osc1_fine_semitones;
+        let frequency1 = base_frequency * 2f32.powf(osc1_semitones / 12.0);
         let osc2_semitones = settings.osc2.semitones
             + self.modulation.osc2_pitch_semitones
             + self.modulation.osc2_fine_semitones;
@@ -1088,6 +1124,16 @@ impl Voice {
             self.osc1_bank[index].set_phase(phase1);
             self.osc2_bank[index].set_phase(phase2);
         }
+    }
+
+    /// Puts every oscillator at a fixed phase of zero. This is only used when
+    /// the phase reset switch is on; the random stream is then left untouched.
+    fn reset_osc_phases_fixed(&mut self) {
+        for index in 0..MAX_UNISON {
+            self.osc1_bank[index].set_phase(0.0);
+            self.osc2_bank[index].set_phase(0.0);
+        }
+        self.sub_osc.set_phase(0.0);
     }
 
     /// Moves the drift towards its new target. Every time the phase of the
@@ -1188,6 +1234,7 @@ fn render_oscillators(
     pan_right: &[f32; MAX_UNISON],
     pulse_width_offset1: f32,
     pulse_width_offset2: f32,
+    ring_mod: f32,
 ) {
     let pulse_width1 = (settings.osc1.pulse_width + pulse_width_offset1).clamp(0.05, 0.95);
     let pulse_width2 = (settings.osc2.pulse_width + pulse_width_offset2).clamp(0.05, 0.95);
@@ -1222,7 +1269,15 @@ fn render_oscillators(
                 phase_offset,
             );
 
-            sample += (slave * settings.osc1.level + master * settings.osc2.level) * step_gain;
+            let mixed = slave * settings.osc1.level + master * settings.osc2.level;
+            // The ring modulator is the simple product of the two oscillator
+            // outputs. At zero the old expression is kept untouched.
+            let mixed = if ring_mod > 0.0 {
+                mixed + ring_mod * slave * master
+            } else {
+                mixed
+            };
+            sample += mixed * step_gain;
         }
 
         let sample = sample * unison_gain;
@@ -2237,6 +2292,285 @@ mod tests {
         }
 
         assert!(peak < 25.0, "the filter gained too much energy ({peak})");
+    }
+
+    #[test]
+    fn the_ring_mod_mixes_the_oscillator_outputs() {
+        fn render(settings: &VoiceSettings) -> Vec<f32> {
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, settings);
+            (0..2_048)
+                .map(|_| {
+                    voice
+                        .next_sample(settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE)
+                        .0
+                })
+                .collect()
+        }
+
+        let plain = plain_settings();
+        let ring = VoiceSettings {
+            ring_mod: 0.5,
+            ..plain_settings()
+        };
+        let difference: f32 = render(&plain)
+            .iter()
+            .zip(render(&ring))
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            difference > 1.0,
+            "the ring modulator did not change the voice: {difference}"
+        );
+
+        // The matrix destination reaches the same ring level. The first
+        // sample is already a control tick, so the two paths line up.
+        let routed = VoiceSettings {
+            ring_mod: 0.0,
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::RingMod,
+                amount: 0.5,
+            }),
+            ..plain_settings()
+        };
+        let direct = VoiceSettings {
+            ring_mod: 0.5,
+            ..plain_settings()
+        };
+        assert_eq!(render(&direct), render(&routed));
+    }
+
+    #[test]
+    fn the_phase_reset_pins_the_oscillators_and_is_off_by_default() {
+        let reset_settings = VoiceSettings {
+            osc_phase_reset: true,
+            ..plain_settings()
+        };
+        let mut first = Voice::new(
+            1,
+            Channel::Number(0),
+            Key::Number(60),
+            0,
+            1.0,
+            &reset_settings,
+        );
+        let mut second = Voice::new(
+            2,
+            Channel::Number(0),
+            Key::Number(60),
+            1,
+            1.0,
+            &reset_settings,
+        );
+
+        for index in 0..MAX_UNISON {
+            assert_eq!(first.osc1_bank[index].phase(), 0.0);
+            assert_eq!(first.osc2_bank[index].phase(), 0.0);
+            assert_eq!(second.osc1_bank[index].phase(), 0.0);
+            assert_eq!(second.osc2_bank[index].phase(), 0.0);
+        }
+
+        // Two voices with different IDs are phase locked, so their output is
+        // identical when nothing else depends on the voice ID.
+        for _ in 0..512 {
+            let (a, _) = first.next_sample(&reset_settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            let (b, _) = second.next_sample(&reset_settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+
+        // A retrigger puts the phases back to zero.
+        for _ in 0..37 {
+            first.next_sample(&reset_settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        assert_ne!(first.osc1_bank[0].phase(), 0.0);
+        first.set_key(Key::Number(64), &reset_settings, true);
+        for index in 0..MAX_UNISON {
+            assert_eq!(first.osc1_bank[index].phase(), 0.0);
+            assert_eq!(first.osc2_bank[index].phase(), 0.0);
+        }
+
+        // With the switch off the old behavior is untouched: a retrigger
+        // keeps the running random phases.
+        let normal_settings = plain_settings();
+        let mut normal = voice(&normal_settings);
+        for _ in 0..37 {
+            normal.next_sample(&normal_settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE);
+        }
+        let before: Vec<f32> = (0..MAX_UNISON)
+            .map(|index| normal.osc1_bank[index].phase())
+            .collect();
+        assert!(before.iter().any(|phase| *phase != 0.0));
+        normal.set_key(Key::Number(64), &normal_settings, true);
+        for (index, phase) in before.iter().enumerate() {
+            assert_eq!(normal.osc1_bank[index].phase(), *phase);
+        }
+    }
+
+    #[test]
+    fn the_envelope_curves_are_neutral_at_one_and_shape_the_attack() {
+        fn render(settings: &VoiceSettings, samples: usize) -> Vec<f32> {
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, settings);
+            (0..samples)
+                .map(|_| {
+                    voice
+                        .next_sample(settings, 8_000.0, 0.0, 0.0, SAMPLE_RATE)
+                        .0
+                })
+                .collect()
+        }
+
+        let plain = plain_settings();
+        let neutral = VoiceSettings {
+            amp_env_curve: 1.0,
+            filter_env_curve: 1.0,
+            ..plain_settings()
+        };
+        assert_eq!(render(&plain, 2_048), render(&neutral, 2_048));
+
+        let shallow = VoiceSettings {
+            amp_env_curve: 0.5,
+            ..plain_settings()
+        };
+        let steep = VoiceSettings {
+            amp_env_curve: 2.0,
+            ..plain_settings()
+        };
+        let shallow = rms(&render(&shallow, 512));
+        let steep = rms(&render(&steep, 512));
+        assert!(
+            shallow > steep * 1.1,
+            "the amplitude curve did not change the attack: {shallow} vs {steep}"
+        );
+
+        // The filter envelope curve is applied to its final value as well.
+        let filter_base = VoiceSettings {
+            filter_env_octaves: 4.0,
+            filter_keytrack: 0.0,
+            velocity_amount: 0.0,
+            ..plain_settings()
+        };
+        let shallow = VoiceSettings {
+            filter_env_curve: 0.5,
+            ..filter_base
+        };
+        let steep = VoiceSettings {
+            filter_env_curve: 2.0,
+            ..filter_base
+        };
+        let difference: f32 = render(&shallow, 2_048)
+            .iter()
+            .zip(render(&steep, 2_048))
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            difference > 1e-3,
+            "the filter curve did not change the sound: {difference}"
+        );
+    }
+
+    #[test]
+    fn the_matrix_offsets_the_first_oscillator() {
+        let settings = plain_settings();
+
+        let mut plain = voice(&settings);
+        let plain_frequency = measure_frequency(&mut plain, &settings);
+
+        let octave = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Osc1Pitch,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+        let mut bent = voice(&octave);
+        let bent_frequency = measure_frequency(&mut bent, &octave);
+        assert!(
+            (bent_frequency - plain_frequency * 2.0).abs() < 5.0,
+            "Osc1 Pitch played at {bent_frequency} Hz instead of {plain_frequency} Hz"
+        );
+
+        let semitone = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::Osc1Fine,
+                amount: 1.0,
+            }),
+            ..settings
+        };
+        let mut fine = voice(&semitone);
+        let fine_frequency = measure_frequency(&mut fine, &semitone);
+        let expected = util::f32_midi_key_to_freq(61.0);
+        assert!(
+            (fine_frequency - expected).abs() < 5.0,
+            "Osc1 Fine played at {fine_frequency} Hz instead of {expected} Hz"
+        );
+    }
+
+    #[test]
+    fn the_new_destinations_reach_the_filter() {
+        fn render(settings: &VoiceSettings) -> Vec<(f32, f32)> {
+            let mut voice = Voice::new(1, Channel::Number(0), Key::Number(72), 7, 1.0, settings);
+            (0..1_024)
+                .map(|_| voice.next_sample(settings, 1_000.0, 0.0, 0.0, SAMPLE_RATE))
+                .collect()
+        }
+
+        let base = VoiceSettings {
+            filter_env_octaves: 0.0,
+            filter_keytrack: 0.0,
+            velocity_amount: 0.0,
+            drift_amount: 0.0,
+            resonance: 0.35,
+            ..plain_settings()
+        };
+
+        // Filter Drive and the old Drive destination both add to the same
+        // filter drive value.
+        let direct = VoiceSettings {
+            filter_drive: 0.7,
+            ..base
+        };
+        let routed = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::FilterDrive,
+                amount: 0.7,
+            }),
+            ..base
+        };
+        assert_eq!(render(&direct), render(&routed));
+
+        // Filter Keytrack is an offset of the keytrack amount. At key 72 it
+        // opens the filter by one octave.
+        let keytrack = VoiceSettings {
+            macro1: 1.0,
+            mod_slots: matrix(ModSlot {
+                source: ModSource::Macro1,
+                dest: ModDest::FilterKeytrack,
+                amount: 1.0,
+            }),
+            ..base
+        };
+        let mut plain_voice = voice(&base);
+        let mut keytrack_voice =
+            Voice::new(1, Channel::Number(0), Key::Number(72), 7, 1.0, &keytrack);
+        plain_voice.next_sample(&base, 1_000.0, 0.0, 0.0, SAMPLE_RATE);
+        keytrack_voice.next_sample(&keytrack, 1_000.0, 0.0, 0.0, SAMPLE_RATE);
+        assert!(
+            (plain_voice.current_cutoff - 1_000.0).abs() < 1.0,
+            "the base cutoff was {}",
+            plain_voice.current_cutoff
+        );
+        assert!(
+            (keytrack_voice.current_cutoff - 2_000.0).abs() < 2.0,
+            "the keytrack route produced {} Hz instead of 2000 Hz",
+            keytrack_voice.current_cutoff
+        );
     }
 
     /// A voice with a single sine wave, so that the tests can measure what
