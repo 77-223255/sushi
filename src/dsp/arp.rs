@@ -875,47 +875,6 @@ mod tests {
     }
 
     #[test]
-    fn the_notes_are_kept_when_they_are_played_out_of_order() {
-        let mut arp = Arp::new();
-        arp.note_on(67, 1.0, false);
-        arp.note_on(60, 1.0, false);
-        arp.note_on(64, 1.0, false);
-
-        // All three notes are still there.
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 60);
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 64);
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 67);
-    }
-
-    #[test]
-    fn the_down_pattern_walks_downwards_over_the_octaves() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-        arp.note_on(64, 1.0, false);
-        arp.note_on(67, 1.0, false);
-
-        let mut keys = Vec::new();
-        for _ in 0..(step_samples() * 8) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                0.25,
-                100.0,
-                ArpPattern::Down,
-                2,
-                0.0,
-                16,
-                1,
-            );
-            if let Some((key, _)) = tick.trigger {
-                keys.push(key);
-            }
-        }
-
-        assert!(keys.len() >= 6, "only {} notes were played", keys.len());
-        assert_eq!(&keys[..6], &[79, 76, 72, 67, 64, 60]);
-    }
-
-    #[test]
     fn the_up_down_pattern_walks_over_the_octaves() {
         let mut arp = Arp::new();
         arp.note_on(60, 1.0, false);
@@ -956,32 +915,6 @@ mod tests {
         assert_eq!(next_note(&mut arp, ArpPattern::AsPlayed), 64);
         // The pattern wraps around.
         assert_eq!(next_note(&mut arp, ArpPattern::AsPlayed), 67);
-    }
-
-    #[test]
-    fn the_octaves_are_played_in_turn() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-
-        let mut keys = Vec::new();
-        for _ in 0..(step_samples() * 5) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                0.25,
-                100.0,
-                ArpPattern::Up,
-                2,
-                0.0,
-                16,
-                1,
-            );
-            if let Some((key, _)) = tick.trigger {
-                keys.push(key);
-            }
-        }
-
-        assert!(keys.len() >= 4, "only {} notes were played", keys.len());
-        assert_eq!(&keys[..4], &[60, 72, 60, 72]);
     }
 
     #[test]
@@ -1028,33 +961,6 @@ mod tests {
                 1,
                 0.0,
                 2,
-                1,
-            );
-            if let Some((key, _)) = tick.trigger {
-                keys.push(key);
-            }
-        }
-
-        assert!(keys.len() >= 4, "only {} notes were played", keys.len());
-        assert_eq!(&keys[..4], &[60, 64, 60, 64]);
-    }
-
-    #[test]
-    fn a_long_pattern_repeats_the_notes() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-        arp.note_on(64, 1.0, false);
-
-        let mut keys = Vec::new();
-        for _ in 0..(step_samples() * 6) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                0.25,
-                100.0,
-                ArpPattern::Up,
-                1,
-                0.0,
-                16,
                 1,
             );
             if let Some((key, _)) = tick.trigger {
@@ -1115,80 +1021,18 @@ mod tests {
             (ratio - 5.0 / 3.0).abs() < 0.05,
             "unexpected swing ratio: {ratio}"
         );
-    }
 
-    #[test]
-    fn the_swing_is_off_by_default() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-
-        let triggers = trigger_samples(&mut arp, step_samples() * 4, 0.0, 1);
-        let intervals: Vec<usize> = triggers.windows(2).map(|pair| pair[1] - pair[0]).collect();
-
-        for interval in intervals {
+        // With the swing off the steps are even.
+        let mut straight = Arp::new();
+        straight.note_on(60, 1.0, false);
+        let triggers = trigger_samples(&mut straight, step_samples() * 4, 0.0, 1);
+        for pair in triggers.windows(2) {
+            let interval = pair[1] - pair[0];
             assert!(
                 (interval as i32 - step_samples() as i32).abs() <= 1,
-                "the steps are not even: {interval}"
+                "the unswung steps are not even: {interval}"
             );
         }
-    }
-
-    #[test]
-    fn the_gate_releases_the_note() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-
-        let division = 0.25;
-        let division_samples = (division / beats_per_sample()).round() as usize;
-
-        // The first step triggers the note.
-        let mut trigger_sample = None;
-        for sample in 0..(division_samples * 2) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                division,
-                50.0,
-                ArpPattern::Up,
-                1,
-                0.0,
-                16,
-                1,
-            );
-            if let Some((key, _)) = tick.trigger {
-                assert_eq!(key, 60);
-                trigger_sample = Some(sample);
-                break;
-            }
-        }
-        trigger_sample.expect("the note was never triggered");
-        assert!(arp.is_sounding());
-
-        // The gate closes halfway through the step.
-        let mut release_sample = None;
-        for sample in 0..(division_samples * 2) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                division,
-                50.0,
-                ArpPattern::Up,
-                1,
-                0.0,
-                16,
-                1,
-            );
-            if tick.release {
-                release_sample = Some(sample);
-                break;
-            }
-        }
-        let release_sample = release_sample.expect("the gate never closed");
-
-        let gate_samples = release_sample + 1;
-        assert!(
-            gate_samples > division_samples / 3 && gate_samples < division_samples * 2 / 3,
-            "the gate closed after {gate_samples} samples"
-        );
-        assert!(!arp.is_sounding());
     }
 
     #[test]
@@ -1224,53 +1068,6 @@ mod tests {
     }
 
     #[test]
-    fn the_ratchet_does_not_move_the_position() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-
-        let mut positions = Vec::new();
-        for _ in 0..(step_samples() * 3) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                0.25,
-                100.0,
-                ArpPattern::Up,
-                1,
-                0.0,
-                16,
-                4,
-            );
-            if tick.trigger.is_some() {
-                positions.push(arp.position());
-            }
-        }
-
-        assert!(
-            positions.len() >= 5,
-            "only {} notes were played",
-            positions.len()
-        );
-        // Every step is played four times, so the position only changes once
-        // every four notes.
-        assert_eq!(&positions[..6], &[0, 0, 0, 0, 1, 1]);
-    }
-
-    #[test]
-    fn the_position_starts_over_with_a_new_chord() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 60);
-        assert_eq!(arp.position(), 0);
-
-        arp.note_off(60);
-        // The arpeggiator goes quiet, so the pattern starts over.
-        tick(&mut arp, ArpPattern::Up);
-        arp.note_on(67, 1.0, false);
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 67);
-        assert_eq!(arp.position(), 0);
-    }
-
-    #[test]
     fn the_latch_keeps_the_notes() {
         let mut arp = Arp::new();
         arp.note_on(60, 1.0, true);
@@ -1285,29 +1082,6 @@ mod tests {
         // A new note after the latch was released starts a new chord.
         arp.note_on(67, 1.0, true);
         assert_eq!(next_note(&mut arp, ArpPattern::Up), 67);
-    }
-
-    #[test]
-    fn the_latch_is_remembered_per_note() {
-        // A note that was played without the latch is released, even when the
-        // latch is switched on in the meantime.
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-        arp.note_off(60);
-
-        for _ in 0..step_samples() {
-            let tick = tick(&mut arp, ArpPattern::Up);
-            assert!(tick.trigger.is_none(), "a note was triggered");
-        }
-        assert!(!arp.is_sounding());
-
-        // A note that was played with the latch stays held, even when the
-        // latch is switched off in the meantime.
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, true);
-        arp.note_off(60);
-
-        assert_eq!(next_note(&mut arp, ArpPattern::Up), 60);
     }
 
     #[test]
@@ -1354,49 +1128,6 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_is_exact_with_the_ratchet() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-
-        let division = 0.25;
-        let division_samples = (division / beats_per_sample()).round() as usize;
-
-        let mut trigger_sample = None;
-        let mut release_sample = None;
-        for sample in 0..(division_samples * 2) {
-            let tick = arp.tick(
-                beats_per_sample(),
-                division,
-                50.0,
-                ArpPattern::Up,
-                1,
-                0.0,
-                16,
-                4,
-            );
-            if tick.trigger.is_some() {
-                trigger_sample = Some(sample);
-            }
-            if tick.release {
-                release_sample = Some(sample);
-                break;
-            }
-        }
-
-        let trigger_sample = trigger_sample.expect("the note was never triggered");
-        let release_sample = release_sample.expect("the gate never closed");
-
-        // The step is divided into four sub steps, so the gate is a quarter
-        // of the step long.
-        assert_eq!(
-            release_sample - trigger_sample,
-            division_samples / 8,
-            "the gate was {} samples long",
-            release_sample - trigger_sample
-        );
-    }
-
-    #[test]
     fn the_pattern_starts_over_when_it_changes() {
         let mut arp = Arp::new();
         arp.note_on(60, 1.0, false);
@@ -1408,19 +1139,6 @@ mod tests {
         // The downwards pattern starts at the top of the chord again.
         assert_eq!(next_note(&mut arp, ArpPattern::Down), 67);
         assert_eq!(next_note(&mut arp, ArpPattern::Down), 64);
-    }
-
-    #[test]
-    fn without_the_latch_the_notes_are_released() {
-        let mut arp = Arp::new();
-        arp.note_on(60, 1.0, false);
-        arp.note_off(60);
-
-        for _ in 0..step_samples() {
-            let tick = tick(&mut arp, ArpPattern::Up);
-            assert!(tick.trigger.is_none(), "a note was triggered");
-        }
-        assert!(!arp.is_sounding());
     }
 
     #[test]

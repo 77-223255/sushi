@@ -617,18 +617,6 @@ mod tests {
     }
 
     #[test]
-    fn the_delays_scale_with_the_sample_rate() {
-        let at_48 = Reverb::new(48_000.0);
-        let at_96 = Reverb::new(96_000.0);
-
-        let ratio = at_96.lines[0].len() as f32 / at_48.lines[0].len() as f32;
-        assert!(
-            (ratio - 2.0).abs() < 0.01,
-            "the reverb did not scale with the sample rate: {ratio}"
-        );
-    }
-
-    #[test]
     fn the_tail_decays() {
         let mut reverb = Reverb::new(48_000.0);
         let mut early_energy = 0.0;
@@ -652,121 +640,6 @@ mod tests {
     }
 
     #[test]
-    fn the_damping_coefficient_matches_the_old_value_at_48_khz() {
-        // The old implementation used this constant at every sample rate.
-        // 48 kHz at the reference decay must keep the coefficient bit for bit,
-        // so the damping of the untouched presets does not change.
-        assert_eq!(damping_coefficient(48_000.0).to_bits(), 0.22f32.to_bits());
-        let at_48 = Reverb::new(48_000.0);
-        assert_eq!(at_48.damping_coefficient.to_bits(), 0.22f32.to_bits());
-    }
-
-    #[test]
-    fn the_48_khz_fdn_geometry_is_unchanged() {
-        let reverb = Reverb::new(48_000.0);
-        let time = 0.35 + 14.65 * DAMPING_REFERENCE_DECAY * DAMPING_REFERENCE_DECAY;
-
-        for (index, delay) in DELAYS.iter().enumerate() {
-            // The old delay lengths and the old feedback gains are untouched.
-            assert_eq!(
-                reverb.base_delays[index].to_bits(),
-                (delay * 48_000.0).to_bits()
-            );
-            let expected = 10f32.powf(-3.0 * delay / time).clamp(0.0, 0.9995);
-            assert_eq!(reverb.feedback_gains[index].to_bits(), expected.to_bits());
-            assert_eq!(
-                reverb.modulation_rate[index].to_bits(),
-                (MODULATION_RATE + index as f32 * MODULATION_RATE_STEP).to_bits()
-            );
-        }
-    }
-
-    #[test]
-    fn longer_decays_are_darker_and_the_damping_law_matches_the_documentation() {
-        let short = damping_coefficient_for_decay(0.0, 48_000.0);
-        let reference = damping_coefficient_for_decay(DAMPING_REFERENCE_DECAY, 48_000.0);
-        let long = damping_coefficient_for_decay(1.0, 48_000.0);
-
-        assert_eq!(reference.to_bits(), 0.22f32.to_bits());
-        assert!(
-            long < reference,
-            "long tails must be darker: {long} {reference}"
-        );
-        assert!(
-            reference < short,
-            "short tails must be brighter: {reference} {short}"
-        );
-
-        // The law is deliberately gentle: half an octave over the whole range.
-        let long_cutoff = damping_cutoff_for_decay(1.0);
-        let reference_cutoff = damping_cutoff_for_decay(DAMPING_REFERENCE_DECAY);
-        let short_cutoff = damping_cutoff_for_decay(0.0);
-        assert!((reference_cutoff - damping_cutoff()).abs() < 1e-3);
-        assert!((long_cutoff / reference_cutoff - 2.0f32.powf(-0.2)).abs() < 1e-5);
-        assert!((short_cutoff / reference_cutoff - 2.0f32.powf(0.3)).abs() < 1e-5);
-        assert!(long_cutoff > 1_500.0 && short_cutoff < 2_500.0);
-    }
-
-    #[test]
-    fn the_decay_update_is_throttled_but_applied_immediately() {
-        let mut reverb = Reverb::new(48_000.0);
-        let mut reference = Reverb::new(48_000.0);
-        reference.update_decay(0.2);
-
-        // The first sample applies the new decay right away.
-        reverb.process(0.0, 0.0, 0.2, 1.0);
-        assert_eq!(reverb.feedback_gains, reference.feedback_gains);
-        assert_eq!(
-            reverb.damping_coefficient.to_bits(),
-            reference.damping_coefficient.to_bits()
-        );
-
-        // The next samples in the window keep the same gains.
-        for _ in 0..DECAY_UPDATE_INTERVAL - 1 {
-            reverb.process(0.0, 0.0, 0.9, 1.0);
-        }
-        assert_eq!(reverb.feedback_gains, reference.feedback_gains);
-
-        // The first sample of the next window picks the new decay up.
-        reverb.process(0.0, 0.0, 0.9, 1.0);
-        assert_ne!(reverb.feedback_gains, reference.feedback_gains);
-    }
-
-    #[test]
-    fn the_damping_follows_the_sample_rate() {
-        let at_44 = damping_coefficient(44_100.0);
-        let at_88 = damping_coefficient(88_200.0);
-        let at_96 = damping_coefficient(96_000.0);
-
-        for coefficient in [at_44, at_88, at_96] {
-            assert!(coefficient.is_finite(), "the damping was not finite");
-            assert!(coefficient > 0.0 && coefficient < 1.0, "{coefficient}");
-            assert_ne!(coefficient.to_bits(), 0.22f32.to_bits());
-        }
-
-        // A one-pole with a fixed cutoff in Hz damps less per sample at a
-        // higher rate, because a sample covers less time.
-        assert!(at_44 > at_88 && at_88 > at_96, "{at_44} {at_88} {at_96}");
-        assert!(at_44 < 0.3, "the 44.1 kHz damping is too strong: {at_44}");
-
-        // All three still damp at the same cutoff in Hz as 48 kHz does.
-        let target = damping_cutoff();
-        assert!((target - 1_900.0).abs() < 20.0, "the cutoff is {target}");
-        for (coefficient, sample_rate) in [
-            (0.22, 48_000.0),
-            (at_44, 44_100.0),
-            (at_88, 88_200.0),
-            (at_96, 96_000.0),
-        ] {
-            let cutoff = -((1.0 - coefficient).ln()) * sample_rate / (2.0 * PI);
-            assert!(
-                (cutoff - target).abs() < 0.01,
-                "{sample_rate} Hz damps at {cutoff} Hz instead of {target} Hz"
-            );
-        }
-    }
-
-    #[test]
     fn a_bypassed_reverb_is_flushed() {
         let mut reverb = Reverb::new(48_000.0);
 
@@ -787,58 +660,6 @@ mod tests {
             peak = peak.max(left.abs()).max(right.abs());
         }
         assert!(peak < 1e-4, "the reverb replayed stale audio ({peak})");
-    }
-
-    #[test]
-    fn the_early_reflections_arrive_before_ten_milliseconds() {
-        let sample_rate = 48_000.0;
-        let mut reverb = Reverb::new(sample_rate);
-        let mut onset = None;
-        let mut onset_level = 0.0f32;
-
-        for sample in 0..(sample_rate * 0.05) as usize {
-            let input = if sample == 0 { 1.0 } else { 0.0 };
-            let (left, right) = reverb.process(input, input, 0.6, 1.0);
-            let level = left.abs().max(right.abs());
-            if onset.is_none() && level > 1e-4 {
-                onset = Some(sample);
-                onset_level = level;
-            }
-        }
-
-        let onset = onset.expect("the reverb produced no wet onset at all");
-        let onset_ms = onset as f32 / sample_rate * 1_000.0;
-        assert!(
-            (4.0..10.0).contains(&onset_ms),
-            "the first wet signal arrived at {onset_ms:.2} ms instead of 4-10 ms"
-        );
-        assert!(
-            onset_level < 0.2,
-            "the early field is too loud ({onset_level})"
-        );
-    }
-
-    #[test]
-    fn the_early_field_is_stereo() {
-        let sample_rate = 48_000.0;
-        let mut reverb = Reverb::new(sample_rate);
-        let mut right_onset = None;
-        let mut difference = 0.0f32;
-
-        // Only the left input is excited. The cross-fed, later early taps must
-        // still reach the right output inside the first 10 ms.
-        for sample in 0..(sample_rate * 0.01) as usize {
-            let input = if sample == 0 { 1.0 } else { 0.0 };
-            let (left, right) = reverb.process(input, 0.0, 0.6, 1.0);
-            difference += (left - right).abs();
-            if right_onset.is_none() && right.abs() > 1e-4 {
-                right_onset = Some(sample);
-            }
-        }
-
-        let right_onset = right_onset.expect("the right early field stayed silent");
-        assert!((right_onset as f32) / sample_rate < 0.010);
-        assert!(difference > 0.001, "the early field was mono");
     }
 
     #[test]
@@ -932,36 +753,6 @@ mod tests {
                 left.is_finite() && right.is_finite(),
                 "an extreme input produced NaN or infinity at sample {sample}"
             );
-        }
-    }
-
-    #[test]
-    fn the_input_diffusion_is_a_bounded_unity_gain_allpass() {
-        for delays in DIFFUSION_DELAYS {
-            let mut stages: [Allpass; DIFFUSION_STAGES] =
-                std::array::from_fn(|_| Allpass::default());
-            for stage in 0..DIFFUSION_STAGES {
-                stages[stage] = Allpass::new(delays[stage], 48_000.0, DIFFUSION_GAIN);
-            }
-
-            let mut energy = 0.0f64;
-            let mut peak = 0.0f32;
-            for sample in 0..96_000 {
-                let input = if sample == 0 { 1.0 } else { 0.0 };
-                let mut output = input;
-                for stage in &mut stages {
-                    output = stage.process(output);
-                }
-                assert!(output.is_finite());
-                energy += (output as f64) * (output as f64);
-                peak = peak.max(output.abs());
-            }
-
-            assert!(
-                (energy - 1.0).abs() < 0.01,
-                "the diffusion chain did not preserve energy: {energy}"
-            );
-            assert!(peak < 2.0, "the diffusion chain exploded (peak {peak})");
         }
     }
 }

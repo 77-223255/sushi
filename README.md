@@ -51,9 +51,9 @@ PAD** uses the deterministic per-note Random source for pan and cutoff.
   on the amount bar, and the Target inspector shows the selected route’s
   current value, modulation range and live contribution
 - Coarse lane plus a separate fine lane on every fader
-- LFO 1/2 and the macros share one MOD row; the full-width Target inspector
-  visualizes the selected route with a range bar and source waveform. LFO
-  routing stays in the MOD table
+- The MOD page puts the routing table and Target inspector on the left; LFO 1,
+  LFO 2, MOD ENV, AMP ENV and MACROS form one vertical column on the right.
+  LFO routing stays in the MOD table
 - The main page keeps ARP / VOICE and MACROS / VCA in two wide lower bands;
   VCA adds Width and Pan, envelopes add Curve, and VCO2 adds Ring and RESET
 - MOD and FX page tabs; the FX tab opens a full-panel two-row rack of drive,

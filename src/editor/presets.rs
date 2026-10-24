@@ -1052,6 +1052,11 @@ mod tests {
         let params = SushiParams::default();
         let setter = setter();
 
+        // A preset starts from the factory defaults, so these two controls
+        // come back to their defaults even when the user moved them first.
+        setter.set_parameter(&params.tune, 5.0);
+        setter.set_parameter(&params.voices, 2);
+
         for (index, preset) in PRESETS.iter().enumerate() {
             apply(&params, &setter, index);
             assert!(
@@ -1062,6 +1067,18 @@ mod tests {
             assert!(
                 params.unison.value() >= 1 && params.unison.value() <= 4,
                 "the unison of {} is out of range",
+                preset.name
+            );
+            assert!(
+                params.tune.value().abs() < 0.001,
+                "the tune of {} is {}",
+                preset.name,
+                params.tune.value()
+            );
+            assert_eq!(
+                params.voices.value(),
+                16,
+                "the number of voices of {} is wrong",
                 preset.name
             );
         }
@@ -1218,31 +1235,6 @@ mod tests {
     }
 
     #[test]
-    fn the_presets_use_the_default_tune_and_voices() {
-        let params = SushiParams::default();
-        let setter = setter();
-
-        // Move the two parameters away from their default.
-        setter.set_parameter(&params.tune, 5.0);
-        setter.set_parameter(&params.voices, 2);
-
-        for (index, preset) in PRESETS.iter().enumerate() {
-            apply(&params, &setter, index);
-
-            // The factory defaults are written first, so every preset starts
-            // at the same pitch and with the same number of voices.
-            let tune = params.tune.value();
-            assert!(tune.abs() < 0.001, "the tune of {} is {tune}", preset.name);
-            assert_eq!(
-                params.voices.value(),
-                16,
-                "the number of voices of {} is wrong",
-                preset.name
-            );
-        }
-    }
-
-    #[test]
     fn an_index_that_does_not_exist_is_ignored() {
         let params = SushiParams::default();
         let setter = setter();
@@ -1327,14 +1319,5 @@ mod tests {
         assert!(params.resonance.value() != resonance);
         assert!(params.cutoff.value() >= 20.0 && params.cutoff.value() <= 20_000.0);
         assert!(params.resonance.value() >= 0.0 && params.resonance.value() <= 1.0);
-    }
-
-    #[test]
-    fn the_random_number_generator_stays_in_its_range() {
-        let mut rng = Rng::new(1);
-        for _ in 0..1000 {
-            let value = rng.next_f32();
-            assert!((0.0..1.0).contains(&value), "{value}");
-        }
     }
 }

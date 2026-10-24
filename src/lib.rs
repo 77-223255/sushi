@@ -1950,18 +1950,15 @@ mod tests {
             state.params.get("legacy"),
             Some(nice_plug::plugin::ParamValue::Bool(true))
         ));
-    }
 
-    #[test]
-    fn an_empty_host_state_does_not_add_a_flavor_flag() {
-        let mut state = PluginState {
+        // A state without parameters has no flavor to migrate.
+        let mut empty = PluginState {
             version: String::new(),
             params: std::collections::BTreeMap::new(),
             fields: std::collections::BTreeMap::new(),
         };
-        Sushi::filter_state(&mut state);
-
-        assert!(!state.params.contains_key("legacy"));
+        Sushi::filter_state(&mut empty);
+        assert!(!empty.params.contains_key("legacy"));
     }
 
     #[test]
@@ -2226,6 +2223,13 @@ mod tests {
             let (left, right) = sushi.saturate(10.0, -10.0, grit, false);
             assert!(left.is_finite() && right.is_finite());
             assert!(left.abs() <= 1.0 && right.abs() <= 1.0);
+
+            // Silence stays exactly silent, without an offset, also when the
+            // saturator starts from a clean state.
+            let mut silent = Sushi::default();
+            let (left, right) = silent.saturate(0.0, 0.0, grit, false);
+            assert_eq!(left, 0.0);
+            assert_eq!(right, 0.0);
         }
     }
 
@@ -2250,17 +2254,6 @@ mod tests {
             grit.abs() < silk.abs(),
             "the grit character was not asymmetric ({grit} vs {silk})"
         );
-    }
-
-    #[test]
-    fn the_saturator_keeps_silence_silent() {
-        let mut sushi = Sushi::default();
-
-        for grit in [false, true] {
-            let (left, right) = sushi.saturate(0.0, 0.0, grit, false);
-            assert_eq!(left, 0.0, "the left channel had an offset");
-            assert_eq!(right, 0.0, "the right channel had an offset");
-        }
     }
 
     #[test]
@@ -2510,34 +2503,13 @@ mod tests {
             high > low * 2.0,
             "the highs were not boosted ({low} vs {high})"
         );
-    }
 
-    #[test]
-    fn the_tone_tilt_is_neutral_in_the_middle() {
+        // In the middle the tilt leaves the balance alone.
         let low = tilt(100.0, 0.0);
         let high = tilt(5_000.0, 0.0);
         assert!(
             (low - high).abs() < low * 0.1,
             "the tone tilt changed the balance ({low} vs {high})"
-        );
-    }
-
-    #[test]
-    fn the_tune_reaches_the_voices() {
-        let params = SushiParams::default();
-        let setter = setter();
-        setter.set_parameter(&params.tune, 12.0);
-
-        let sushi = Sushi {
-            params: Arc::new(params),
-            ..Default::default()
-        };
-
-        let settings = sushi.voice_settings(64, Macros::default());
-        assert!(
-            (settings.tune_semitones - 12.0).abs() < 0.01,
-            "the tune of the voices was {}",
-            settings.tune_semitones
         );
     }
 
@@ -2612,6 +2584,7 @@ mod tests {
         setter.set_parameter(&params.osc_phase_reset, true);
         setter.set_parameter(&params.ae_curve, -0.5);
         setter.set_parameter(&params.fe_curve, 0.5);
+        setter.set_parameter(&params.tune, 12.0);
 
         let sushi = Sushi {
             params: Arc::new(params),
@@ -2623,6 +2596,7 @@ mod tests {
         assert!(settings.osc_phase_reset);
         assert!((settings.amp_env_curve - curve_exponent(-0.5)).abs() < 1e-6);
         assert!((settings.filter_env_curve - curve_exponent(0.5)).abs() < 1e-6);
+        assert!((settings.tune_semitones - 12.0).abs() < 0.01);
     }
 
     #[test]

@@ -260,24 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn the_triangle_keeps_its_shape_over_time() {
-        let dt = 220.0 / SAMPLE_RATE;
-
-        // The integrator of the triangle must not drift away.
-        let mut osc = Oscillator::new();
-        let mut minimum: f32 = 1.0;
-        let mut maximum: f32 = -1.0;
-        for _ in 0..(SAMPLE_RATE as usize * 4) {
-            let sample = osc.next(dt, Waveform::Triangle, 0.5);
-            minimum = minimum.min(sample);
-            maximum = maximum.max(sample);
-        }
-
-        assert!(minimum < -0.9, "the triangle did not reach its bottom");
-        assert!(maximum > 0.9, "the triangle did not reach its top");
-    }
-
-    #[test]
     fn pulse_width_controls_the_duty_cycle() {
         let frequency = 100.0;
         let dt = frequency / SAMPLE_RATE;

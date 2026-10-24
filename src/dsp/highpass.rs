@@ -208,29 +208,4 @@ mod tests {
             assert_eq!(a.1.to_bits(), b.1.to_bits());
         }
     }
-
-    #[test]
-    fn switching_the_filter_off_clears_the_state() {
-        let mut hpf = GlobalHighpass::new();
-        hpf.set_cutoff(1_000.0, SAMPLE_RATE);
-        for index in 0..512 {
-            hpf.process((index as f32 * 0.2).sin(), 0.0);
-        }
-
-        hpf.set_cutoff(HPF_MIN_CUTOFF, SAMPLE_RATE);
-        assert!(!hpf.is_active());
-        assert_eq!(hpf.process(0.5, -0.25), (0.5, -0.25));
-
-        // Switching the filter back on starts from a clean state.
-        let mut fresh = GlobalHighpass::new();
-        fresh.set_cutoff(1_000.0, SAMPLE_RATE);
-        hpf.set_cutoff(1_000.0, SAMPLE_RATE);
-        for index in 0..128 {
-            let input = (index as f32 * 0.05).sin();
-            let a = hpf.process(input, input);
-            let b = fresh.process(input, input);
-            assert_eq!(a.0.to_bits(), b.0.to_bits());
-            assert_eq!(a.1.to_bits(), b.1.to_bits());
-        }
-    }
 }

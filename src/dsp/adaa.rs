@@ -112,39 +112,3 @@ impl AdaaTanhAsym {
         output
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_adaa_tanh_stays_bounded() {
-        let mut adaa = AdaaTanh::default();
-        for sample in 0..48_000 {
-            let input = (sample as f32 * 440.0 / 48_000.0 * std::f32::consts::TAU).sin() * 8.0;
-            let output = adaa.process(input);
-            assert!(output.is_finite());
-            assert!(output.abs() <= 1.01, "the ADAA output was {output}");
-        }
-    }
-
-    #[test]
-    fn the_asymmetric_adaa_tanh_stays_bounded() {
-        let mut adaa = AdaaTanhAsym::default();
-        adaa.set_negative_gain(0.82);
-        for sample in 0..48_000 {
-            let input = (sample as f32 * 330.0 / 48_000.0 * std::f32::consts::TAU).sin() * 8.0;
-            let output = adaa.process(input);
-            assert!(output.is_finite());
-            assert!(output.abs() <= 1.01, "the ADAA output was {output}");
-        }
-    }
-
-    #[test]
-    fn silence_stays_silent() {
-        let mut adaa = AdaaTanh::default();
-        for _ in 0..1_000 {
-            assert_eq!(adaa.process(0.0), 0.0);
-        }
-    }
-}

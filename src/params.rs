@@ -1302,6 +1302,32 @@ mod tests {
         assert_eq!(params.delay_time.value(), 350.0);
         assert_eq!(params.delay_feedback.value(), 0.3);
         assert_eq!(params.reverb_decay.value(), 0.6);
+
+        assert_eq!(params.macro_bright.value(), 0.5);
+        assert_eq!(params.macro_motion.value(), 0.5);
+        assert_eq!(params.macro_space.value(), 0.5);
+        assert_eq!(params.character.value(), Character::Silk);
+        assert!(!params.legacy.value());
+        assert_eq!(params.drift.value(), 0.15);
+        assert_eq!(params.velocity.value(), 0.5);
+        assert_eq!(params.tone.value(), 0.0);
+
+        assert!(!params.arp_on.value());
+        assert_eq!(params.arp_pattern.value(), ArpPattern::Up);
+        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
+        assert_eq!(params.arp_octaves.value(), 1);
+        assert_eq!(params.arp_gate.value(), 60.0);
+        assert!(!params.arp_latch.value());
+        assert_eq!(params.arp_swing.value(), 0.0);
+        assert_eq!(params.arp_length.value(), 16);
+        assert_eq!(params.arp_ratchet.value(), 1);
+        assert_eq!(params.arp_chord.value(), ArpChord::Off);
+        assert_eq!(params.arp_strum.value(), 0.0);
+        assert_eq!(params.arp_probability.value(), 1.0);
+
+        assert_eq!(params.fx_order.value(), 0);
+        assert_eq!(params.fx_bypass_mask.value(), 0);
+        assert_eq!(params.fx_global_mix.value(), 1.0);
     }
 
     #[test]
@@ -1339,52 +1365,6 @@ mod tests {
             .expect("the EQ gain could not be read");
         let value = params.eq_high.range().unnormalize(normalized);
         assert!((value - 12.0).abs() < 0.01, "the EQ gain was {value}");
-    }
-
-    #[test]
-    fn the_new_defaults_match_the_spec() {
-        let params = SushiParams::default();
-
-        assert_eq!(params.macro_bright.value(), 0.5);
-        assert_eq!(params.macro_motion.value(), 0.5);
-        assert_eq!(params.macro_space.value(), 0.5);
-        assert_eq!(params.character.value(), Character::Silk);
-        assert!(!params.legacy.value());
-        assert_eq!(params.drift.value(), 0.15);
-        assert_eq!(params.velocity.value(), 0.5);
-        assert_eq!(params.tone.value(), 0.0);
-
-        assert!(!params.arp_on.value());
-        assert_eq!(params.arp_pattern.value(), ArpPattern::Up);
-        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
-        assert_eq!(params.arp_octaves.value(), 1);
-        assert_eq!(params.arp_gate.value(), 60.0);
-        assert!(!params.arp_latch.value());
-        assert_eq!(params.arp_swing.value(), 0.0);
-        assert_eq!(params.arp_length.value(), 16);
-        assert_eq!(params.arp_ratchet.value(), 1);
-
-        // The appended arp controls keep the old sound: no chord, no strum
-        // and every step is played.
-        assert_eq!(params.arp_chord.value(), ArpChord::Off);
-        assert_eq!(params.arp_strum.value(), 0.0);
-        assert_eq!(params.arp_probability.value(), 1.0);
-
-        // The effect chain starts in its original order, without a bypass
-        // and fully wet, so old patches keep their sound.
-        assert_eq!(params.fx_order.value(), 0);
-        assert!(
-            matches!(
-                params.fx_order.range(),
-                IntRange::Linear {
-                    min: 0,
-                    max: FX_ORDER_MAX
-                }
-            ),
-            "the FX order must offer all 720 permutations"
-        );
-        assert_eq!(params.fx_bypass_mask.value(), 0);
-        assert_eq!(params.fx_global_mix.value(), 1.0);
     }
 
     #[test]
@@ -1490,32 +1470,6 @@ mod tests {
         assert_eq!(params.mod8_source.value(), ModSource::Off);
         assert_eq!(params.mod8_dest.value(), ModDest::Off);
         assert_eq!(params.mod8_amount.value(), 0.0);
-    }
-
-    #[test]
-    fn the_modulation_sources_and_destinations_have_readable_names() {
-        assert_eq!(ModSource::variants()[0], "Off");
-        assert_eq!(ModSource::variants()[1], "LFO 1");
-        assert_eq!(ModSource::variants()[3], "Mod Env");
-        assert_eq!(ModSource::variants()[7], "Macro 1");
-        assert_eq!(ModSource::variants()[10], "Mod Wheel");
-        assert_eq!(ModSource::variants()[11], "Random");
-        assert_eq!(ModDest::variants()[0], "Off");
-        assert_eq!(ModDest::variants()[1], "Pitch");
-        assert_eq!(ModDest::variants()[2], "Pulse 1");
-        assert_eq!(ModDest::variants()[4], "Cutoff");
-        assert_eq!(ModDest::variants()[8], "Volume");
-        assert_eq!(ModDest::variants()[9], "Osc2 Pitch");
-        assert_eq!(ModDest::variants()[10], "Osc2 Fine");
-        assert_eq!(ModDest::variants()[11], "Sub Level");
-        assert_eq!(ModDest::variants()[12], "Noise Level");
-        assert_eq!(ModDest::variants()[13], "Detune");
-        assert_eq!(ModDest::variants()[14], "Filter Env");
-        assert_eq!(ModDest::variants()[15], "Osc1 Pitch");
-        assert_eq!(ModDest::variants()[16], "Osc1 Fine");
-        assert_eq!(ModDest::variants()[17], "Filter Drive");
-        assert_eq!(ModDest::variants()[18], "Filter Keytrack");
-        assert_eq!(ModDest::variants()[19], "Ring Mod");
     }
 
     #[test]

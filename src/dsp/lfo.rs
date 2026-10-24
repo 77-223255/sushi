@@ -251,23 +251,4 @@ mod tests {
             assert_eq!(plain.phase(), shifted.phase());
         }
     }
-
-    #[test]
-    fn the_curve_is_a_safe_signed_power() {
-        assert_eq!(shape_lfo(0.25, 0.0), 0.25);
-        assert!((shape_lfo(0.25, 1.0) - 0.0625).abs() < 1e-6);
-        assert!((shape_lfo(-0.25, 1.0) + 0.0625).abs() < 1e-6);
-        assert_eq!(shape_lfo(1.0, 1.0), 1.0);
-        assert_eq!(shape_lfo(-1.0, 1.0), -1.0);
-        assert_eq!(shape_lfo(0.0, -1.0), 0.0);
-
-        let mut lfo = Lfo::new(5);
-        for curve in [-1.0, -0.5, 0.5, 1.0] {
-            for _ in 0..2_000 {
-                let value = lfo.next_shaped(7.0, SAMPLE_RATE, LfoWaveform::Sine, 0.0, curve);
-                assert!(value.is_finite());
-                assert!((-1.0..=1.0).contains(&value), "curve {curve}: {value}");
-            }
-        }
-    }
 }

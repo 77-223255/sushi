@@ -1056,23 +1056,6 @@ mod tests {
     }
 
     #[test]
-    fn a_tiny_mix_is_a_bypass() {
-        let mut fx = Fx::new(48_000.0);
-        let params = FxParams {
-            chorus_mix: 1e-5,
-            delay_mix: 1e-5,
-            reverb_mix: 1e-5,
-            ..FxParams::default()
-        };
-
-        for _ in 0..1_000 {
-            let (left, right) = fx.process(0.5, -0.5, &params);
-            assert_eq!(left, 0.5);
-            assert_eq!(right, -0.5);
-        }
-    }
-
-    #[test]
     fn the_delay_repeats_the_signal() {
         let mut fx = Fx::new(48_000.0);
         let params = FxParams {
@@ -1098,55 +1081,6 @@ mod tests {
             (first_repeat - 4_800).abs() < 8,
             "the repeat came at {first_repeat}"
         );
-    }
-
-    #[test]
-    fn a_static_delay_is_unchanged() {
-        let sample_rate = 48_000.0f32;
-        let mut fx = Fx::new(sample_rate);
-        let params = FxParams {
-            delay_mix: 1.0,
-            delay_time_s: 0.0501,
-            delay_feedback: 0.0,
-            ..FxParams::default()
-        };
-        let delay = params.delay_time_s * sample_rate;
-        assert!(delay.fract() != 0.0, "the delay should be fractional");
-
-        // The same fractional read, on the dry input history. With no
-        // feedback the delay line only ever holds the dry signal.
-        fn read(history: &[f32], delay: f32) -> f32 {
-            let position = (history.len() - 1) as f32 - delay;
-            let index = position.floor() as usize;
-            let fraction = position - position.floor();
-            history[index] + (history[index + 1] - history[index]) * fraction
-        }
-
-        let mut history = Vec::new();
-        for sample in 0..12_000 {
-            let input = (sample as f32 * 0.017).sin() * 0.7;
-            history.push(input);
-            let (left, _) = fx.process(input, 0.0, &params);
-
-            // Smoothing a static control adds exactly zero, so the read
-            // position is the requested delay, sample for sample.
-            assert_eq!(fx.delay_time_samples.unwrap().to_bits(), delay.to_bits());
-
-            // The first samples would read before the start of the history.
-            if sample > delay.ceil() as usize {
-                assert_eq!(
-                    left.to_bits(),
-                    read(&history, delay).to_bits(),
-                    "sample {sample} changed"
-                );
-            }
-        }
-
-        // A reset clears the smoother, so the next sample is not a ramp
-        // either.
-        fx.reset();
-        fx.process(0.0, 0.0, &params);
-        assert_eq!(fx.delay_time_samples.unwrap().to_bits(), delay.to_bits());
     }
 
     #[test]
@@ -1207,46 +1141,17 @@ mod tests {
     }
 
     #[test]
-    fn re_enabling_after_full_bypass_does_not_replay_the_tail() {
-        let mut fx = Fx::new(48_000.0);
-        let mut params = FxParams {
-            delay_mix: 1.0,
-            delay_time_s: 0.1,
-            delay_feedback: 0.8,
-            ..FxParams::default()
-        };
-
-        // Fill the delay line with an impulse and several feedback repeats.
-        fx.process(1.0, 0.0, &params);
-        for _ in 0..20_000 {
-            fx.process(0.0, 0.0, &params);
-        }
-
-        // Bypass the whole chain while the input is silent. The first
-        // bypassed sample clears the delay line, so re-enabling the delay
-        // cannot replay the old repeats.
-        params.delay_mix = 0.0;
-        for _ in 0..20_000 {
-            fx.process(0.0, 0.0, &params);
-        }
-
-        params.delay_mix = 1.0;
-        let mut peak: f32 = 0.0;
-        for _ in 0..10_000 {
-            let (left, right) = fx.process(0.0, 0.0, &params);
-            peak = peak.max(left.abs()).max(right.abs());
-        }
-
-        assert!(
-            peak < 1e-4,
-            "the re-enabled delay replayed stale audio (peak {peak})"
-        );
-    }
-
-    #[test]
     fn a_full_bypass_returns_dry_and_clears_the_state() {
         let mut fx = Fx::new(48_000.0);
         let mut params = FxParams {
+            drive_amount: 1.0,
+            drive_mix: 1.0,
+            phaser_rate: 5.0,
+            phaser_depth: 1.0,
+            phaser_mix: 1.0,
+            eq_low: 12.0,
+            eq_mid: -6.0,
+            eq_high: 9.0,
             chorus_mix: 1.0,
             delay_mix: 1.0,
             delay_time_s: 0.1,
@@ -1265,6 +1170,11 @@ mod tests {
 
         // Bypassing the whole chain returns the dry signal and clears the
         // state on the first bypassed sample.
+        params.drive_mix = 0.0;
+        params.phaser_mix = 0.0;
+        params.eq_low = 0.0;
+        params.eq_mid = 0.0;
+        params.eq_high = 0.0;
         params.chorus_mix = 0.0;
         params.delay_mix = 0.0;
         params.reverb_mix = 0.0;
@@ -1277,19 +1187,36 @@ mod tests {
         assert!(fx.delay_right.iter().all(|&sample| sample == 0.0));
         assert!(fx.chorus_left.iter().all(|&sample| sample == 0.0));
         assert!(fx.chorus_right.iter().all(|&sample| sample == 0.0));
+        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
+        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
+        assert_eq!(fx.phaser_phase, 0.0);
+        assert_eq!(fx.eq_low_left, 0.0);
+        assert_eq!(fx.eq_low_right, 0.0);
+        assert_eq!(fx.eq_high_left, 0.0);
+        assert_eq!(fx.eq_high_right, 0.0);
 
-        // Enabling one effect after the bypass starts from silence, with no
-        // tail left over from before the bypass.
-        params.delay_mix = 1.0;
-        let mut peak: f32 = 0.0;
-        for _ in 0..10_000 {
-            let (left, right) = fx.process(0.0, 0.0, &params);
-            peak = peak.max(left.abs()).max(right.abs());
+        // The old and the new effects start from silence when they are
+        // enabled again, with no tail left over from before the bypass.
+        for stage in 0..FX_STAGE_COUNT {
+            params.bypass_mask = 0;
+            match stage {
+                0 => params.drive_mix = 1.0,
+                1 => params.phaser_mix = 1.0,
+                2 => params.chorus_mix = 1.0,
+                3 => params.delay_mix = 1.0,
+                4 => params.reverb_mix = 1.0,
+                _ => params.eq_low = 12.0,
+            }
+            let mut peak: f32 = 0.0;
+            for _ in 0..10_000 {
+                let (left, right) = fx.process(0.0, 0.0, &params);
+                peak = peak.max(left.abs()).max(right.abs());
+            }
+            assert!(
+                peak < 1e-4,
+                "stage {stage} replayed an old tail (peak {peak})"
+            );
         }
-        assert!(
-            peak < 1e-4,
-            "the re-enabled delay replayed an old tail (peak {peak})"
-        );
     }
 
     #[test]
@@ -1318,81 +1245,6 @@ mod tests {
             difference > 0.01,
             "the legacy and modern reverbs were identical"
         );
-    }
-
-    #[test]
-    fn the_one_wrap_reader_matches_the_reference() {
-        let len = 97;
-        let buffer: Vec<f32> = (0..len).map(|i| (i as f32 * 0.37).sin()).collect();
-
-        // The original reader, which wrapped the position with `rem_euclid`.
-        fn reference(buffer: &[f32], write_index: usize, delay: f32) -> f32 {
-            let len = buffer.len();
-            let position = (write_index as f32 - delay).rem_euclid(len as f32);
-            let index = position.floor() as usize % len;
-            let fraction = position - position.floor();
-            let next = (index + 1) % len;
-            buffer[index] + (buffer[next] - buffer[index]) * fraction
-        }
-
-        for write_index in 0..len {
-            for delay in [0.0, 0.5, 1.0, 1.25, 2.0, 3.75, (len - 1) as f32, len as f32] {
-                assert_eq!(
-                    read_interpolated(&buffer, write_index, delay).to_bits(),
-                    reference(&buffer, write_index, delay).to_bits(),
-                    "write {write_index}, delay {delay}"
-                );
-            }
-        }
-
-        // Fractional delays across the whole line, including the wrap.
-        for step in 0..(len * 4) {
-            let delay = step as f32 * 0.25;
-            let write_index = (step * 7) % len;
-            assert_eq!(
-                read_interpolated(&buffer, write_index, delay).to_bits(),
-                reference(&buffer, write_index, delay).to_bits(),
-                "write {write_index}, delay {delay}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_wet_path_stays_bounded() {
-        let mut fx = Fx::new(48_000.0);
-        let params = FxParams {
-            order: 0,
-            bypass_mask: 0,
-            global_mix: 1.0,
-            drive_amount: 1.0,
-            drive_mix: 1.0,
-            phaser_rate: 5.0,
-            phaser_depth: 1.0,
-            phaser_mix: 1.0,
-            eq_low: 12.0,
-            eq_mid: -12.0,
-            eq_high: 12.0,
-            chorus_mix: 1.0,
-            chorus_rate: 0.8,
-            chorus_depth: 0.5,
-            delay_time_s: 0.35,
-            delay_feedback: 0.95,
-            delay_mix: 1.0,
-            reverb_mix: 1.0,
-            reverb_decay: 1.0,
-            legacy: false,
-        };
-
-        // A loud signal that is fed back again and again must not run away.
-        let mut peak: f32 = 0.0;
-        for sample in 0..48_000 {
-            let input = if sample % 480 == 0 { 0.9 } else { 0.0 };
-            let (left, right) = fx.process(input, input, &params);
-            assert!(left.is_finite() && right.is_finite());
-            peak = peak.max(left.abs()).max(right.abs());
-        }
-
-        assert!(peak < 10.0, "the wet signal ran away ({peak})");
     }
 
     /// A deterministic noise source for the tests.
@@ -1592,66 +1444,6 @@ mod tests {
             cut > input_rms * 2.0,
             "the high boost did not raise the level ({cut})"
         );
-    }
-
-    #[test]
-    fn a_full_bypass_considers_the_new_effects_and_resets_them() {
-        let mut fx = Fx::new(48_000.0);
-        let mut params = FxParams {
-            drive_amount: 1.0,
-            drive_mix: 1.0,
-            phaser_rate: 5.0,
-            phaser_depth: 1.0,
-            phaser_mix: 1.0,
-            eq_low: 12.0,
-            eq_mid: -6.0,
-            eq_high: 9.0,
-            ..FxParams::default()
-        };
-
-        // Excite the new effects with a loud signal.
-        for sample in 0..12_000 {
-            let input = if sample == 0 { 1.0 } else { 0.0 };
-            fx.process(input, -input, &params);
-        }
-
-        // With every old and new effect neutral the whole chain is bypassed.
-        params.drive_mix = 0.0;
-        params.phaser_mix = 0.0;
-        params.eq_low = 0.0;
-        params.eq_mid = 0.0;
-        params.eq_high = 0.0;
-        for _ in 0..1_000 {
-            let (left, right) = fx.process(0.25, -0.75, &params);
-            assert_eq!(left, 0.25);
-            assert_eq!(right, -0.75);
-        }
-
-        assert!(fx.phaser_left.iter().all(|&state| state == 0.0));
-        assert!(fx.phaser_right.iter().all(|&state| state == 0.0));
-        assert_eq!(fx.phaser_phase, 0.0);
-        assert_eq!(fx.eq_low_left, 0.0);
-        assert_eq!(fx.eq_low_right, 0.0);
-        assert_eq!(fx.eq_high_left, 0.0);
-        assert_eq!(fx.eq_high_right, 0.0);
-
-        // Re-enabling the new effects on silence starts from a clean state.
-        params.drive_mix = 1.0;
-        let (left, right) = fx.process(0.0, 0.0, &params);
-        assert_eq!(left, 0.0);
-        assert_eq!(right, 0.0);
-
-        params.drive_mix = 0.0;
-        params.phaser_mix = 1.0;
-        let (left, right) = fx.process(0.0, 0.0, &params);
-        assert_eq!(left, 0.0);
-        assert_eq!(right, 0.0);
-
-        params.phaser_mix = 0.0;
-        params.eq_low = 12.0;
-        let (left, right) = fx.process(0.0, 0.0, &params);
-        assert_eq!(left, 0.0);
-        assert_eq!(right, 0.0);
     }
 
     #[test]

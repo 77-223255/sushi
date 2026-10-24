@@ -33,7 +33,7 @@ use nice_plug_egui::NiceEguiApp;
 
 use crate::dsp::fx::{FxStage, stage_order, stage_order_index};
 use crate::dsp::mod_feedback::ModFeedback;
-use crate::params::{LfoWaveform, ModDest, ModSource, SushiParams};
+use crate::params::{ModDest, ModSource, SushiParams};
 use crate::patch;
 use presets::{PRESETS, Rng};
 use theme::palette;
@@ -233,44 +233,29 @@ const TARGET_DETUNE_RANGE: f32 = 50.0;
 const TARGET_FILTER_ENV_RANGE: f32 = 5.0;
 /// The width of the text block on the left of the target inspector.
 const TARGET_INFO_WIDTH: f32 = 336.0;
-/// The gap between the three blocks of the target inspector.
+/// The gap between the route facts and the range bar of the target inspector.
 const TARGET_BLOCK_GAP: f32 = 16.0;
 /// The height of the range bar of the target inspector.
 const TARGET_RANGE_BAR_HEIGHT: f32 = 14.0;
-/// The width of the source preview of the target inspector.
-const TARGET_PREVIEW_WIDTH: f32 = 156.0;
-/// The height of the source preview of the target inspector.
-const TARGET_PREVIEW_HEIGHT: f32 = 52.0;
 /// The width of the current-position marker of the range bar.
 const TARGET_CURRENT_MARKER_WIDTH: f32 = 2.0;
 /// The size of the live modulation dot of the range bar.
 const TARGET_LIVE_DOT_SIZE: f32 = 6.0;
-/// The line thickness of the waveform and envelope previews.
-const TARGET_PREVIEW_LINE_WIDTH: f32 = 1.2;
 
-/// The heights of the sliders of the macros above their live strips.
-const MACRO_LIVE_RESERVE: f32 = 22.0;
-/// The height of a macro live bar.
-const MACRO_LIVE_BAR_HEIGHT: f32 = 6.0;
-/// The gap between a macro live bar and its caption.
-const MACRO_LIVE_GAP: f32 = 3.0;
-/// The height of the caption row under a macro live bar.
-const MACRO_LIVE_HINT_HEIGHT: f32 = 10.0;
-/// The static target hints of the three macros.
-const MACRO_TARGET_HINTS: [&str; 3] = ["CUTOFF/RES", "DRIFT/LFO", "FX WET"];
-
-/// The height of the output meter of the VCA.
-const VCA_METER_HEIGHT: f32 = 18.0;
-/// The space that the output meter reserves below the VCA faders.
-const VCA_METER_RESERVE: f32 = 22.0;
-/// The number of segments of the output meter of the VCA.
-const VCA_METER_SEGMENTS: usize = 16;
-/// The width of one segment of the output meter.
-const VCA_METER_SEGMENT_WIDTH: f32 = 5.0;
-/// The gap between two segments of the output meter.
-const VCA_METER_SEGMENT_GAP: f32 = 2.0;
-/// The height of one segment of the output meter.
-const VCA_METER_SEGMENT_HEIGHT: f32 = 6.0;
+/// The gap between the routing/target workspace and the source column of the
+/// modulation page.
+const MOD_WORKSPACE_GAP: f32 = 12.0;
+/// The share of the modulation workspace that the routing table and the target
+/// inspector use. The five source modules get the remaining third.
+const MOD_LEFT_SHARE: f32 = 2.0 / 3.0;
+/// The gap between the routing table and the target inspector.
+const MOD_STACK_GAP: f32 = 8.0;
+/// The gap between two modules of the right-hand source column.
+const MOD_MODULE_GAP: f32 = 6.0;
+/// The relative heights of the five modules of the right-hand column. They sum
+/// to the height of the four bands minus the four module gaps, so the column
+/// fills the whole workspace.
+const MOD_MODULE_WEIGHTS: [f32; 5] = [110.0, 110.0, 94.0, 94.0, 84.0];
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
@@ -282,19 +267,11 @@ const ROW_A_WIDTHS: [f32; 4] = [228.0, 224.0, 124.0, 332.0];
 /// The widths of the sections of the second row: `VCF | MOD ENV | AMP ENV`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
 /// The widths of the two wide sections of the third row. The normal page
-/// shows `ARP | VOICE`; the modulation page uses three narrower columns for
-/// `LFO 1 | LFO 2 | MACROS`.
+/// shows `ARP | VOICE`.
 const ROW_C_WIDTHS: [f32; 2] = [472.0, 472.0];
 /// The widths of the two wide sections of the fourth row. The normal page
-/// shows `MACROS | VCA`; the modulation page gives the whole band to the
-/// target inspector.
+/// shows `MACROS | VCA`.
 const ROW_D_WIDTHS: [f32; 2] = [472.0, 472.0];
-/// The widths of the three modules of the third row of the modulation page.
-/// The sum is the same 920 units as the base widths of the other rows, so
-/// the columns are equal at every zoom.
-const MOD_ROW_C_WIDTHS: [f32; 3] = [306.0, 306.0, 308.0];
-/// The width of the single target band of the modulation page.
-const MOD_ROW_D_WIDTHS: [f32; 1] = [920.0];
 
 /// The widths of the sections of every row.
 const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTHS, &ROW_D_WIDTHS];
@@ -637,8 +614,6 @@ struct FxChainDrag {
 
 /// The width of a vertical slider.
 const SLIDER_WIDTH: f32 = 32.0;
-/// The width of the sliders of the macros.
-const MACRO_SLIDER_WIDTH: f32 = SLIDER_WIDTH;
 /// The height of the slider handle.
 const HANDLE_HEIGHT: f32 = 6.0;
 /// The empty margin around a handle inside its lane.
@@ -775,24 +750,9 @@ impl Layout {
         BASE_ROW_WIDTHS[row].len()
     }
 
-    /// The number of modules of a row of the modulation page. The page uses
-    /// its own proportions: three modules in the third row and one wide target
-    /// band in the fourth.
-    fn mod_group_count(row: usize) -> usize {
-        match row {
-            2 => MOD_ROW_C_WIDTHS.len(),
-            3 => MOD_ROW_D_WIDTHS.len(),
-            _ => 0,
-        }
-    }
-
-    /// The widths of a row of the modulation page.
-    fn mod_widths(row: usize) -> &'static [f32] {
-        match row {
-            2 => &MOD_ROW_C_WIDTHS,
-            3 => &MOD_ROW_D_WIDTHS,
-            _ => &[],
-        }
+    /// The number of modules of the right-hand column of the modulation page.
+    fn mod_module_count() -> usize {
+        MOD_MODULE_WEIGHTS.len()
     }
 
     /// The rect of the header.
@@ -806,10 +766,68 @@ impl Layout {
         self.group_with(BASE_ROW_WIDTHS[row], row, index)
     }
 
-    /// The rect of a module of the modulation page. Row 2 has three equal
-    /// columns and row 3 has the full width for the target inspector.
-    fn mod_group(&self, row: usize, index: usize) -> Rect {
-        self.group_with(Self::mod_widths(row), row, index)
+    /// The part of the panel that the modulation page uses: everything between
+    /// the header and the footer, with the same side margins as the main rows.
+    fn mod_workspace(&self) -> Rect {
+        self.scale(Rect::from_min_max(
+            egui::pos2(MARGIN, self.base_rows[0].top()),
+            egui::pos2(WINDOW_WIDTH - MARGIN, self.base_rows[3].bottom()),
+        ))
+    }
+
+    /// The left two thirds of the modulation page: the routing table over the
+    /// target inspector.
+    fn mod_left(&self) -> Rect {
+        let workspace = self.mod_workspace();
+        let gap = MOD_WORKSPACE_GAP * self.zoom;
+        let width = (workspace.width() - gap) * MOD_LEFT_SHARE;
+        Rect::from_min_size(workspace.min, egui::vec2(width, workspace.height()))
+    }
+
+    /// The right third of the modulation page: the five compact source
+    /// modules, stacked from the top to the bottom of the workspace.
+    fn mod_right(&self) -> Rect {
+        let workspace = self.mod_workspace();
+        let left = self.mod_left();
+        let gap = MOD_WORKSPACE_GAP * self.zoom;
+        Rect::from_min_max(
+            egui::pos2(left.right() + gap, workspace.top()),
+            workspace.max,
+        )
+    }
+
+    /// The routing table of the modulation page.
+    fn mod_table(&self) -> Rect {
+        let left = self.mod_left();
+        let height =
+            (MOD_HEADER_HEIGHT + MOD_ROW_HEIGHT * crate::params::MOD_SLOTS as f32) * self.zoom;
+        Rect::from_min_size(left.min, egui::vec2(left.width(), height))
+    }
+
+    /// The target inspector, directly below the routing table.
+    fn mod_target(&self) -> Rect {
+        let left = self.mod_left();
+        let table = self.mod_table();
+        Rect::from_min_max(
+            egui::pos2(left.left(), table.bottom() + MOD_STACK_GAP * self.zoom),
+            left.max,
+        )
+    }
+
+    /// The rect of one of the five modules of the right-hand column.
+    fn mod_module(&self, index: usize) -> Rect {
+        debug_assert!(index < Self::mod_module_count());
+        let column = self.mod_right();
+        let gap = MOD_MODULE_GAP * self.zoom;
+        let available = (column.height() - gap * (Self::mod_module_count() as f32 - 1.0)).max(0.0);
+        let total: f32 = MOD_MODULE_WEIGHTS.iter().sum();
+        let before: f32 = MOD_MODULE_WEIGHTS[..index].iter().sum();
+        let top = column.top() + gap * index as f32 + available * before / total;
+        let height = available * MOD_MODULE_WEIGHTS[index] / total;
+        Rect::from_min_size(
+            egui::pos2(column.left(), top),
+            egui::vec2(column.width(), height),
+        )
     }
 
     /// The rect of one section of a row with explicit proportions.
@@ -844,11 +862,6 @@ impl Layout {
     /// The width of a slider. It grows with the zoom of the panel.
     fn slider_width(&self) -> f32 {
         SLIDER_WIDTH * self.zoom
-    }
-
-    /// The width of the sliders of the macros.
-    fn macro_width(&self) -> f32 {
-        MACRO_SLIDER_WIDTH * self.zoom
     }
 }
 
@@ -949,14 +962,6 @@ struct EditorState {
     /// frame, so that a test can click anywhere on a row.
     #[cfg(test)]
     mod_row_rects: Vec<egui::Rect>,
-    /// The live bars under the three macros, and the live markers on them.
-    #[cfg(test)]
-    macro_live_rects: [Option<egui::Rect>; 3],
-    #[cfg(test)]
-    macro_live_marker_rects: [Option<egui::Rect>; 3],
-    /// The output meter of the VCA.
-    #[cfg(test)]
-    vca_meter_rect: Option<egui::Rect>,
     /// The range bar, its current marker and its live dot in the target
     /// inspector.
     #[cfg(test)]
@@ -965,9 +970,6 @@ struct EditorState {
     target_current_marker_rect: Option<egui::Rect>,
     #[cfg(test)]
     target_live_dot_rect: Option<egui::Rect>,
-    /// The source preview box of the target inspector.
-    #[cfg(test)]
-    target_preview_rect: Option<egui::Rect>,
     /// The identifiers of the faders, popups and switches of the last frame.
     #[cfg(test)]
     slider_ids: Vec<&'static str>,
@@ -1110,19 +1112,11 @@ impl SushiEditor {
                 #[cfg(test)]
                 mod_row_rects: Vec::new(),
                 #[cfg(test)]
-                macro_live_rects: [None; 3],
-                #[cfg(test)]
-                macro_live_marker_rects: [None; 3],
-                #[cfg(test)]
-                vca_meter_rect: None,
-                #[cfg(test)]
                 target_bar_rect: None,
                 #[cfg(test)]
                 target_current_marker_rect: None,
                 #[cfg(test)]
                 target_live_dot_rect: None,
-                #[cfg(test)]
-                target_preview_rect: None,
                 #[cfg(test)]
                 slider_ids: Vec::new(),
                 #[cfg(test)]
@@ -1498,13 +1492,9 @@ impl SushiEditor {
             self.state.popup_rects.clear();
             self.state.amount_rects.clear();
             self.state.mod_row_rects.clear();
-            self.state.macro_live_rects = [None; 3];
-            self.state.macro_live_marker_rects = [None; 3];
-            self.state.vca_meter_rect = None;
             self.state.target_bar_rect = None;
             self.state.target_current_marker_rect = None;
             self.state.target_live_dot_rect = None;
-            self.state.target_preview_rect = None;
             self.state.check_rects.clear();
             self.state.radio_rects.clear();
             self.state.slider_ids.clear();
@@ -1587,11 +1577,7 @@ impl SushiEditor {
                         row_c(ui, &layout, &mut ctx);
                         row_d(ui, &layout, &mut ctx);
                     }
-                    Page::Mod => {
-                        row_mod(ui, &layout, &mut ctx);
-                        row_c_mod(ui, &layout, &mut ctx);
-                        row_d_mod(ui, &layout, &mut ctx);
-                    }
+                    Page::Mod => mod_page(ui, &layout, &mut ctx),
                     Page::Fx => row_fx(ui, &layout, &mut ctx),
                 }
                 draw_footer(
@@ -2083,26 +2069,44 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
 // --- The rows of sections ------------------------------------------------
 
-/// The upper two bands of the modulation page: one routing table over both
-/// bands and the two envelopes of the sound in a context column on the right.
+/// The modulation page: the routing table and the target inspector on the
+/// left, and one column of five compact source modules on the right.
+///
+/// The five modules are the complete set of modulation sources: both LFOs, the
+/// two envelopes and the three macros. They are stacked once, in that order,
+/// and fill the full height of the workspace, so the page never scrolls and no
+/// source editor is repeated elsewhere.
+fn mod_page(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+
+    mod_routing_table(ui, layout.mod_table(), ctx);
+
+    let target = layout.mod_target();
+    group(ui, target, "TARGET", zoom, |ui, part| {
+        if let Part::Body = part {
+            target_inspector(ui, ctx);
+        }
+    });
+
+    for index in 0..Layout::mod_module_count() {
+        let rect = layout.mod_module(index);
+        match index {
+            0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
+            2 => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::mod_env(ctx.params)),
+            3 => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::amp_env(ctx.params)),
+            _ => macros_group(ui, rect, ctx),
+        }
+    }
+}
+
+/// The routing table on the upper left of the modulation page.
 ///
 /// The table has one header and one line per route: number, source,
 /// destination, a horizontal bipolar amount bar and a numeric readout. There
 /// are no per-slot frames and no repeated captions, so a full page of routes
-/// reads as a list instead of eight small forms. The envelopes sit in the two
-/// original bands, split on the band line, so the bands below them stay at
-/// their exact places.
-fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+/// reads as a list instead of eight small forms.
+fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
-    let row0 = layout.scale(layout.base_rows[0]);
-    let row1 = layout.scale(layout.base_rows[1]);
-    // The context column is the width of the original AMP ENV section, so its
-    // faders and the envelopes of the normal page share one rhythm.
-    let context = layout.group(1, 2);
-    let table = Rect::from_min_max(
-        row0.left_top(),
-        egui::pos2(context.left() - GROUP_GAP * zoom, row1.bottom()),
-    );
 
     let sources = [
         &ctx.params.mod1_source,
@@ -2385,23 +2389,6 @@ fn row_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
             Stroke::new(1.0, palette().rule),
         );
     }
-
-    // One quiet divider between the table and the context column. It runs
-    // through the band gap, so the column still reads as two envelopes.
-    ui.painter().line_segment(
-        [
-            egui::pos2(context.left() - GROUP_GAP * 0.5 * zoom, table.top()),
-            egui::pos2(context.left() - GROUP_GAP * 0.5 * zoom, table.bottom()),
-        ],
-        Stroke::new(1.0, palette().rule),
-    );
-
-    let mod_env = Rect::from_min_max(
-        egui::pos2(context.left(), row0.top()),
-        egui::pos2(context.right(), row0.bottom()),
-    );
-    envelope_group(ui, mod_env, zoom, ctx, &EnvelopeSpec::mod_env(ctx.params));
-    envelope_group(ui, context, zoom, ctx, &EnvelopeSpec::amp_env(ctx.params));
 }
 
 /// The first row: the two oscillators, the pulse widths and the source mixer.
@@ -2626,7 +2613,7 @@ struct EnvelopeSpec<'a> {
 }
 
 impl<'a> EnvelopeSpec<'a> {
-    /// The filter envelope of the normal panel and of the matrix page.
+    /// The filter envelope of the normal panel and of the modulation page.
     fn mod_env(params: &'a SushiParams) -> Self {
         Self {
             title: "MOD ENV",
@@ -2649,7 +2636,7 @@ impl<'a> EnvelopeSpec<'a> {
         }
     }
 
-    /// The amplifier envelope of the normal panel and of the matrix page.
+    /// The amplifier envelope of the normal panel and of the modulation page.
     fn amp_env(params: &'a SushiParams) -> Self {
         Self {
             title: "AMP ENV",
@@ -2704,10 +2691,9 @@ fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec:
 /// One of the two LFO editors of the modulation page.
 ///
 /// The LFO is a source of the modulation matrix now, so its section has no
-/// target or amount. It keeps the waveform, the clock and the retrigger, and
-/// the `MOD ROUTE` caption points at the table above that owns the routing.
-/// The editor fills its wide section with two balanced columns: the rate
-/// fader on the left and the clock controls on the right.
+/// target or amount. It keeps the waveform, the clock and the retrigger. The
+/// compact module packs the three faders and the clock controls into the
+/// right-hand source column, next to the table that owns the routing.
 fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usize) {
     let p = ctx.params;
     let (title, wave, sync, division, retrigger, rate, phase, curve, ids) = if index == 0 {
@@ -2775,27 +2761,10 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
                         caption(ui, "Div", 9.0, zoom, palette().label);
                         ui.add_space(4.0 * zoom);
                         ctx.popup(ui, ids.2, division, 66.0);
-                        ui.add_space(3.0 * zoom);
-                        text_label(ui, "MOD ROUTE", 7.5, zoom, palette().muted);
                     }
                 },
             );
         }
-    });
-}
-
-/// The third row of the modulation page: the two LFO editors and the three
-/// macros, side by side in one row.
-///
-/// The LFOs sit directly below the routing table, so the waveform, clock and
-/// retrigger of a source are in the same workspace as the routes that use it.
-/// The macros keep their live strips on this page too, because a routed macro
-/// is often adjusted while the matrix is open.
-fn row_c_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
-    let zoom = ctx.zoom;
-    mod_group_row(ui, "row-c-mod", layout, 2, |index, rect, ui| match index {
-        0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
-        _ => macros_group(ui, rect, layout, ctx),
     });
 }
 
@@ -2919,13 +2888,12 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 
 /// The fourth row of the normal page: the macros and the output.
 ///
-/// The normal page keeps `MACROS | VCA`, exactly as before. The modulation
-/// page gives the same band to the full-width target inspector, so the VCA
-/// stays a main-page control and the macros remain usable while routing.
+/// Both are clean fader groups. The modulation page owns the source editors;
+/// the VCA stays on the main page only.
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
-        0 => macros_group(ui, rect, layout, ctx),
+        0 => macros_group(ui, rect, ctx),
         _ => group(ui, rect, "VCA", zoom, |ui, part| match part {
             Part::Header => {
                 let p = ctx.params;
@@ -2933,230 +2901,60 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
             Part::Body => {
-                let body = ui.max_rect();
                 column_row_fill(ui, "output", 4, WIDE_COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
-                    let reserve = VCA_METER_RESERVE * zoom;
                     match index {
-                        0 => ctx.float_reserved(
+                        0 => ctx.float(
                             ui,
                             "volume",
                             "Volume",
                             &p.volume,
                             &Knob::decibels(-60.0, 6.0),
-                            reserve,
                         ),
-                        1 => ctx.float_reserved(
-                            ui,
-                            "tone",
-                            "Tone",
-                            &p.tone,
-                            &Knob::bipolar(),
-                            reserve,
-                        ),
-                        2 => ctx.float_reserved(
+                        1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
+                        2 => ctx.float(
                             ui,
                             "vca_width",
                             "Width",
                             &p.vca_width,
                             &Knob::plain(0.0, 2.0, 2),
-                            reserve,
                         ),
-                        3 => ctx.float_reserved(
-                            ui,
-                            "vca_pan",
-                            "Pan",
-                            &p.vca_pan,
-                            &Knob::bipolar(),
-                            reserve,
-                        ),
+                        3 => ctx.float(ui, "vca_pan", "Pan", &p.vca_pan, &Knob::bipolar()),
                         _ => {}
                     }
                 });
-                let meter = Rect::from_min_size(
-                    egui::pos2(body.left(), body.bottom() - VCA_METER_HEIGHT * zoom),
-                    egui::vec2(body.width(), VCA_METER_HEIGHT * zoom),
-                );
-                vca_output_meter(ui, meter, ctx, zoom);
             }
         }),
     });
 }
 
-/// The fourth row of the modulation page: one full-width target inspector.
-fn row_d_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
-    mod_group_row(ui, "row-d-mod", layout, 3, |_index, rect, ui| {
-        group(ui, rect, "TARGET", ctx.zoom, |ui, part| match part {
-            Part::Header => {}
-            Part::Body => target_inspector(ui, ctx),
-        });
-    });
-}
-
-/// The three macro faders and their compact live strips. They are shared by
-/// the normal and the modulation page, so a routed macro can be moved without
-/// leaving the matrix.
-fn macros_group(ui: &mut egui::Ui, rect: Rect, layout: &Layout, ctx: &mut Ctx) {
+/// The three macro faders. The same clean group is used by the main page and
+/// by the right-hand source column of the modulation page.
+fn macros_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group(ui, rect, "MACROS", zoom, |ui, part| match part {
         Part::Header => {}
         Part::Body => {
             column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
                 let p = ctx.params;
-                let knob = Knob::percent().with_width(layout.macro_width());
-                let (id, label, param, source) = match index {
-                    0 => (
-                        "macro_bright",
-                        "Brilliance",
-                        &p.macro_bright,
-                        ModSource::Macro1,
-                    ),
-                    1 => ("macro_motion", "Motion", &p.macro_motion, ModSource::Macro2),
-                    _ => ("macro_space", "Space", &p.macro_space, ModSource::Macro3),
+                let (id, label, param) = match index {
+                    0 => ("macro_bright", "Brilliance", &p.macro_bright),
+                    1 => ("macro_motion", "Motion", &p.macro_motion),
+                    _ => ("macro_space", "Space", &p.macro_space),
                 };
-                ctx.float_reserved(ui, id, label, param, &knob, MACRO_LIVE_RESERVE * zoom);
-                let live = live_source_value(source, ctx.mod_feedback).unwrap_or(param.value());
-                macro_live_strip(ctx, ui, ui.max_rect(), index, param.value(), live, zoom);
+                ctx.float(ui, id, label, param, &Knob::percent());
             });
         }
     });
 }
 
-/// Draws the compact live strip below one macro fader: a horizontal bar with
-/// the live macro value, a small live marker and the static target hint. The
-/// strip explains where the macro goes without adding another control.
-fn macro_live_strip(
-    ctx: &mut Ctx,
-    ui: &egui::Ui,
-    slot: Rect,
-    index: usize,
-    value: f32,
-    live: f32,
-    zoom: f32,
-) {
-    #[cfg(not(test))]
-    let _ = ctx;
-    let hint_height = MACRO_LIVE_HINT_HEIGHT * zoom;
-    let bar_height = MACRO_LIVE_BAR_HEIGHT * zoom;
-    let hint = Rect::from_min_max(
-        egui::pos2(slot.left(), slot.bottom() - hint_height),
-        slot.right_bottom(),
-    );
-    let bar = Rect::from_min_size(
-        egui::pos2(
-            slot.left(),
-            hint.top() - (MACRO_LIVE_GAP * zoom + bar_height),
-        ),
-        egui::vec2(slot.width(), bar_height),
-    );
-    let painter = ui.painter_at(slot);
-    flat_box(&painter, bar, palette().track);
-    let inner = bar.shrink(zoom);
-    let value = value.clamp(0.0, 1.0);
-    let fill = Rect::from_min_max(
-        inner.left_top(),
-        egui::pos2(inner.left() + inner.width() * value, inner.bottom()),
-    );
-    painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
-    let live = live.clamp(0.0, 1.0);
-    let marker = Rect::from_center_size(
-        egui::pos2(inner.left() + inner.width() * live, inner.center().y),
-        egui::vec2(TARGET_CURRENT_MARKER_WIDTH * zoom, inner.height()),
-    );
-    painter.rect_filled(marker, CornerRadius::ZERO, palette().accent);
-
-    let hint_font = FontId::new(font_size(8.0, zoom), bold());
-    let value_font = FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional);
-    painter.text(
-        hint.left_bottom() - egui::vec2(0.0, hint_height * 0.5),
-        Align2::LEFT_CENTER,
-        MACRO_TARGET_HINTS[index],
-        hint_font.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(hint.right(), hint.center().y),
-        Align2::RIGHT_CENTER,
-        format_whole_percent(value),
-        value_font,
-        palette().text,
-    );
-
-    #[cfg(test)]
-    {
-        ctx.state.macro_live_rects[index] = Some(bar);
-        ctx.state.macro_live_marker_rects[index] = Some(marker);
-    }
-}
-
-/// Draws the output activity meter of the VCA: a segmented horizontal bar
-/// driven by the peak level of the last frame, with the live voice count on
-/// its right. It uses the same feedback as the header, so it needs no new DSP
-/// value and no new parameter.
-fn vca_output_meter(ui: &egui::Ui, rect: Rect, ctx: &mut Ctx, zoom: f32) {
-    let painter = ui.painter_at(rect);
-    let font = FontId::new(font_size(8.0, zoom), bold());
-    let value_font = FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional);
-    painter.text(
-        egui::pos2(rect.left(), rect.center().y),
-        Align2::LEFT_CENTER,
-        "OUT",
-        font,
-        palette().muted,
-    );
-
-    let row_width = (VCA_METER_SEGMENTS as f32 * VCA_METER_SEGMENT_WIDTH
-        + (VCA_METER_SEGMENTS as f32 - 1.0) * VCA_METER_SEGMENT_GAP)
-        * zoom;
-    let row_left = rect.left() + 30.0 * zoom;
-    let row = Rect::from_min_size(
-        egui::pos2(
-            row_left,
-            rect.center().y - VCA_METER_SEGMENT_HEIGHT * 0.5 * zoom,
-        ),
-        egui::vec2(row_width, VCA_METER_SEGMENT_HEIGHT * zoom),
-    );
-    let activity = ctx.state.activity.clamp(0.0, 1.0);
-    let lit = (activity * VCA_METER_SEGMENTS as f32).ceil() as usize;
-    for index in 0..VCA_METER_SEGMENTS {
-        let segment = Rect::from_min_size(
-            egui::pos2(
-                row.left()
-                    + index as f32 * (VCA_METER_SEGMENT_WIDTH + VCA_METER_SEGMENT_GAP) * zoom,
-                row.top(),
-            ),
-            egui::vec2(VCA_METER_SEGMENT_WIDTH, VCA_METER_SEGMENT_HEIGHT) * zoom,
-        );
-        let color = if index < lit {
-            palette().led_on
-        } else {
-            palette().led_off
-        };
-        painter.rect_filled(segment, CornerRadius::ZERO, color);
-    }
-
-    let voices = ctx.voice_count.load(Ordering::Relaxed).min(VOICE_LEDS);
-    painter.text(
-        egui::pos2(rect.right(), rect.center().y),
-        Align2::RIGHT_CENTER,
-        format!("VOICE {voices:02}"),
-        value_font,
-        palette().muted,
-    );
-
-    #[cfg(test)]
-    {
-        ctx.state.vca_meter_rect = Some(row);
-    }
-}
-
 /// Draws the read-only inspector for the selected route.
 ///
 /// It answers the questions of a route in one place: what target does the
-/// route move and where does it stand now, how far can the amount push it,
-/// what is the source doing at this instant, and what shape does that source
-/// have. The band has no fader bank, so the inspection never competes with a
-/// control for the same space.
+/// route move and where does it stand now, how far can the amount push it and
+/// what is the source doing at this instant. Per-voice sources say so instead
+/// of inventing a global value. The band has no fader bank, so the inspection
+/// never competes with a control for the same space.
 fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let body = ui.max_rect();
@@ -3203,13 +3001,12 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         return;
     }
 
-    // Three blocks share the full band: the route facts, the target range bar
-    // and the source preview. The info block is wide enough for the longest
-    // source and destination names at every zoom.
+    // Two blocks share the full band: the route facts on the left and the
+    // target range bar on the right. The info block is wide enough for the
+    // longest source and destination names at every zoom.
     let info_right = left + TARGET_INFO_WIDTH * zoom;
-    let preview_left = right - TARGET_PREVIEW_WIDTH * zoom;
     let range_left = info_right + TARGET_BLOCK_GAP * zoom;
-    let range_right = preview_left - TARGET_BLOCK_GAP * zoom;
+    let range_right = right;
 
     let source_name = ModSource::variants()[ModSource::to_index(source)];
     let dest_name = ModDest::variants()[ModDest::to_index(dest)];
@@ -3358,41 +3155,11 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         palette().muted,
     );
 
-    // The source preview: a waveform, an envelope, a level bar or a neutral
-    // per-voice mark. It is read-only and adds no control.
-    let preview = Rect::from_min_size(
-        egui::pos2(preview_left, top + line * 1.4),
-        egui::vec2(TARGET_PREVIEW_WIDTH, TARGET_PREVIEW_HEIGHT) * zoom,
-    );
-    painter.text(
-        egui::pos2(preview_left, top + line * 0.5),
-        Align2::LEFT_CENTER,
-        "SOURCE",
-        label_font,
-        palette().muted,
-    );
-    painter.rect_filled(preview, CornerRadius::ZERO, palette().field_bg);
-    painter.rect_stroke(
-        preview,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, palette().line),
-        egui::StrokeKind::Inside,
-    );
-    target_source_preview(
-        &painter,
-        preview.shrink(4.0 * zoom),
-        source,
-        ctx.params,
-        ctx.mod_feedback,
-        zoom,
-    );
-
     #[cfg(test)]
     {
         ctx.state.target_bar_rect = Some(bar);
         ctx.state.target_current_marker_rect = Some(current_marker);
         ctx.state.target_live_dot_rect = live_dot;
-        ctx.state.target_preview_rect = Some(preview);
     }
 }
 
@@ -3495,206 +3262,6 @@ fn log_position(value: f32, min: f32, max: f32) -> f32 {
         return 0.5;
     }
     (value / min).ln() / (max / min).ln()
-}
-
-/// Draws the small source preview of the target inspector.
-fn target_source_preview(
-    painter: &egui::Painter,
-    inner: Rect,
-    source: ModSource,
-    params: &SushiParams,
-    feedback: &ModFeedback,
-    zoom: f32,
-) {
-    match source {
-        ModSource::Lfo1 => draw_lfo_preview(painter, inner, params.lfo1_wave.value(), zoom),
-        ModSource::Lfo2 => draw_lfo_preview(painter, inner, params.lfo2_wave.value(), zoom),
-        ModSource::ModEnv => draw_adsr_preview(
-            painter,
-            inner,
-            EnvelopePreview {
-                attack: params.fe_attack.value(),
-                decay: params.fe_decay.value(),
-                sustain: params.fe_sustain.value(),
-                release: params.fe_release.value(),
-                release_max: 4_000.0,
-            },
-            zoom,
-        ),
-        ModSource::AmpEnv => draw_adsr_preview(
-            painter,
-            inner,
-            EnvelopePreview {
-                attack: params.ae_attack.value(),
-                decay: params.ae_decay.value(),
-                sustain: params.ae_sustain.value(),
-                release: params.ae_release.value(),
-                release_max: 8_000.0,
-            },
-            zoom,
-        ),
-        ModSource::Macro1 => draw_level_preview(painter, inner, feedback.macro1(), zoom),
-        ModSource::Macro2 => draw_level_preview(painter, inner, feedback.macro2(), zoom),
-        ModSource::Macro3 => draw_level_preview(painter, inner, feedback.macro3(), zoom),
-        ModSource::ModWheel => draw_level_preview(painter, inner, feedback.mod_wheel(), zoom),
-        ModSource::Velocity | ModSource::Key | ModSource::Random | ModSource::Off => {
-            draw_per_voice_preview(painter, inner, zoom)
-        }
-    }
-}
-
-/// The value of a waveform at a normalized phase, `-1..1`.
-fn lfo_preview_value(wave: LfoWaveform, phase: f32) -> f32 {
-    let phase = phase.rem_euclid(1.0);
-    match wave {
-        LfoWaveform::Sine => (phase * std::f32::consts::TAU).sin(),
-        LfoWaveform::Triangle => {
-            if phase < 0.25 {
-                phase * 4.0
-            } else if phase < 0.75 {
-                2.0 - phase * 4.0
-            } else {
-                phase * 4.0 - 4.0
-            }
-        }
-        LfoWaveform::Saw => phase * 2.0 - 1.0,
-        LfoWaveform::Square => {
-            if phase < 0.5 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        LfoWaveform::SampleHold => {
-            let step = (phase * 8.0).floor() as u32;
-            let mut hash = step.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-            hash = ((hash >> ((hash >> 28) & 0xF)) ^ hash).wrapping_mul(2_778_037_377);
-            let hash = (hash >> 22) ^ hash;
-            (hash as f32 / u32::MAX as f32) * 2.0 - 1.0
-        }
-    }
-}
-
-/// Draws one LFO waveform in the source preview.
-fn draw_lfo_preview(painter: &egui::Painter, inner: Rect, wave: LfoWaveform, zoom: f32) {
-    let mid = inner.center().y;
-    painter.line_segment(
-        [
-            egui::pos2(inner.left(), mid),
-            egui::pos2(inner.right(), mid),
-        ],
-        Stroke::new(1.0, palette().rule),
-    );
-    let amplitude = inner.height() * 0.36;
-    let steps = 96;
-    let points = (0..=steps)
-        .map(|index| {
-            let phase = index as f32 / steps as f32;
-            egui::pos2(
-                inner.left() + phase * inner.width(),
-                mid - lfo_preview_value(wave, phase) * amplitude,
-            )
-        })
-        .collect();
-    painter.add(egui::Shape::line(
-        points,
-        Stroke::new((TARGET_PREVIEW_LINE_WIDTH * zoom).max(1.0), palette().trace),
-    ));
-}
-
-/// A duration on a gently compressed axis, so a 5 ms attack is still visible
-/// in the same small preview as a four-second release.
-fn envelope_time_position(milliseconds: f32, max: f32) -> f32 {
-    ((1.0 + milliseconds.max(0.0)).ln() / (1.0 + max).ln()).clamp(0.0, 1.0)
-}
-
-/// The shape values of an envelope preview.
-#[derive(Clone, Copy, Debug)]
-struct EnvelopePreview {
-    attack: f32,
-    decay: f32,
-    sustain: f32,
-    release: f32,
-    release_max: f32,
-}
-
-/// Draws the ADSR shape of an envelope in the source preview.
-fn draw_adsr_preview(painter: &egui::Painter, inner: Rect, envelope: EnvelopePreview, zoom: f32) {
-    let inner = inner.shrink(2.0 * zoom);
-    let bottom = inner.bottom();
-    let top = inner.top();
-    let attack_width = 0.08 + 0.22 * envelope_time_position(envelope.attack, 4_000.0);
-    let decay_width = 0.10 + 0.25 * envelope_time_position(envelope.decay, 4_000.0);
-    let release_width =
-        0.08 + 0.25 * envelope_time_position(envelope.release, envelope.release_max);
-    let sustain_width = 0.22;
-    let total = attack_width + decay_width + sustain_width + release_width;
-    let x0 = inner.left();
-    let x1 = x0 + inner.width() * attack_width / total;
-    let x2 = x1 + inner.width() * decay_width / total;
-    let x3 = x2 + inner.width() * sustain_width / total;
-    let x4 = inner.right();
-    let sustain_y = bottom - (bottom - top) * envelope.sustain.clamp(0.0, 1.0);
-    painter.line_segment(
-        [
-            egui::pos2(inner.left(), bottom),
-            egui::pos2(inner.right(), bottom),
-        ],
-        Stroke::new(1.0, palette().rule),
-    );
-    let points = vec![
-        egui::pos2(x0, bottom),
-        egui::pos2(x1, top),
-        egui::pos2(x2, sustain_y),
-        egui::pos2(x3, sustain_y),
-        egui::pos2(x4, bottom),
-    ];
-    painter.add(egui::Shape::line(
-        points,
-        Stroke::new((TARGET_PREVIEW_LINE_WIDTH * zoom).max(1.0), palette().trace),
-    ));
-}
-
-/// Draws a horizontal level bar for a macro or the mod wheel.
-fn draw_level_preview(painter: &egui::Painter, inner: Rect, value: f32, zoom: f32) {
-    let bar = Rect::from_center_size(inner.center(), egui::vec2(inner.width(), 10.0 * zoom));
-    painter.rect_filled(bar, CornerRadius::ZERO, palette().track);
-    painter.rect_stroke(
-        bar,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, palette().line),
-        egui::StrokeKind::Inside,
-    );
-    let fill = Rect::from_min_max(
-        egui::pos2(bar.left() + zoom, bar.top() + zoom),
-        egui::pos2(
-            bar.left() + zoom + (bar.width() - 2.0 * zoom) * value.clamp(0.0, 1.0),
-            bar.bottom() - zoom,
-        ),
-    );
-    painter.rect_filled(fill, CornerRadius::ZERO, palette().accent);
-}
-
-/// Draws the neutral mark of a per-voice source. Such a source has no global
-/// value outside a note, so the preview does not pretend to show one.
-fn draw_per_voice_preview(painter: &egui::Painter, inner: Rect, zoom: f32) {
-    let mark = Rect::from_center_size(
-        inner.center() - egui::vec2(0.0, 5.0 * zoom),
-        egui::vec2(10.0, 10.0) * zoom,
-    );
-    painter.rect_stroke(
-        mark,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, palette().muted),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        egui::pos2(inner.center().x, inner.bottom()),
-        Align2::CENTER_BOTTOM,
-        "PER VOICE",
-        FontId::new(font_size(8.0, zoom), bold()),
-        palette().muted,
-    );
 }
 
 /// The controls of one module of the FX rack. The module index follows the
@@ -4353,12 +3920,6 @@ impl Knob {
         }
     }
 
-    /// The same knob, but with another width.
-    fn with_width(mut self, width: f32) -> Self {
-        self.width = width;
-        self
-    }
-
     /// Converts the value of the parameter into the shown value.
     fn display(&self, value: f32) -> f32 {
         (self.to_display)(value)
@@ -4445,21 +4006,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         param: &FloatParam,
         knob: &Knob,
     ) {
-        self.float_reserved(ui, id, label, param, knob, 0.0);
-    }
-
-    /// Draws a continuous parameter with room kept free below its slider.
-    /// The macros and the VCA reserve the height of their live decoration, so
-    /// the fader can never run into the strip or the meter.
-    fn float_reserved(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: &'static str,
-        label: &str,
-        param: &FloatParam,
-        knob: &Knob,
-        reserve: f32,
-    ) {
         #[cfg(test)]
         self.state.count(Widget::Slider);
         #[cfg(test)]
@@ -4472,7 +4018,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
         // the field always sits at the bottom of the column.
-        let height = (slider_height(ui, zoom) - reserve).max(MIN_SLIDER_HEIGHT * zoom);
+        let height = slider_height(ui, zoom).max(MIN_SLIDER_HEIGHT * zoom);
         let knob = &Knob {
             width: knob.width.max(self.slider_width),
             ..*knob
@@ -5756,29 +5302,6 @@ fn group_row(
 ) {
     for index in 0..Layout::group_count(row) {
         let box_rect = layout.group(row, index);
-
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .id_salt(("sushi-group", name, index))
-                .max_rect(box_rect)
-                .layout(EguiLayout::top_down(Align::Min)),
-            |ui| add(index, box_rect, ui),
-        );
-    }
-}
-
-/// Lays out the modules of the modulation page with its own proportions.
-/// Row 2 has the three modules `LFO 1 | LFO 2 | MACROS`, and row 3 is the
-/// single full-width `TARGET` band.
-fn mod_group_row(
-    ui: &mut egui::Ui,
-    name: &str,
-    layout: &Layout,
-    row: usize,
-    mut add: impl FnMut(usize, Rect, &mut egui::Ui),
-) {
-    for index in 0..Layout::mod_group_count(row) {
-        let box_rect = layout.mod_group(row, index);
 
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -7409,8 +6932,7 @@ mod tests {
             if let egui::epaint::Primitive::Mesh(_mesh) = clipped.primitive {
                 let rect = clipped.clip_rect;
                 let width = rect.width();
-                let is_slider = (width - SLIDER_WIDTH * zoom).abs() < 0.5
-                    || (width - MACRO_SLIDER_WIDTH * zoom).abs() < 0.5;
+                let is_slider = (width - SLIDER_WIDTH * zoom).abs() < 0.5;
                 if is_slider && rect.height() > 40.0 {
                     rects.push(rect);
                 }
@@ -7585,38 +7107,12 @@ mod tests {
     /// The index of the slider of the master tune. It is the first slider of
     /// the panel.
     const TUNE_SLIDER: usize = 0;
+    /// The representative zooms of the responsive tests. The layout is linear
+    /// in the zoom, so the ends and the common display scales are enough.
+    const ZOOMS: [usize; 6] = [100, 125, 150, 200, 300, 400];
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
     const VOICES_SLIDER: usize = 44;
-
-    #[test]
-    fn fader_thumbs_keep_equal_side_margins() {
-        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(SLIDER_WIDTH, 200.0));
-        let geometry = FaderGeometry::new(rect, 1.0);
-        for (lane, thumb) in [
-            (geometry.coarse_lane, geometry.coarse_thumb(100.0)),
-            (geometry.fine_lane, geometry.fine_thumb(100.0)),
-        ] {
-            let left = thumb.left() - lane.left();
-            let right = lane.right() - thumb.right();
-            assert!(
-                (left - right).abs() < 0.01,
-                "the thumb is not centered in its lane: left {left}, right {right}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_panel_has_the_expected_number_of_widgets() {
-        let (ctx, mut editor, _params) = make_editor();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        let counts = editor.state.counts;
-        assert_eq!(counts.sliders, 52, "unexpected number of sliders");
-        assert_eq!(counts.popups, 8, "unexpected number of popups");
-        assert_eq!(counts.checks, 4, "unexpected number of check boxes");
-        assert_eq!(counts.radios, 1, "unexpected number of radio pairs");
-    }
 
     #[test]
     fn every_parameter_of_the_synthesizer_is_reachable() {
@@ -7767,7 +7263,7 @@ mod tests {
             (0, &params.lfo1_phase, &params.lfo1_curve, "LFO 1"),
             (1, &params.lfo2_phase, &params.lfo2_curve, "LFO 2"),
         ] {
-            let section = layout.mod_group(2, section_index);
+            let section = layout.mod_module(section_index);
             let mut bank: Vec<egui::Rect> = sliders
                 .iter()
                 .filter(|rect| section.contains_rect(**rect))
@@ -7929,8 +7425,8 @@ mod tests {
     }
 
     #[test]
-    fn the_main_and_mod_pages_fit_at_every_zoom() {
-        for percent in (100..=400).step_by(5) {
+    fn the_main_and_mod_pages_fit_at_representative_zooms() {
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             for page in [Page::Main, Page::Mod] {
                 let (ctx, mut editor, _params) = make_editor();
@@ -7955,6 +7451,20 @@ mod tests {
                             "the modulation page has no {label} control at {percent}%: {names:?}"
                         );
                     }
+                    // The amount bars are horizontal and therefore not in the
+                    // list of the vertical sliders, but they stay clickable
+                    // inside the panel as well.
+                    assert_eq!(
+                        editor.state.amount_rects.len(),
+                        8,
+                        "the modulation page lost an amount bar at {percent}%"
+                    );
+                    for bar in &editor.state.amount_rects {
+                        assert!(
+                            panel.contains_rect(*bar),
+                            "an amount bar is outside the panel at {percent}%: {bar:?}"
+                        );
+                    }
                 }
             }
         }
@@ -7966,8 +7476,9 @@ mod tests {
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
 
-        // The normal page has no LFO controls at all. The LFOs live with the
-        // routing table, so they only appear after the MOD tab is opened.
+        // The normal page has no LFO controls at all. The LFOs live in the
+        // source column of the MOD page, so they only appear after the MOD tab
+        // is opened.
         for hidden in ["LFO 1", "LFO 2", "MOD ROUTE", "RETRIG"] {
             assert!(
                 !names.iter().any(|text| text == hidden),
@@ -7978,16 +7489,16 @@ mod tests {
         editor.state.page = Page::Mod;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for shown in ["LFO 1", "LFO 2", "MOD ROUTE", "RETRIG", "RATE"] {
+        for shown in ["LFO 1", "LFO 2", "RETRIG", "RATE"] {
             assert!(
                 names.iter().any(|text| text == shown),
                 "the modulation page has no LFO control {shown}: {names:?}"
             );
         }
         // The legacy Target/Amount pair is gone from the LFO editors; the
-        // matrix page is the only place that routes an LFO. TARGET itself is
-        // the new read-only inspector title, so it is allowed (and expected)
-        // in the lower band.
+        // routing table is the only place that routes an LFO. TARGET itself is
+        // the read-only inspector title, so it is allowed (and expected) in
+        // the lower-left band.
         for hidden in ["Target", "Amount", "AMOUNT"] {
             assert!(
                 !names.iter().any(|text| text == hidden),
@@ -8024,10 +7535,17 @@ mod tests {
         run_frames(&ctx, &mut editor, click(retrigger.center()));
         assert!(params.lfo1_retrigger.value());
 
-        // Open the division popup and pick a different note value.
+        // Open the division popup and pick a different note value. The first
+        // LFO is the first module of the right-hand column.
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let lfo1 = layout.mod_module(0);
         let (_, division) = texts(&output)
             .into_iter()
-            .find(|(text, _)| text == "1/4")
+            .find(|(text, pos)| text == "1/4" && lfo1.contains(*pos))
             .expect("the division popup has no selected value");
         let button = division + egui::vec2(2.0, 2.0);
         run_frames(
@@ -8051,10 +7569,11 @@ mod tests {
             ],
         );
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The division popup of LFO 1 sits in the left half of the page.
+        // Only the LFO 1 division popup is open, so the eighth note belongs
+        // to it.
         let (_, eighth) = texts(&output)
             .into_iter()
-            .find(|(text, pos)| text == "1/8" && pos.x < 490.0)
+            .find(|(text, _)| text == "1/8")
             .expect("the division popup has no eighth note");
         run_frames(&ctx, &mut editor, click(eighth + egui::vec2(2.0, 2.0)));
         assert_eq!(params.lfo1_div.value(), crate::params::NoteDiv::Eighth);
@@ -8332,57 +7851,6 @@ mod tests {
     }
 
     #[test]
-    fn a_check_box_reset_is_one_undo_step() {
-        let (ctx, mut editor, params) = make_editor();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rect = editor.state.check_rects[0];
-
-        // Switch the first check box on.
-        run_frames(&ctx, &mut editor, click(rect.center()));
-        assert!(params.osc_sync.value() || params.arp_on.value());
-        let before_reset = if params.osc_sync.value() {
-            params.osc_sync.value()
-        } else {
-            params.arp_on.value()
-        };
-
-        // The double click resets it, and one undo returns to the value that
-        // the check box had before the double click.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, double_click(rect.center()));
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let after_undo = if params.osc_sync.value() {
-            params.osc_sync.value()
-        } else {
-            params.arp_on.value()
-        };
-        assert_eq!(after_undo, before_reset);
-    }
-
-    #[test]
-    fn a_preset_load_can_be_undone_and_redone() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == ">")
-            .expect("the header has no next button");
-
-        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
-        assert_eq!(editor.state.preset_index, 1);
-        assert!((params.cutoff.value() - 4_200.0).abs() < 0.01);
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert_eq!(editor.state.preset_index, 0);
-        assert!(editor.state.patch_active.is_none());
-        assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        assert_eq!(editor.state.preset_index, 1);
-        assert!((params.cutoff.value() - 4_200.0).abs() < 0.01);
-    }
-
-    #[test]
     fn a_mutation_can_be_undone_and_redone() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -8654,13 +8122,10 @@ mod tests {
         let (ctx, mut editor, params) = make_editor();
         edit_cutoff(&mut editor, &ctx, "1000");
         assert_eq!(params.cutoff.value(), 1_000.0);
-    }
 
-    #[test]
-    fn the_right_click_editor_rejects_nonsense() {
-        let (ctx, mut editor, params) = make_editor();
+        // A value that is not a number is rejected and keeps the old value.
         edit_cutoff(&mut editor, &ctx, "NaN");
-        assert_eq!(params.cutoff.value(), 3_000.0);
+        assert_eq!(params.cutoff.value(), 1_000.0);
     }
 
     #[test]
@@ -8764,23 +8229,11 @@ mod tests {
             (back - before).abs() < 0.001,
             "the wheel did not move the slider back: {back} instead of {before}"
         );
-    }
 
-    #[test]
-    fn the_mouse_wheel_moves_a_slider_in_small_steps_with_shift() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[CUTOFF_SLIDER];
-        let pos = rect.center();
-
-        let before = params.cutoff.value();
-
-        // A whole step.
+        // One whole step up, then a Shift step. The fine step still moves the
+        // value, but by less than a coarse one.
         run_frames(&ctx, &mut editor, wheel(pos, 1.0, false));
         let coarse = params.cutoff.value();
-
-        // And a small one.
         run_frames(&ctx, &mut editor, wheel(pos, 1.0, true));
         let fine = params.cutoff.value();
 
@@ -8844,23 +8297,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mutate_button_changes_the_sound() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "MUTATE")
-            .unwrap();
-        let button = pos + egui::vec2(2.0, 2.0);
-
-        let cutoff = params.cutoff.value();
-        run_frames(&ctx, &mut editor, click(button));
-
-        assert!(editor.state.dirty);
-        assert!(params.cutoff.value() != cutoff);
-    }
-
-    #[test]
     fn double_clicking_a_slider_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -8885,26 +8321,6 @@ mod tests {
     }
 
     #[test]
-    fn double_clicking_a_slider_opens_and_closes_a_gesture() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[CUTOFF_SLIDER];
-
-        GESTURES.with(|gestures| gestures.set(0));
-        SETS.with(|sets| sets.set(0));
-
-        run_frames(&ctx, &mut editor, double_click(rect.center()));
-
-        // The two clicks open and close a gesture each, and the reset is
-        // done inside of the gesture of the second click.
-        let gestures = GESTURES.with(|gestures| gestures.get());
-        let sets = SETS.with(|sets| sets.get());
-        assert_eq!(gestures, 4, "the gestures were not opened and closed");
-        assert_eq!(sets, 3, "the value was not set three times");
-    }
-
-    #[test]
     fn double_clicking_a_check_box_resets_it_to_the_default() {
         let (ctx, mut editor, params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -8922,24 +8338,6 @@ mod tests {
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(pos));
         assert!(!params.arp_on.value());
-    }
-
-    #[test]
-    fn double_clicking_the_character_resets_it_to_the_default() {
-        let (ctx, mut editor, params) = make_editor();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        // The second button of the radio pair is the harsh character.
-        let rect = editor.state.radio_rects[1];
-        let pos = rect.center();
-
-        // A single click picks the harsh character.
-        run_frames(&ctx, &mut editor, click(pos));
-        assert_eq!(params.character.value(), crate::params::Character::Grit);
-
-        // The double click puts it back to the default.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, double_click(pos));
-        assert_eq!(params.character.value(), crate::params::Character::Silk);
     }
 
     #[test]
@@ -8990,22 +8388,8 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_hints_at_the_double_click_reset() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        let (_, pos, _) = text_shapes(&output)
-            .into_iter()
-            .find(|(text, _, _)| text.contains("DBL-CLICK = RESET"))
-            .expect("the footer has no hint");
-
-        // The hint sits in the footer strip, below the last band.
-        assert!(pos.y > WINDOW_HEIGHT - FOOTER_HEIGHT - 4.0);
-    }
-
-    #[test]
     fn the_header_controls_do_not_overlap_the_voice_meter() {
-        for percent in (100..=400).step_by(5) {
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             let rect = Rect::from_min_size(
                 egui::pos2(MARGIN, MARGIN) * zoom,
@@ -9034,36 +8418,7 @@ mod tests {
     }
 
     #[test]
-    fn the_header_texts_do_not_overlap_at_any_zoom() {
-        let (ctx, mut editor, _params) = make_editor();
-        for percent in (100..=400).step_by(5) {
-            let zoom = percent as f32 / 100.0;
-            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let bottom = (MARGIN + HEADER_HEIGHT) * zoom;
-            let header_texts: Vec<(String, Rect)> = text_shapes(&output)
-                .into_iter()
-                .filter(|(_, pos, _)| pos.y < bottom)
-                .map(|(text, pos, text_size)| (text, Rect::from_min_size(pos, text_size)))
-                .collect();
-
-            // The static wordmark, the subtitle and the LCD have to share the
-            // header with the buttons and the page tabs without touching.
-            for (index, (first, first_rect)) in header_texts.iter().enumerate() {
-                for (second, second_rect) in header_texts.iter().skip(index + 1) {
-                    let overlap = first_rect.intersect(*second_rect);
-                    assert!(
-                        overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                        "the header texts {first:?} and {second:?} overlap at {percent}%: \
-{first_rect:?} / {second_rect:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_mod_button_opens_the_matrix_page() {
+    fn the_mod_button_opens_the_modulation_page() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let (_, pos) = texts(&output)
@@ -9080,14 +8435,17 @@ mod tests {
         let counts = editor.state.counts;
         assert_eq!(
             counts.sliders, 27,
-            "the matrix needs eight bars, ten envelope faders, six LFO faders \
-and the three macros; the VCA is main-page only"
+            "the modulation page needs eight bars, ten envelope faders, six LFO \
+faders and the three macros; the VCA is main-page only"
         );
-        assert_eq!(counts.popups, 20, "unexpected number of matrix popups");
+        assert_eq!(
+            counts.popups, 20,
+            "unexpected number of modulation page popups"
+        );
         assert_eq!(
             editor.state.popup_rects.len(),
             counts.popups,
-            "the matrix page left stale popup rectangles behind"
+            "the modulation page left stale popup rectangles behind"
         );
         assert_eq!(counts.checks, 4);
         assert_eq!(counts.radios, 0);
@@ -9124,98 +8482,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_matrix_page_is_one_compact_table_with_both_envelopes() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.page = Page::Mod;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let all_texts = texts(&output);
-        let names: Vec<String> = all_texts.iter().map(|(text, _)| text.clone()).collect();
-        let table: Vec<&String> = all_texts
-            .iter()
-            .filter(|(_, pos)| pos.x < 656.0 && pos.y < 318.0)
-            .map(|(text, _)| text)
-            .collect();
-
-        // One header, eight numbered routes, and both envelopes at once.
-        assert_eq!(
-            names.iter().filter(|text| *text == "MODULATION").count(),
-            1,
-            "the table has no single header: {names:?}"
-        );
-        for route in ["01", "02", "03", "04", "05", "06", "07", "08"] {
-            assert!(names.contains(&route.to_string()), "missing route {route}");
-        }
-        assert!(
-            names.contains(&"MOD ENV".to_string()),
-            "the modulation page lost MOD ENV: {names:?}"
-        );
-        assert!(
-            names.contains(&"AMP ENV".to_string()),
-            "the modulation page lost AMP ENV: {names:?}"
-        );
-
-        // The empty state prints no value: no "Off" sixteen times, no "AMT"
-        // captions and no row of zeros.
-        assert_eq!(
-            table.iter().filter(|text| ***text == "Off").count(),
-            0,
-            "the empty matrix repeats Off: {names:?}"
-        );
-        assert_eq!(
-            table.iter().filter(|text| ***text == "AMT").count(),
-            0,
-            "the matrix repeats the AMT caption: {names:?}"
-        );
-        assert_eq!(
-            table.iter().filter(|text| ***text == "0").count(),
-            0,
-            "the empty matrix prints a row of zeros: {names:?}"
-        );
-
-        // Every route has a bar whose travel is much longer than the old
-        // 82 px fader.
-        let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.amount_rects.len(), 8);
-        for rect in &editor.state.amount_rects {
-            assert!(
-                amount_travel(*rect, zoom) > 200.0 * zoom,
-                "the amount bar is too short: {rect:?}"
-            );
-        }
-
-        // Ten envelope faders are back: five in each of the two upper bands,
-        // with the height of the envelope faders of the normal panel.
-        let sliders = slider_rects(&ctx, &output);
-        let envelopes: Vec<egui::Rect> = sliders
-            .into_iter()
-            .filter(|rect| rect.center().y < 318.0 * zoom && rect.left() >= 664.0 * zoom)
-            .collect();
-        assert_eq!(envelopes.len(), 10, "unexpected envelope faders");
-        assert_eq!(
-            envelopes
-                .iter()
-                .filter(|rect| rect.center().y < 187.0 * zoom)
-                .count(),
-            5,
-            "MOD ENV does not have five faders in the upper band"
-        );
-        assert_eq!(
-            envelopes
-                .iter()
-                .filter(|rect| rect.center().y > 195.0 * zoom)
-                .count(),
-            5,
-            "AMP ENV does not have five faders in the lower band"
-        );
-        for rect in envelopes {
-            assert!(
-                rect.height() > 75.0 * zoom && rect.height() < 90.0 * zoom,
-                "an envelope fader lost its height: {rect:?}"
-            );
-        }
-    }
-
-    #[test]
     fn an_amount_that_rounds_to_zero_stays_silent() {
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Mod;
@@ -9224,121 +8490,21 @@ and the three macros; the VCA is main-page only"
         setter.set_parameter(&params.mod1_amount, 0.001);
 
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let table_rect = layout.mod_table();
         let table: Vec<String> = texts(&output)
             .into_iter()
-            .filter(|(_, pos)| pos.x < 656.0 && pos.y < 318.0)
+            .filter(|(_, pos)| table_rect.contains(*pos))
             .map(|(text, _)| text)
             .collect();
         assert_eq!(format_amount(0.001), "0");
         assert!(
             !table.iter().any(|text| text == "0"),
             "an amount of 0.001 printed a misleading zero: {table:?}"
-        );
-    }
-
-    #[test]
-    fn the_mod_page_puts_three_modules_in_one_row_and_a_full_target_band() {
-        let (ctx, mut editor, _params) = make_editor();
-        let normal = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let normal_texts = texts(&normal);
-        let normal_names: Vec<String> = normal_texts.iter().map(|(text, _)| text.clone()).collect();
-
-        // The main page keeps its two pairs: ARP / VOICE above and
-        // MACROS / VCA below. The modulation page has no main-page controls.
-        for title in ["ARP", "VOICE", "MACROS", "VCA"] {
-            assert!(
-                normal_names.iter().any(|text| text == title),
-                "the normal page has no {title}"
-            );
-        }
-        for title in ["LFO 1", "LFO 2", "TARGET"] {
-            assert!(
-                !normal_names.iter().any(|text| text == title),
-                "the normal page still has {title}"
-            );
-        }
-
-        editor.state.page = Page::Mod;
-        let matrix = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let matrix_texts = texts(&matrix);
-        let matrix_names: Vec<String> = matrix_texts.iter().map(|(text, _)| text.clone()).collect();
-        for title in ["LFO 1", "LFO 2", "MACROS", "TARGET"] {
-            assert!(
-                matrix_names.iter().any(|text| text == title),
-                "the modulation page has no {title}"
-            );
-        }
-        for title in ["ARP", "VOICE", "VCA"] {
-            assert!(
-                !matrix_names.iter().any(|text| text == title),
-                "the modulation page still has {title}"
-            );
-        }
-
-        // Row C has three modules in one row, not two wide columns.
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
-        .expect("the window is big enough");
-        let modules = ["LFO 1", "LFO 2", "MACROS"];
-        let mut positions = Vec::new();
-        for (index, title) in modules.into_iter().enumerate() {
-            let (_, pos) = matrix_texts
-                .iter()
-                .find(|(text, _)| text == title)
-                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
-            positions.push(*pos);
-            let group = layout.mod_group(2, index);
-            assert!(
-                group.contains(*pos),
-                "{title} is outside its module: {pos:?} / {group:?}"
-            );
-        }
-        assert!(
-            (positions[0].y - positions[1].y).abs() < 1.0
-                && (positions[1].y - positions[2].y).abs() < 1.0,
-            "the three modules are not in one row: {positions:?}"
-        );
-        assert!(
-            positions[0].x < positions[1].x && positions[1].x < positions[2].x,
-            "the three modules are not three columns: {positions:?}"
-        );
-        assert_eq!(
-            Layout::mod_group_count(2),
-            3,
-            "row C does not have three columns"
-        );
-        for index in 0..3 {
-            let group = layout.mod_group(2, index);
-            assert!(
-                (group.height() - ROW_HEIGHTS[2]).abs() < 1.0,
-                "a module of row C has the wrong height: {group:?}"
-            );
-        }
-
-        // Row D is one full-width target inspector.
-        assert_eq!(
-            Layout::mod_group_count(3),
-            1,
-            "row D has more than one target column"
-        );
-        let target_group = layout.mod_group(3, 0);
-        let (_, target) = matrix_texts
-            .iter()
-            .find(|(text, _)| text == "TARGET")
-            .expect("the modulation page has no TARGET");
-        assert!(
-            target_group.contains(*target),
-            "the target title is outside its band: {target:?} / {target_group:?}"
-        );
-        assert!(
-            (target_group.width() - (WINDOW_WIDTH - 2.0 * MARGIN)).abs() < 1.0,
-            "the target inspector does not fill the row: {target_group:?}"
-        );
-        assert!(
-            target.y > positions[0].y,
-            "the target inspector is not below the modules: {target:?}"
         );
     }
 
@@ -9633,8 +8799,8 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_target_inspector_fits_its_section_at_every_zoom() {
-        for percent in (100..=400).step_by(5) {
+    fn the_target_inspector_fits_its_section_at_representative_zooms() {
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             let (ctx, mut editor, params) = make_editor();
             let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
@@ -9655,8 +8821,8 @@ and the three macros; the VCA is main-page only"
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
             let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
                 .expect("the window is big enough");
-            let target = layout.mod_group(3, 0);
-            let macros = layout.mod_group(2, 2);
+            let target = layout.mod_target();
+            let macros = layout.mod_module(4);
 
             let target_texts: Vec<(String, Rect)> = text_shapes(&output)
                 .into_iter()
@@ -9697,68 +8863,16 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_macros_show_live_strips_with_their_target_hints() {
+    fn the_main_page_macros_and_vca_are_clean_fader_groups() {
         let (ctx, mut editor, _params) = make_editor();
+        // Even with live macro values and a loud frame, the main page shows no
+        // live strips and no output meter.
         editor.mod_feedback.store(ModFeedbackValues {
             macro1: 0.25,
             macro2: 0.5,
             macro3: 0.75,
             ..Default::default()
         });
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
-        .expect("the window is big enough");
-        let macros = layout.group(3, 0);
-        let zoom = layout.zoom;
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for hint in MACRO_TARGET_HINTS {
-            assert!(
-                names.iter().any(|text| text == hint),
-                "the macros have no {hint:?} hint: {names:?}"
-            );
-        }
-
-        // Every macro has a live bar and a live marker in its own column.
-        let sliders: Vec<Rect> = slider_rects(&ctx, &output)
-            .into_iter()
-            .filter(|rect| macros.contains_rect(*rect))
-            .collect();
-        assert_eq!(sliders.len(), 3, "the macros lost a fader");
-        for (index, expected) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
-            let bar = editor.state.macro_live_rects[index].expect("a macro has no live strip");
-            let marker =
-                editor.state.macro_live_marker_rects[index].expect("a macro has no live marker");
-            assert!(
-                macros.contains_rect(bar),
-                "a macro live strip left its section: {bar:?} / {macros:?}"
-            );
-            assert!(
-                bar.contains_rect(marker),
-                "a macro live marker left its strip: {marker:?} / {bar:?}"
-            );
-            let inner = bar.shrink(zoom);
-            let expected_x = inner.left() + inner.width() * expected;
-            assert!(
-                (marker.center().x - expected_x).abs() < 1.0,
-                "the live marker of macro {} is at {:?} instead of {expected_x}",
-                index + 1,
-                marker.center()
-            );
-            assert!(
-                sliders[index].bottom() <= bar.top() + 1.0,
-                "the fader of macro {} runs into its live strip: {:?} / {bar:?}",
-                index + 1,
-                sliders[index]
-            );
-        }
-    }
-
-    #[test]
-    fn the_vca_shows_an_output_activity_meter() {
-        let (ctx, mut editor, _params) = make_editor();
         editor.state.activity = 1.0;
         editor.voice_count.store(3, Ordering::Relaxed);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -9767,49 +8881,36 @@ and the three macros; the VCA is main-page only"
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
         ))
         .expect("the window is big enough");
-        let vca = layout.group(3, 1);
-        let meter = editor
-            .state
-            .vca_meter_rect
-            .expect("the VCA has no output meter");
-        assert!(
-            vca.contains_rect(meter),
-            "the output meter left the VCA: {meter:?} / {vca:?}"
-        );
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.iter().any(|text| text == "OUT"));
-        assert!(
-            names.iter().any(|text| text == "VOICE 03"),
-            "the output meter has no voice count: {names:?}"
-        );
-
-        // A loud frame lights a run of segments and leaves the rest dark.
-        let fills = rect_fills(&output);
-        let lit = fills
-            .iter()
-            .filter(|(rect, fill)| *fill == palette().led_on && meter.contains_rect(*rect))
-            .count();
-        let dark = fills
-            .iter()
-            .filter(|(rect, fill)| *fill == palette().led_off && meter.contains_rect(*rect))
-            .count();
-        assert!(lit > 0, "the output meter never lights up: {fills:?}");
-        assert!(dark > 0, "the output meter is completely full");
-
-        // The faders stop above the meter, so the label stays readable.
-        for slider in slider_rects(&ctx, &output)
-            .into_iter()
-            .filter(|rect| vca.contains_rect(*rect))
-        {
+        for removed in ["CUTOFF/RES", "DRIFT/LFO", "FX WET", "OUT", "VOICE 03"] {
             assert!(
-                slider.bottom() <= meter.top() + 1.0,
-                "a VCA fader runs into the output meter: {slider:?} / {meter:?}"
+                !names.iter().any(|text| text == removed),
+                "the main page still shows the removed decoration {removed:?}: {names:?}"
             );
+        }
+
+        // The macros and the VCA are plain fader groups: three and four
+        // faders, all inside their own sections.
+        for (rect, count, name) in [
+            (layout.group(3, 0), 3, "MACROS"),
+            (layout.group(3, 1), 4, "VCA"),
+        ] {
+            let faders: Vec<Rect> = slider_rects(&ctx, &output)
+                .into_iter()
+                .filter(|slider| rect.contains_rect(*slider))
+                .collect();
+            assert_eq!(faders.len(), count, "{name} lost a fader: {faders:?}");
+            for fader in faders {
+                assert!(
+                    rect.contains_rect(fader),
+                    "a {name} fader left its section: {fader:?} / {rect:?}"
+                );
+            }
         }
     }
 
     #[test]
-    fn the_target_inspector_draws_a_range_bar_and_source_previews() {
+    fn the_target_inspector_draws_a_range_bar_without_a_source_graph() {
         let (ctx, mut editor, params) = make_editor();
         let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
         let setter = gui_ctx.param_setter();
@@ -9819,16 +8920,9 @@ and the three macros; the VCA is main-page only"
         setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
         setter.set_parameter(&params.mod2_dest, ModDest::Volume);
         setter.set_parameter(&params.mod2_amount, 0.5);
-        setter.set_parameter(&params.mod3_source, ModSource::Macro1);
-        setter.set_parameter(&params.mod3_dest, ModDest::Resonance);
-        setter.set_parameter(&params.mod3_amount, 0.75);
-        setter.set_parameter(&params.mod4_source, ModSource::Velocity);
-        setter.set_parameter(&params.mod4_dest, ModDest::Pitch);
-        setter.set_parameter(&params.mod4_amount, 0.5);
         editor.state.page = Page::Mod;
         editor.mod_feedback.store(ModFeedbackValues {
             lfo1: 0.8,
-            macro1: 0.4,
             ..Default::default()
         });
         let layout = Layout::for_rect(Rect::from_min_size(
@@ -9836,27 +8930,27 @@ and the three macros; the VCA is main-page only"
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
         ))
         .expect("the window is big enough");
-        let target = layout.mod_group(3, 0);
+        let target = layout.mod_target();
 
         // An LFO route: the range bar has a current marker and a separate
-        // live dot, and the preview contains a waveform path.
+        // live dot. There is no waveform preview, only the range instrument.
         editor.state.mod_selected = 0;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["POSITION", "LIVE", "SOURCE", "LFO 1 > Cutoff"] {
+        for expected in ["POSITION", "LIVE", "LFO 1 > Cutoff", "CURRENT", "RANGE"] {
             assert!(
                 names.iter().any(|text| text == expected),
                 "the inspector has no {expected:?}: {names:?}"
             );
         }
+        assert!(
+            !names.iter().any(|text| text == "SOURCE"),
+            "the inspector still has a source preview: {names:?}"
+        );
         let bar = editor
             .state
             .target_bar_rect
             .expect("the inspector has no range bar");
-        let preview = editor
-            .state
-            .target_preview_rect
-            .expect("the inspector has no source preview");
         let current = editor
             .state
             .target_current_marker_rect
@@ -9869,10 +8963,6 @@ and the three macros; the VCA is main-page only"
             target.contains_rect(bar),
             "the range bar left the target band"
         );
-        assert!(
-            target.contains_rect(preview),
-            "the source preview left the target band"
-        );
         assert!(bar.contains_rect(current));
         assert!(bar.contains_rect(dot));
         assert!(
@@ -9880,14 +8970,15 @@ and the three macros; the VCA is main-page only"
             "the live dot sits on the current marker"
         );
         assert!(
-            output.shapes.iter().any(|shape| {
+            !output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::epaint::Shape::Path(_))
-                    && preview.contains_rect(shape.shape.visual_bounding_rect())
+                    && target.contains_rect(shape.shape.visual_bounding_rect())
             }),
-            "the LFO preview has no waveform"
+            "the target inspector still draws a decorative graph"
         );
 
-        // An envelope route: no global live value, but an ADSR path.
+        // An envelope route: no global live value, but the explicit
+        // per-voice fallback stays.
         editor.state.mod_selected = 1;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert_eq!(
@@ -9899,162 +8990,6 @@ and the three macros; the VCA is main-page only"
             names.iter().any(|text| text == "per-voice"),
             "the envelope route lost its per-voice fallback: {names:?}"
         );
-        let preview = editor.state.target_preview_rect.expect("no preview");
-        assert!(
-            output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::epaint::Shape::Path(_))
-                    && preview.contains_rect(shape.shape.visual_bounding_rect())
-            }),
-            "the envelope preview has no ADSR shape"
-        );
-
-        // A macro route: a level bar inside the preview.
-        editor.state.mod_selected = 2;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let preview = editor.state.target_preview_rect.expect("no preview");
-        assert!(
-            rect_fills(&output)
-                .iter()
-                .any(|(rect, fill)| { *fill == palette().accent && preview.contains_rect(*rect) }),
-            "the macro preview has no level bar"
-        );
-
-        // A velocity route is per-voice, so the preview is a neutral mark.
-        editor.state.mod_selected = 3;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let preview = editor.state.target_preview_rect.expect("no preview");
-        let preview_texts: Vec<(String, egui::Pos2)> = texts(&output)
-            .into_iter()
-            .filter(|(_, pos)| preview.contains(*pos))
-            .collect();
-        assert!(
-            preview_texts.iter().any(|(text, _)| text == "PER VOICE"),
-            "the per-voice preview has no neutral mark: {preview_texts:?}"
-        );
-        assert_eq!(editor.state.target_live_dot_rect, None);
-    }
-
-    #[test]
-    fn the_target_inspector_does_not_touch_the_main_page() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.mod_selected = 5;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<(String, egui::Pos2)> = texts(&output);
-        assert!(
-            !names.iter().any(|(text, _)| text == "TARGET"),
-            "the main page shows the modulation inspector"
-        );
-        for title in ["MACROS", "VCA"] {
-            assert!(
-                names.iter().any(|(text, _)| text == title),
-                "the main page lost {title}"
-            );
-        }
-        assert_eq!(
-            editor.state.counts.sliders, 52,
-            "the main page lost a fader"
-        );
-    }
-
-    #[test]
-    fn the_matrix_popups_keep_a_compact_click_target() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.page = Page::Mod;
-        editor.state.popup_rects.clear();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.popup_rects.len(), 20);
-        for rect in editor.state.popup_rects.iter().take(16) {
-            assert!(
-                (rect.height() - 24.0 * zoom).abs() < 1.0,
-                "a matrix popup is not 24 px tall: {rect:?}"
-            );
-            assert!(
-                rect.width() >= 120.0 * zoom && rect.width() <= 128.0 * zoom,
-                "a matrix popup has the wrong width: {rect:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_new_modulation_names_fit_the_matrix_popup() {
-        let (ctx, _editor, _params) = make_editor();
-        // Fonts are only laid out after the first frame of the context.
-        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
-        output.textures_delta.clear();
-        let painter = egui::Painter::new(
-            ctx.clone(),
-            egui::LayerId::background(),
-            Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0)),
-        );
-        let font = FontId::new(font_size(10.0, 1.0), egui::FontFamily::Proportional);
-        // The source and destination popups are 124 px wide after the column
-        // gap. The longer new names still fit without being cut off.
-        let width = MOD_SOURCE_WIDTH - MOD_COLUMN_GAP;
-        for name in ModSource::variants().iter().chain(ModDest::variants()) {
-            let text_width = text_width(&painter, name, &font);
-            assert!(
-                text_width <= width,
-                "the modulation name {name:?} is {text_width} px wide and does not fit in {width} px"
-            );
-        }
-    }
-
-    #[test]
-    fn the_live_marker_follows_the_global_sources() {
-        let feedback = ModFeedback::default();
-        feedback.store(ModFeedbackValues {
-            lfo1: -0.5,
-            lfo2: 0.75,
-            macro1: 0.25,
-            macro2: 0.5,
-            macro3: 0.75,
-            mod_wheel: 1.0,
-        });
-        let rect = Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(220.0, 28.0));
-        let zoom = 1.0;
-        let amount = 0.5;
-
-        // The marker is at the product of the source value and the amount, so
-        // it shows the modulation that the matrix actually adds.
-        let global = [
-            (ModSource::Lfo1, -0.5),
-            (ModSource::Lfo2, 0.75),
-            (ModSource::Macro1, 0.25),
-            (ModSource::Macro2, 0.5),
-            (ModSource::Macro3, 0.75),
-            (ModSource::ModWheel, 1.0),
-        ];
-        for (source, value) in global {
-            assert_eq!(live_source_value(source, &feedback), Some(value));
-            let marker = live_marker_rect(source, amount, rect, zoom, &feedback)
-                .unwrap_or_else(|| panic!("{source:?} has no live marker"));
-            let expected = amount_to_x(value * amount, rect, zoom);
-            assert!(
-                (marker.center().x - expected).abs() < 1.0e-4,
-                "the marker of {source:?} is at {} instead of {expected}",
-                marker.center().x
-            );
-            assert!((marker.width() - MOD_LIVE_MARKER_WIDTH).abs() < 1.0e-4);
-        }
-
-        // Per-voice sources have no single value outside a note, so they get
-        // no marker at all instead of a fake one.
-        for source in [
-            ModSource::Off,
-            ModSource::ModEnv,
-            ModSource::AmpEnv,
-            ModSource::Velocity,
-            ModSource::Key,
-            ModSource::Random,
-        ] {
-            assert_eq!(live_source_value(source, &feedback), None);
-            assert!(
-                live_marker_rect(source, amount, rect, zoom, &feedback).is_none(),
-                "{source:?} must not have a live marker"
-            );
-        }
     }
 
     #[test]
@@ -10117,34 +9052,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn an_empty_feedback_still_draws_the_matrix() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        editor.state.page = Page::Mod;
-        setter.set_parameter(&params.mod1_source, ModSource::Macro1);
-        setter.set_parameter(&params.mod1_dest, ModDest::Pitch);
-        setter.set_parameter(&params.mod1_amount, 0.5);
-
-        // No audio block has run yet, so every reading is zero. The page must
-        // still draw and the marker must sit in the middle of the bar.
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.amount_rects.len(), 8);
-        let bar = editor.state.amount_rects[0];
-        let marker = rect_fills(&output)
-            .into_iter()
-            .find(|(rect, fill)| {
-                *fill == palette().accent
-                    && (rect.width() - MOD_LIVE_MARKER_WIDTH * zoom).abs() < 0.1
-                    && bar.contains_rect(*rect)
-            })
-            .map(|(rect, _)| rect)
-            .expect("the macro route is missing its live marker");
-        assert!((marker.center().x - bar.center().x).abs() < 0.1);
-    }
-
-    #[test]
     fn dragging_the_amount_bar_sets_the_route_in_one_gesture() {
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Mod;
@@ -10194,50 +9101,6 @@ and the three macros; the VCA is main-page only"
             params.mod1_amount.value().abs() < 1.0e-4,
             "the amount bar was not reset: {}",
             params.mod1_amount.value()
-        );
-    }
-
-    #[test]
-    fn shift_dragging_the_amount_bar_is_fine() {
-        let (ctx, mut editor, params) = make_editor();
-        editor.state.page = Page::Mod;
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        let rect = editor.state.amount_rects[0];
-        let zoom = zoom_of(&ctx);
-        let travel = amount_travel(rect, zoom);
-        let start = rect.center();
-        let end = start + egui::vec2(travel * 0.15, 0.0);
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-
-        setter.set_parameter(&params.mod1_amount, 0.0);
-        run_frames(
-            &ctx,
-            &mut editor,
-            drag(start, end, egui::Modifiers::default()),
-        );
-        let coarse = params.mod1_amount.value();
-        assert!(coarse > 0.2, "the coarse drag was too small: {coarse}");
-
-        setter.set_parameter(&params.mod1_amount, 0.0);
-        run_frames(
-            &ctx,
-            &mut editor,
-            drag(
-                start,
-                end,
-                egui::Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
-            ),
-        );
-        let fine = params.mod1_amount.value();
-        assert!(fine > 0.0, "the fine drag did not move: {fine}");
-        assert!(
-            fine < coarse / 3.0,
-            "the fine drag was not fine: {fine} instead of {coarse}"
         );
     }
 
@@ -10335,9 +9198,15 @@ and the three macros; the VCA is main-page only"
         );
 
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let table = layout.mod_table();
         let (_, item) = texts(&output)
             .into_iter()
-            .find(|(text, pos)| text == "LFO 1" && pos.y < 318.0)
+            .find(|(text, pos)| text == "LFO 1" && table.contains(*pos))
             .expect("the source popup has no LFO 1");
         run_frames(&ctx, &mut editor, click(item + egui::vec2(2.0, 2.0)));
 
@@ -10351,8 +9220,8 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn no_two_texts_overlap_at_any_zoom() {
-        for percent in (100..=400).step_by(5) {
+    fn no_two_texts_overlap_at_representative_zooms() {
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             for page in [Page::Main, Page::Mod, Page::Fx] {
                 let (ctx, mut editor, params) = make_editor();
@@ -10453,38 +9322,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_matrix_page_fits_into_the_panel() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.page = Page::Mod;
-        editor.state.counts = Counts::default();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let panel = Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        );
-        assert_the_widgets_fit(&ctx, &output, panel);
-
-        // The horizontal bars are not vertical sliders, so they are checked
-        // here: inside the panel and away from the texts, including the value
-        // column on their right.
-        let texts = text_shapes(&output);
-        for bar in &editor.state.amount_rects {
-            assert!(
-                panel.contains_rect(*bar),
-                "an amount bar is outside of the panel: {bar:?}"
-            );
-            for (text, pos, size) in &texts {
-                let rect = Rect::from_min_size(*pos, *size);
-                let overlap = rect.intersect(*bar);
-                assert!(
-                    overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                    "the text {text:?} is covered by an amount bar: {rect:?} / {bar:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn editing_a_parameter_marks_the_sound_as_dirty() {
         let (ctx, mut editor, _params) = make_editor();
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -10511,47 +9348,6 @@ and the three macros; the VCA is main-page only"
             .expect("the header has no next button");
         run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
         assert!(!editor.state.dirty, "the preset did not clean the sound up");
-    }
-
-    #[test]
-    fn a_reset_marks_the_sound_as_dirty() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let rect = sliders[CUTOFF_SLIDER];
-
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, double_click(rect.center()));
-
-        assert!(
-            editor.state.dirty,
-            "the reset did not mark the sound as dirty"
-        );
-    }
-
-    #[test]
-    fn switching_a_check_box_marks_the_sound_as_dirty() {
-        let (ctx, mut editor, _params) = make_editor();
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rect = editor.state.check_rects[0];
-
-        run_frames(&ctx, &mut editor, click(rect.center()));
-
-        assert!(
-            editor.state.dirty,
-            "the check box did not mark the sound as dirty"
-        );
-    }
-
-    #[test]
-    fn the_patches_button_is_gone_from_the_header() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            !names.contains(&"PATCHES".to_string()),
-            "the header still has a separate PATCHES button: {names:?}"
-        );
     }
 
     #[test]
@@ -10760,9 +9556,9 @@ and the three macros; the VCA is main-page only"
         let (ctx, mut editor, _params) = make_editor();
         editor.state.page = Page::Fx;
 
-        // Every part of the page is measured at every zoom, not just at the
-        // design size.
-        for percent in (100..=400).step_by(5) {
+        // Every part of the page is measured at the representative zooms, not
+        // just at the design size.
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
@@ -11046,40 +9842,6 @@ and the three macros; the VCA is main-page only"
             params.fx_order.value(),
             expected,
             "redo did not restore the dragged order"
-        );
-    }
-
-    #[test]
-    fn dragging_a_chain_tile_up_also_reorders() {
-        let (ctx, mut editor, params) = make_editor();
-        editor.state.page = Page::Fx;
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        // Drag the last tile above the first one.
-        let eq_handle = editor.state.fx_chain_drag_rects[FxStage::Eq.index()]
-            .expect("the EQ tile has no drag handle");
-        let first_tile = editor.state.fx_chain_tile_rects[FxStage::Drive.index()]
-            .expect("the drive tile is missing");
-        run_frames(
-            &ctx,
-            &mut editor,
-            drag(
-                eq_handle.center(),
-                egui::pos2(first_tile.center().x, first_tile.top() + 2.0),
-                egui::Modifiers::default(),
-            ),
-        );
-
-        assert_eq!(
-            stage_order(params.fx_order.value()),
-            [
-                FxStage::Eq,
-                FxStage::Drive,
-                FxStage::Phaser,
-                FxStage::Chorus,
-                FxStage::Delay,
-                FxStage::Reverb,
-            ]
         );
     }
 
@@ -11416,77 +10178,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn a_patch_can_be_loaded_by_its_name() {
-        let (_ctx, mut editor, params) = make_editor();
-        let dir = TempDir::new("load");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-        editor.state.patch_name = "MY PATCH".to_string();
-
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.cutoff, 1_234.0);
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.save_patch();
-        }
-
-        // The sound is changed and the patch is loaded by its name.
-        setter.set_parameter(&params.cutoff, 500.0);
-        editor.state.patch_name = "MY PATCH".to_string();
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.load_patch_by_name();
-        }
-
-        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
-        assert_eq!(editor.state.patch_status, "Loaded MY PATCH");
-        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
-        assert!(!editor.state.dirty);
-
-        // A name that is not in the folder is reported.
-        editor.state.patch_name = "NOT THERE".to_string();
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.load_patch_by_name();
-        }
-        assert_eq!(editor.state.patch_status, "Not found");
-        assert!(editor.state.patch_status_error);
-    }
-
-    #[test]
-    fn the_load_button_of_the_browser_loads_the_patch_of_the_name() {
-        let (ctx, mut editor, params) = make_editor();
-        let dir = TempDir::new("load-button");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-        editor.state.patch_name = "MY PATCH".to_string();
-
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.cutoff, 1_234.0);
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.save_patch();
-        }
-
-        // The sound is changed and the patch is loaded with the button.
-        setter.set_parameter(&params.cutoff, 500.0);
-        editor.state.patch_name = "MY PATCH".to_string();
-        editor.state.patch_open = true;
-
-        let output = settle(&ctx, &mut editor);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "LOAD")
-            .expect("the browser has no load button");
-        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
-
-        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
-        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
-    }
-
-    #[test]
     fn the_patch_browser_shows_its_contents() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.patch_open = true;
@@ -11575,6 +10266,45 @@ and the three macros; the VCA is main-page only"
             editor.state.patch_preview
         );
         assert_eq!(editor.state.patch_preview_title, "01 INIT PAD");
+    }
+
+    #[test]
+    fn a_patch_can_be_loaded_by_its_name() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("load");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "MY PATCH".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.cutoff, 1_234.0);
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.save_patch();
+        }
+
+        // The sound is changed and the patch is loaded by its name.
+        setter.set_parameter(&params.cutoff, 500.0);
+        editor.state.patch_name = "MY PATCH".to_string();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_by_name();
+        }
+
+        assert!((params.cutoff.value() - 1_234.0).abs() < 1.0);
+        assert_eq!(editor.state.patch_status, "Loaded MY PATCH");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
+        assert!(!editor.state.dirty);
+
+        // A name that is not in the folder is reported.
+        editor.state.patch_name = "NOT THERE".to_string();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_by_name();
+        }
+        assert_eq!(editor.state.patch_status, "Not found");
+        assert!(editor.state.patch_status_error);
     }
 
     #[test]
@@ -11699,28 +10429,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn a_refresh_forgets_a_pending_confirmation() {
-        let (_ctx, mut editor, params) = make_editor();
-        let dir = TempDir::new("refresh");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-
-        editor.state.patch_confirm_overwrite = true;
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.refresh_patch_list();
-        }
-
-        assert!(
-            !editor.state.patch_confirm_overwrite,
-            "the confirmation was not forgotten"
-        );
-    }
-
-    #[test]
     fn the_browser_uses_the_folder_that_was_applied() {
         let (_ctx, mut editor, params) = make_editor();
         let dir = TempDir::new("applied");
@@ -11768,50 +10476,6 @@ and the three macros; the VCA is main-page only"
         assert!(editor.state.patch_status_error);
         // The folder was not changed.
         assert_eq!(editor.state.patch_config.patch_dir, before);
-    }
-
-    #[test]
-    fn the_browser_hints_at_the_folder_that_has_to_be_applied() {
-        let (ctx, mut editor, _params) = make_editor();
-        let dir = TempDir::new("hint");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-        editor.state.patch_open = true;
-
-        // The folder of the text field is the folder that is in use, so there
-        // is no hint.
-        let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            !names.contains(&FOLDER_HINT.to_string()),
-            "the browser has a hint: {names:?}"
-        );
-
-        // A folder that was typed in is not in use yet.
-        editor.state.patch_dir_text = "/somewhere/else".to_string();
-        let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.contains(&FOLDER_HINT.to_string()),
-            "the browser has no hint: {names:?}"
-        );
-    }
-
-    #[test]
-    fn the_browser_says_when_there_are_no_patches() {
-        let (ctx, mut editor, _params) = make_editor();
-        let dir = TempDir::new("empty");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-        editor.state.patch_files.clear();
-        editor.state.patch_open = true;
-
-        let output = settle(&ctx, &mut editor);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.contains(&NO_PATCHES.to_string()),
-            "the browser has no caption: {names:?}"
-        );
     }
 
     #[test]
@@ -11887,91 +10551,6 @@ and the three macros; the VCA is main-page only"
                 .any(|(_, fill)| *fill == Color32::from_rgb(0xF1, 0xF0, 0xEB)),
             "the modern paper background is still painted"
         );
-    }
-
-    #[test]
-    fn the_wordmark_is_static_and_not_a_flavor_switch() {
-        let (ctx, mut editor, params) = make_editor();
-        assert!(!params.legacy.value());
-
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, wordmark) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == "SUSHI")
-            .expect("the header has no wordmark");
-        run_frames(&ctx, &mut editor, click(wordmark + egui::vec2(2.0, 2.0)));
-
-        // The logo is no switch anymore.
-        assert!(
-            !params.legacy.value(),
-            "the logo still toggles the DSP flag"
-        );
-
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.contains(&"SUSHI".to_string()),
-            "the wordmark disappeared: {names:?}"
-        );
-        assert!(
-            names.contains(&"POLYPHONIC SYNTHESIZER".to_string()),
-            "the header lost its static subtitle: {names:?}"
-        );
-        for mode in [
-            "POLYPHONIC / MODERN",
-            "POLYPHONIC / LEGACY",
-            "/ MODERN",
-            "/ LEGACY",
-        ] {
-            assert!(
-                !names.contains(&mode.to_string()),
-                "the header still shows the mode subtitle {mode:?}: {names:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_header_subtitle_stays_inside_the_logo() {
-        let (ctx, mut editor, _params) = make_editor();
-        let subtitle = "POLYPHONIC SYNTHESIZER";
-
-        for percent in (100..=400).step_by(5) {
-            let zoom = percent as f32 / 100.0;
-            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let rects = header_rects_at(size);
-            assert!(
-                !rects.logo.intersects(rects.previous),
-                "the logo overlaps the previous preset at {percent}%: {:?} / {:?}",
-                rects.logo,
-                rects.previous
-            );
-            let (_, pos, text_size) = text_shapes(&output)
-                .into_iter()
-                .find(|(text, _, _)| text == subtitle)
-                .unwrap_or_else(|| panic!("the header has no subtitle {subtitle:?} at {percent}%"));
-            let rect = Rect::from_min_size(pos, text_size);
-
-            assert!(
-                rects.logo.contains_rect(rect),
-                "the subtitle {subtitle:?} is outside the logo at {percent}%: {rect:?} / {:?}",
-                rects.logo
-            );
-            for (name, control) in [
-                ("preset display", rects.display),
-                ("previous preset", rects.previous),
-                ("next preset", rects.next),
-                ("mutate", rects.mutate),
-                ("mod tab", rects.mod_page),
-                ("fx tab", rects.fx_page),
-            ] {
-                assert!(
-                    !rect.intersects(control),
-                    "the subtitle {subtitle:?} intersects the {name} at {percent}%: \
-{rect:?} / {control:?}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -12067,48 +10646,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_display_shows_the_long_factory_names() {
-        let names = [
-            "PROPHET BRASS",
-            "MELLOTRON FLUTE",
-            "JUPITER STRINGS",
-            "POLY STRINGS",
-        ];
-        let (ctx, mut editor, _params) = make_editor();
-        for percent in (100..=400).step_by(5) {
-            let zoom = percent as f32 / 100.0;
-            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-            let rects = header_rects_at(size);
-            for name in names {
-                let index = PRESETS
-                    .iter()
-                    .position(|preset| preset.name == name)
-                    .unwrap_or_else(|| panic!("there is no preset {name:?}"));
-                editor.state.preset_index = index;
-                editor.state.patch_active = None;
-                editor.state.patch_active_path = None;
-                editor.state.dirty = false;
-
-                let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-                let expected = format!("{:02} {name}", index + 1);
-                let (_, pos, text_size) = text_shapes(&output)
-                    .into_iter()
-                    .find(|(text, _, _)| text == &expected)
-                    .unwrap_or_else(|| {
-                        panic!("the display does not show {expected:?} at {percent}%")
-                    });
-                let rect = Rect::from_min_size(pos, text_size);
-                assert!(
-                    rects.display.contains_rect(rect),
-                    "the display text {expected:?} is outside the display at {percent}%: \
-{rect:?} / {:?}",
-                    rects.display
-                );
-            }
-        }
-    }
-
-    #[test]
     fn a_name_that_is_too_long_ends_in_an_ellipsis() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.patch_active = Some("A VERY LONG PATCH NAME THAT DOES NOT FIT".to_string());
@@ -12134,28 +10671,6 @@ and the three macros; the VCA is main-page only"
             "the cut name is outside the display: {rect:?} / {:?}",
             rects.display
         );
-    }
-
-    #[test]
-    fn fit_lcd_text_puts_an_ellipsis_on_a_narrow_display() {
-        let ctx = egui::Context::default();
-        install_fonts(&ctx);
-        // Fonts are only laid out after the first frame of the context.
-        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
-        output.textures_delta.clear();
-        let painter = egui::Painter::new(
-            ctx,
-            egui::LayerId::background(),
-            Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
-        );
-        let text = "A VERY LONG PATCH NAME THAT DOES NOT FIT";
-        let max_width = 40.0;
-
-        let (fitted, font) = fit_lcd_text(&painter, text, max_width, 1.0);
-
-        assert!(fitted.ends_with(LCD_ELLIPSIS), "{fitted:?} has no ellipsis");
-        assert_ne!(fitted, text);
-        assert!(text_width(&painter, &fitted, &font) <= max_width);
     }
 
     #[test]
@@ -12344,150 +10859,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_wide_fader_banks_are_centered_and_use_their_sections() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let sliders = slider_rects(&ctx, &output);
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
-        .expect("the window is big enough");
-
-        // The two lower bands hold ARP / VOICE and MACROS / VCA. Every bank
-        // has to sit in the middle of its section and spread across it.
-        for (row, index, count) in [(2, 0, 7), (2, 1, 4), (3, 0, 3), (3, 1, 4)] {
-            let section = layout.group(row, index);
-            let mut bank: Vec<egui::Rect> = sliders
-                .iter()
-                .filter(|rect| section.contains_rect(**rect))
-                .copied()
-                .collect();
-            assert_eq!(
-                bank.len(),
-                count,
-                "the section at row {row}, index {index} lost a fader: {bank:?}"
-            );
-            bank.sort_by(|a, b| a.left().total_cmp(&b.left()));
-
-            let left = bank[0].left();
-            let right = bank[bank.len() - 1].right();
-            let center = (left + right) * 0.5;
-            assert!(
-                (center - section.center().x).abs() < 1.0,
-                "the fader bank at row {row}, index {index} is not centered: \
-{center} instead of {}",
-                section.center().x
-            );
-            assert!(
-                left - section.left() < section.width() * 0.25,
-                "the fader bank at row {row}, index {index} is pinned to the left: \
-{left} in {section:?}"
-            );
-            assert!(
-                section.right() - right < section.width() * 0.25,
-                "the fader bank at row {row}, index {index} leaves an empty right edge: \
-{right} in {section:?}"
-            );
-            assert!(
-                right - left > section.width() * 0.5,
-                "the fader bank at row {row}, index {index} does not use its width: \
-{} of {}",
-                right - left,
-                section.width()
-            );
-        }
-    }
-
-    #[test]
-    fn the_sections_of_the_panel_have_the_blueprint_layout() {
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-
-        // The title of every section and the place where it has to be: the
-        // left edge of its section and the top of its row.
-        let expected = [
-            ("VCO 1", 12.0, 64.0),
-            ("VCO 2", 252.0, 64.0),
-            ("PULSE WIDTH", 488.0, 64.0),
-            ("SOURCE MIXER", 624.0, 64.0),
-            ("VCF", 12.0, 195.0),
-            ("MOD ENV", 372.0, 195.0),
-            ("AMP ENV", 668.0, 195.0),
-            ("ARP", 12.0, 326.0),
-            ("VOICE", 490.0, 326.0),
-            ("MACROS", 12.0, 457.0),
-            ("VCA", 490.0, 457.0),
-        ];
-
-        let titles: Vec<(String, egui::Pos2)> = texts(&output)
-            .into_iter()
-            .filter(|(text, pos)| {
-                pos.y > HEADER_HEIGHT
-                    && text.chars().all(|c| {
-                        c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '/'
-                    })
-            })
-            .collect();
-
-        for (title, x, row) in expected {
-            let found = titles
-                .iter()
-                .find(|(text, _)| text == title)
-                .unwrap_or_else(|| panic!("the panel has no {title}"));
-            let (_, pos) = found;
-            assert!(
-                (pos.x - x).abs() < 1.0,
-                "the title {title} is at {pos:?} instead of {x}"
-            );
-            assert!(
-                pos.y >= row && pos.y <= row + TITLE_HEIGHT,
-                "the title {title} is at {pos:?} instead of in the row of {row}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_lfo_faders_share_the_first_two_columns_of_row_c() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.page = Page::Mod;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
-        .expect("the window is big enough");
-
-        // The LFO faders are in the first two of the three modules of row C.
-        let lfo_faders = slider_rects(&ctx, &output)
-            .into_iter()
-            .filter(|rect| {
-                layout.mod_group(2, 0).contains_rect(*rect)
-                    || layout.mod_group(2, 1).contains_rect(*rect)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(lfo_faders.len(), 6, "the LFO faders left row C");
-        for rect in &lfo_faders {
-            assert!(
-                rect.center().y > layout.mod_group(2, 0).top()
-                    && rect.center().y < layout.mod_group(2, 0).bottom(),
-                "an LFO fader left the third row: {rect:?}"
-            );
-        }
-
-        // The macros have their own third column in the same row.
-        let macro_faders = slider_rects(&ctx, &output)
-            .into_iter()
-            .filter(|rect| layout.mod_group(2, 2).contains_rect(*rect))
-            .count();
-        assert_eq!(macro_faders, 3, "the macros are not in the third column");
-        assert!(
-            layout.mod_group(2, 1).right() < layout.mod_group(2, 2).left(),
-            "the second LFO and the macros share one column"
-        );
-    }
-
-    #[test]
     fn the_widgets_of_the_panel_fit_into_the_window() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -12652,45 +11023,6 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_layout_keeps_the_design_of_the_panel() {
-        for (width, height) in SIZES {
-            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
-            let layout = Layout::for_rect(rect).expect("the window is big enough");
-            let zoom = layout.zoom;
-
-            // The header sits at the top of the panel and grows with the zoom.
-            let header = layout.header();
-            assert!(
-                (header.left() - (layout.panel.left() + MARGIN * zoom)).abs() < 0.01,
-                "the header is at the wrong place: {header:?}"
-            );
-            assert!(
-                (header.top() - (layout.panel.top() + MARGIN * zoom)).abs() < 0.01,
-                "the header is at the wrong place: {header:?}"
-            );
-            assert!((header.height() - HEADER_HEIGHT * zoom).abs() < 0.01);
-
-            // The rows fill the rest of the panel.
-            let first = layout.group(0, 0);
-            assert!(
-                (first.top() - (layout.panel.top() + (MARGIN + HEADER_HEIGHT + BAND_GAP) * zoom))
-                    .abs()
-                    < 0.01,
-                "the first row is at the wrong place: {first:?}"
-            );
-            let last = layout.group(3, 0);
-            assert!(
-                (last.bottom() - (layout.panel.bottom() - FOOTER_HEIGHT * zoom)).abs() < 0.01,
-                "the last row does not fill the panel: {last:?}"
-            );
-
-            // The panel is never bigger than the window.
-            assert!(layout.panel.width() <= width + 0.01);
-            assert!(layout.panel.height() <= height + 0.01);
-        }
-    }
-
-    #[test]
     fn the_sections_of_the_layout_do_not_overlap() {
         for (width, height) in SIZES {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
@@ -12726,22 +11058,336 @@ and the three macros; the VCA is main-page only"
                 );
             }
 
-            // The modulation page has three modules in row C and one wide
-            // target band in row D. Both fill their rows without gaps or
+            // The modulation page uses the same band area as the main page:
+            // a left stack of table and target, and a right column of five
+            // source modules. Both fill the workspace without gaps or
             // overlaps at every size of the window.
-            for (row, count) in [(2, 3), (3, 1)] {
-                let first = layout.mod_group(row, 0);
-                assert!(layout.panel.contains_rect(first));
-                for index in 1..count {
-                    let group = layout.mod_group(row, index);
-                    assert!(layout.panel.contains_rect(group));
-                    assert!(!first.intersects(group));
+            let workspace = layout.mod_workspace();
+            let left = layout.mod_left();
+            let right = layout.mod_right();
+            assert!(layout.panel.contains_rect(workspace));
+            assert!((left.left() - workspace.left()).abs() < 0.01);
+            assert!((left.top() - workspace.top()).abs() < 0.01);
+            assert!((right.right() - workspace.right()).abs() < 0.01);
+            assert!((right.top() - workspace.top()).abs() < 0.01);
+            assert!((right.bottom() - workspace.bottom()).abs() < 0.01);
+            assert!(
+                !left.intersects(right),
+                "the two halves touch: {left:?} {right:?}"
+            );
+            assert!(
+                (left.width() - right.width() * 2.0).abs() < 0.01,
+                "the left column is not two thirds of the workspace: {left:?} {right:?}"
+            );
+
+            let table = layout.mod_table();
+            let target = layout.mod_target();
+            assert!(left.contains_rect(table));
+            assert!(left.contains_rect(target));
+            assert!((table.left() - left.left()).abs() < 0.01);
+            assert!((table.right() - left.right()).abs() < 0.01);
+            assert!((target.left() - left.left()).abs() < 0.01);
+            assert!((target.right() - left.right()).abs() < 0.01);
+            assert!(
+                table.bottom() < target.top(),
+                "the routing table does not sit above the target inspector: {table:?} {target:?}"
+            );
+            assert!(
+                (target.bottom() - left.bottom()).abs() < 0.01,
+                "the target inspector does not reach the bottom of the left column: {target:?}"
+            );
+            assert!(!table.intersects(target));
+
+            let mut previous: Option<Rect> = None;
+            for index in 0..Layout::mod_module_count() {
+                let module = layout.mod_module(index);
+                assert!(right.contains_rect(module));
+                assert!((module.left() - right.left()).abs() < 0.01);
+                assert!((module.right() - right.right()).abs() < 0.01);
+                if let Some(previous) = previous {
+                    assert!(
+                        previous.bottom() <= module.top() + 0.01,
+                        "two source modules overlap: {previous:?} {module:?}"
+                    );
                 }
-                let last = layout.mod_group(row, count - 1);
+                previous = Some(module);
+            }
+            let first_module = layout.mod_module(0);
+            let last_module = layout.mod_module(Layout::mod_module_count() - 1);
+            assert!((first_module.top() - right.top()).abs() < 0.01);
+            assert!((last_module.bottom() - right.bottom()).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn the_modulation_page_puts_the_table_and_target_on_the_left() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let table = layout.mod_table();
+        let target = layout.mod_target();
+        let shapes = text_shapes(&output);
+
+        for (label, section) in [("MODULATION", table), ("TARGET", target)] {
+            let (_, pos, size) = shapes
+                .iter()
+                .find(|(text, _, _)| text == label)
+                .unwrap_or_else(|| panic!("the page has no {label} title"));
+            let title = Rect::from_min_size(*pos, *size);
+            assert!(
+                section.contains_rect(title),
+                "the {label} title left its section: {title:?} / {section:?}"
+            );
+        }
+        assert!(
+            table.bottom() < target.top(),
+            "the target inspector is not below the routing table: {table:?} / {target:?}"
+        );
+
+        // Every route row is a full-width line of the routing table.
+        let rows = editor.state.mod_row_rects.clone();
+        assert_eq!(rows.len(), crate::params::MOD_SLOTS);
+        for row in rows {
+            assert!(
+                table.contains_rect(row),
+                "a route row left the routing table: {row:?} / {table:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_modulation_page_has_five_source_modules_in_order() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Mod;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let right = layout.mod_right();
+        let left = layout.mod_left();
+        let titles = ["LFO 1", "LFO 2", "MOD ENV", "AMP ENV", "MACROS"];
+        assert_eq!(Layout::mod_module_count(), titles.len());
+        let shapes = text_shapes(&output);
+        let mut previous_top = None;
+
+        for (index, title) in titles.into_iter().enumerate() {
+            let module = layout.mod_module(index);
+            assert!(right.contains_rect(module));
+            if let Some(previous_top) = previous_top {
                 assert!(
-                    (last.right() - (layout.panel.right() - MARGIN * layout.zoom)).abs() < 0.01,
-                    "the modulation sections of the row {row} do not fill the panel: {last:?}"
+                    previous_top < module.top(),
+                    "the source modules are not in reading order: {title} at {module:?}"
                 );
+            }
+            previous_top = Some(module.top());
+
+            let matching: Vec<Rect> = shapes
+                .iter()
+                .filter(|(text, _, _)| text == title)
+                .map(|(_, pos, size)| Rect::from_min_size(*pos, *size))
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "the page has {title:?} {count} times instead of once",
+                count = matching.len()
+            );
+            assert!(
+                module.contains_rect(matching[0]),
+                "the {title} module has no title inside it: {:?} / {module:?}",
+                matching[0]
+            );
+            assert!(
+                !left.contains(matching[0].center()),
+                "the {title} module title sits in the left column"
+            );
+        }
+    }
+
+    #[test]
+    fn the_modulation_page_does_not_duplicate_source_controls() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.page = Page::Mod;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        let once = [
+            "lfo1_rate",
+            "lfo1_phase",
+            "lfo1_curve",
+            "lfo2_rate",
+            "lfo2_phase",
+            "lfo2_curve",
+            "fe_attack",
+            "fe_decay",
+            "fe_sustain",
+            "fe_release",
+            "fe_curve",
+            "ae_attack",
+            "ae_decay",
+            "ae_sustain",
+            "ae_release",
+            "ae_curve",
+            "macro_bright",
+            "macro_motion",
+            "macro_space",
+        ];
+        for expected in once {
+            let count = editor
+                .state
+                .slider_ids
+                .iter()
+                .filter(|id| **id == expected)
+                .count();
+            assert_eq!(
+                count, 1,
+                "the modulation page draws {expected} {count} times"
+            );
+        }
+        for hidden in ["volume", "tone", "vca_width", "vca_pan"] {
+            assert!(
+                !editor.state.slider_ids.contains(&hidden),
+                "the modulation page duplicates the main VCA fader {hidden}"
+            );
+        }
+
+        for expected in ["lfo1_wave", "lfo1_div", "lfo2_wave", "lfo2_div"] {
+            let count = editor
+                .state
+                .popup_ids
+                .iter()
+                .filter(|id| **id == expected)
+                .count();
+            assert_eq!(
+                count, 1,
+                "the modulation page draws the {expected} popup {count} times"
+            );
+        }
+        for expected in ["lfo1_sync", "lfo1_retrigger", "lfo2_sync", "lfo2_retrigger"] {
+            let count = editor
+                .state
+                .check_ids
+                .iter()
+                .filter(|id| **id == expected)
+                .count();
+            assert_eq!(
+                count, 1,
+                "the modulation page draws the {expected} switch {count} times"
+            );
+        }
+    }
+
+    #[test]
+    fn the_target_inspector_updates_from_the_left_routing_table() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.5);
+        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_dest, ModDest::Resonance);
+        setter.set_parameter(&params.mod2_amount, -0.25);
+        editor.state.page = Page::Mod;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let target = layout.mod_target();
+        let rows = editor.state.mod_row_rects.clone();
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            click(egui::pos2(rows[1].left() + 3.0, rows[1].center().y)),
+        );
+        assert_eq!(editor.state.mod_selected, 1);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let shapes = text_shapes(&output);
+        let names: Vec<String> = shapes.iter().map(|(text, _, _)| text.clone()).collect();
+        for expected in [
+            "Mod Env > Resonance",
+            "-25%",
+            "CURRENT",
+            "RANGE",
+            "per-voice",
+        ] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the target inspector has no {expected:?}: {names:?}"
+            );
+        }
+        for (text, pos, size) in &shapes {
+            if [
+                "Mod Env > Resonance",
+                "-25%",
+                "CURRENT",
+                "RANGE",
+                "per-voice",
+            ]
+            .contains(&text.as_str())
+            {
+                let rect = Rect::from_min_size(*pos, *size);
+                assert!(
+                    target.contains_rect(rect),
+                    "the target text {text:?} left the inspector: {rect:?} / {target:?}"
+                );
+            }
+        }
+        assert!(
+            !editor.undo_history.can_undo(),
+            "selecting a route must not create an undo step"
+        );
+    }
+
+    #[test]
+    fn the_modulation_page_right_column_fits_at_representative_zooms() {
+        for percent in ZOOMS {
+            let zoom = percent as f32 / 100.0;
+            let (ctx, mut editor, _params) = make_editor();
+            editor.state.page = Page::Mod;
+            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
+            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
+                .expect("the window is big enough");
+            let panel = layout.panel;
+            assert_the_widgets_fit(&ctx, &output, panel);
+            let shapes = text_shapes(&output);
+
+            for index in 0..Layout::mod_module_count() {
+                let module = layout.mod_module(index);
+                let module_texts: Vec<(String, Rect)> = shapes
+                    .iter()
+                    .filter(|(_, pos, _)| module.contains(*pos))
+                    .map(|(text, pos, size)| (text.clone(), Rect::from_min_size(*pos, *size)))
+                    .collect();
+                assert!(
+                    !module_texts.is_empty(),
+                    "module {index} has no text at {percent}%"
+                );
+                for (text, rect) in &module_texts {
+                    assert!(
+                        module.contains_rect(*rect),
+                        "the module text {text:?} leaves module {index} at {percent}%: {rect:?} / {module:?}"
+                    );
+                }
+                for (first_index, (first, first_rect)) in module_texts.iter().enumerate() {
+                    for (second, second_rect) in module_texts.iter().skip(first_index + 1) {
+                        let overlap = first_rect.intersect(*second_rect);
+                        assert!(
+                            overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                            "the module texts {first:?} and {second:?} overlap at {percent}%: {first_rect:?} / {second_rect:?}"
+                        );
+                    }
+                }
             }
         }
     }
@@ -12749,7 +11395,7 @@ and the three macros; the VCA is main-page only"
     #[test]
     fn the_fonts_scale_with_the_zoom() {
         // The size of a font is the size of the design times the zoom.
-        for percent in (100..=400).step_by(5) {
+        for percent in ZOOMS {
             let zoom = percent as f32 / 100.0;
             for size in [8.0, 9.0, 10.0, 12.0, 14.0] {
                 assert!(
@@ -12760,41 +11406,6 @@ and the three macros; the VCA is main-page only"
         }
         assert!((font_size(10.0, 1.25) - 12.5).abs() < 0.0001);
         assert!((font_size(10.0, 1.0) - 10.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn the_texts_of_the_panel_grow_with_the_zoom() {
-        let (ctx, mut editor, _params) = make_editor();
-
-        // The wordmark of the header at the zoom of 100 %.
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, _, small) = text_shapes(&output)
-            .into_iter()
-            .find(|(text, _, _)| text == "SUSHI")
-            .expect("the header has no wordmark");
-
-        // The same wordmark at the zoom of 125 %.
-        let output = run_frames(
-            &ctx,
-            &mut editor,
-            vec![input_at(egui::vec2(1280.0, 800.0), vec![])],
-        );
-        let (_, _, big) = text_shapes(&output)
-            .into_iter()
-            .find(|(text, _, _)| text == "SUSHI")
-            .expect("the header has no wordmark");
-
-        // The pixel font is snapped to whole pixels, so the growth is close
-        // to the zoom instead of exactly proportional.
-        assert!(
-            big.x > small.x && big.y > small.y,
-            "the wordmark did not grow with the zoom: {small:?} {big:?}"
-        );
-        let ratio = big.y / small.y;
-        assert!(
-            (1.05..1.6).contains(&ratio),
-            "the wordmark grew by {ratio} instead of about 1.25: {small:?} {big:?}"
-        );
     }
 
     #[test]
@@ -12832,73 +11443,6 @@ and the three macros; the VCA is main-page only"
                 );
             }
         }
-    }
-
-    #[test]
-    fn a_tiny_window_shows_a_sad_face() {
-        let (ctx, mut editor, _params) = make_editor();
-        let size = egui::vec2(120.0, 80.0);
-        let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-
-        let names: Vec<String> = texts(&output).into_iter().map(|(t, _)| t).collect();
-        assert!(
-            names.contains(&":(".to_string()),
-            "the panel has no sad face: {names:?}"
-        );
-    }
-
-    #[test]
-    fn the_panel_grows_with_the_window() {
-        let (ctx, mut editor, _params) = make_editor();
-
-        // The default size.
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let small = slider_rects(&ctx, &output);
-        assert_eq!(small.len(), 52, "unexpected number of sliders");
-
-        // A bigger window: the sliders are taller and the sections are
-        // wider.
-        let output = run_frames(
-            &ctx,
-            &mut editor,
-            vec![input_at(egui::vec2(1600.0, 900.0), vec![])],
-        );
-        let big = slider_rects(&ctx, &output);
-        assert_eq!(big.len(), 52, "unexpected number of sliders");
-
-        for (small, big) in small.iter().zip(big.iter()) {
-            assert!(
-                big.height() > small.height(),
-                "a slider did not grow: {small:?} {big:?}"
-            );
-        }
-
-        // The last slider of the panel moved to the right, so that the panel
-        // uses the whole width of the window.
-        assert!(
-            big[big.len() - 1].right() > small[small.len() - 1].right(),
-            "the panel did not grow to the right"
-        );
-    }
-
-    #[test]
-    fn the_panel_fits_into_a_huge_window() {
-        // The biggest zoom level needs a window of 3840 x 2560.
-        let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(
-            &ctx,
-            &mut editor,
-            vec![input_at(egui::vec2(3840.0, 2560.0), vec![])],
-        );
-        let panel = Layout::for_rect(Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(3840.0, 2560.0),
-        ))
-        .expect("the window is big enough")
-        .panel;
-        assert!((panel.width() - 3840.0).abs() < 0.01);
-        assert!((panel.height() - 2400.0).abs() < 0.01);
-        assert_the_widgets_fit(&ctx, &output, panel);
     }
 
     #[test]

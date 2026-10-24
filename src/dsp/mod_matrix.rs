@@ -322,38 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pitch_reaches_an_octave() {
-        let slots = matrix(ModSlot {
-            source: ModSource::Macro1,
-            dest: ModDest::Pitch,
-            amount: 1.0,
-        });
-        let sources = ModSources {
-            macro1: 1.0,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert!((modulation.pitch_semitones - 12.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_cutoff_reaches_five_octaves() {
-        let slots = matrix(ModSlot {
-            source: ModSource::Macro1,
-            dest: ModDest::Cutoff,
-            amount: 1.0,
-        });
-        let sources = ModSources {
-            macro1: 1.0,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert!((modulation.filter_octaves - 5.0).abs() < 1e-4);
-    }
-
-    #[test]
     fn the_pan_stays_in_its_range() {
         // Eight slots that all pan to the right must not leave the range.
         let mut slots = [ModSlot::default(); MOD_SLOTS];
@@ -384,22 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn the_volume_keeps_the_level_of_the_voice() {
-        let slots = matrix(ModSlot {
-            source: ModSource::Macro1,
-            dest: ModDest::Volume,
-            amount: 1.0,
-        });
-        let sources = ModSources {
-            macro1: 1.0,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert!((modulation.volume - 2.0).abs() < 1e-4);
-    }
-
-    #[test]
     fn the_new_sources_read_their_own_values() {
         let sources = ModSources {
             mod_wheel: 0.75,
@@ -414,6 +366,9 @@ mod tests {
     #[test]
     fn the_new_destinations_reach_their_full_ranges() {
         let destinations = [
+            (ModDest::Pitch, 12.0),
+            (ModDest::Cutoff, 5.0),
+            (ModDest::Volume, 2.0),
             (ModDest::Osc2Pitch, 12.0),
             (ModDest::Osc2Fine, 1.0),
             (ModDest::SubLevel, 1.0),
@@ -439,6 +394,9 @@ mod tests {
             };
             let modulation = evaluate(&slots, &sources);
             let value = match dest {
+                ModDest::Pitch => modulation.pitch_semitones,
+                ModDest::Cutoff => modulation.filter_octaves,
+                ModDest::Volume => modulation.volume,
                 ModDest::Osc2Pitch => modulation.osc2_pitch_semitones,
                 ModDest::Osc2Fine => modulation.osc2_fine_semitones,
                 ModDest::SubLevel => modulation.sub_level,

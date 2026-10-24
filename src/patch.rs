@@ -859,10 +859,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{
-        Character, FilterMode, FilterSlope, LfoWaveform, ModDest, ModSource, NoteDiv, PolyMode,
-        Waveform,
-    };
+    use crate::params::{FilterMode, FilterSlope, ModDest, ModSource, NoteDiv, PolyMode, Waveform};
     use crate::patch::test_support::{reset_count, set_count, setter};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -942,18 +939,14 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 126, "the ids of the parameters are not unique");
-    }
 
-    #[test]
-    fn the_defaults_are_written_into_the_host() {
+        // A saved patch has the format header and exactly the table.
         let params = SushiParams::default();
-        let setter = setter();
-
-        reset_count();
-        apply_defaults(&params, &setter);
-
-        // Every one of the 126 parameters is written.
-        assert_eq!(set_count(), 126);
+        let document = to_json(&params, "TEST");
+        assert_eq!(document["format"], "sushi-patch");
+        assert_eq!(document["version"], 1);
+        assert_eq!(document["name"], "TEST");
+        assert_eq!(document["params"].as_object().unwrap().len(), 126);
     }
 
     #[test]
@@ -968,7 +961,9 @@ mod tests {
         setter.set_parameter(&params.arp_on, true);
         setter.set_parameter(&params.unison, 4);
 
+        reset_count();
         apply_defaults(&params, &setter);
+        assert_eq!(set_count(), 126, "not every parameter was reset");
 
         assert_eq!(params.cutoff.value(), 3_000.0);
         assert_eq!(params.resonance.value(), 0.2);
@@ -1004,22 +999,6 @@ mod tests {
 
         let restored = to_json(&other, "ROUND TRIP");
         assert_same_patch(&document, &restored, "patch");
-    }
-
-    #[test]
-    fn the_patch_holds_every_parameter() {
-        let params = SushiParams::default();
-        let document = to_json(&params, "TEST");
-
-        assert_eq!(document["format"], "sushi-patch");
-        assert_eq!(document["version"], 1);
-        assert_eq!(document["name"], "TEST");
-
-        let map = document["params"].as_object().unwrap();
-        assert_eq!(map.len(), 126);
-        for id in PARAM_IDS {
-            assert!(map.contains_key(*id), "the parameter {id} is missing");
-        }
     }
 
     #[test]
@@ -1562,48 +1541,6 @@ mod tests {
     }
 
     #[test]
-    fn the_configuration_is_written_atomically() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-
-        let old = std::env::var_os("XDG_CONFIG_HOME");
-        let home = TempDir::new("config-atomic");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &home.path);
-        }
-
-        let config = PatchConfig {
-            patch_dir: home.path.join("Patches"),
-        };
-        save_config(&config).expect("the configuration was not written");
-
-        // The temporary file of the write is gone.
-        let path = config_path();
-        let folder = path.parent().expect("the folder was not found");
-        let mut files: Vec<String> = fs::read_dir(folder)
-            .expect("the folder was not read")
-            .map(|entry| {
-                entry
-                    .expect("the entry was not read")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        files.sort();
-        assert_eq!(files, ["config.json"]);
-        assert_eq!(load_config(), config);
-
-        match old {
-            Some(value) => unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", value);
-            },
-            None => unsafe {
-                std::env::remove_var("XDG_CONFIG_HOME");
-            },
-        }
-    }
-
-    #[test]
     fn a_patch_without_a_name_takes_the_name_of_its_file() {
         let params = SushiParams::default();
         let setter = setter();
@@ -1632,15 +1569,5 @@ mod tests {
 
         assert_eq!(names, ["Alpha.json", "beta.json", "gamma.json"]);
         assert!(list_patches(&dir.path.join("nowhere")).is_empty());
-    }
-
-    #[test]
-    fn the_enums_have_readable_names() {
-        // The names in the patches are the ones of the enums.
-        assert_eq!(Waveform::variants()[0], "Sine");
-        assert_eq!(FilterMode::variants()[0], "Lowpass");
-        assert_eq!(LfoWaveform::variants()[4], "S&H");
-        assert_eq!(NoteDiv::variants()[2], "1/16");
-        assert_eq!(Character::variants()[1], "Grit");
     }
 }

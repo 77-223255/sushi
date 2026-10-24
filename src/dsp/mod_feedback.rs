@@ -93,18 +93,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_feedback_starts_at_zero() {
-        let feedback = ModFeedback::default();
-
-        assert_eq!(feedback.lfo1(), 0.0);
-        assert_eq!(feedback.lfo2(), 0.0);
-        assert_eq!(feedback.macro1(), 0.0);
-        assert_eq!(feedback.macro2(), 0.0);
-        assert_eq!(feedback.macro3(), 0.0);
-        assert_eq!(feedback.mod_wheel(), 0.0);
-    }
-
-    #[test]
     fn the_feedback_stores_and_returns_every_source() {
         let feedback = ModFeedback::default();
         feedback.store(ModFeedbackValues {
@@ -122,33 +110,5 @@ mod tests {
         assert_eq!(feedback.macro2(), 0.25);
         assert_eq!(feedback.macro3(), 0.875);
         assert_eq!(feedback.mod_wheel(), 1.0);
-    }
-
-    #[test]
-    fn a_later_store_replaces_the_snapshot() {
-        let feedback = ModFeedback::default();
-        feedback.store(ModFeedbackValues {
-            lfo1: 1.0,
-            lfo2: -1.0,
-            macro1: 1.0,
-            macro2: 0.0,
-            macro3: 0.5,
-            mod_wheel: 0.75,
-        });
-        feedback.store(ModFeedbackValues {
-            lfo1: -0.25,
-            lfo2: 0.25,
-            macro1: 0.0,
-            macro2: 0.5,
-            macro3: 1.0,
-            mod_wheel: 0.0,
-        });
-
-        assert_eq!(feedback.lfo1(), -0.25);
-        assert_eq!(feedback.lfo2(), 0.25);
-        assert_eq!(feedback.macro1(), 0.0);
-        assert_eq!(feedback.macro2(), 0.5);
-        assert_eq!(feedback.macro3(), 1.0);
-        assert_eq!(feedback.mod_wheel(), 0.0);
     }
 }

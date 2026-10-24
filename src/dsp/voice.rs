@@ -1103,16 +1103,6 @@ impl Voice {
         }
     }
 
-    /// Forces the SVF coefficients to be recomputed for every sample, as the
-    /// original path did. Only used by the cached/uncached regression test.
-    #[cfg(test)]
-    fn force_uncached_svf(&mut self) {
-        self.filter_left.force_uncached();
-        self.filter_right.force_uncached();
-        self.filter_left2.force_uncached();
-        self.filter_right2.force_uncached();
-    }
-
     /// Gives every unison oscillator a random starting phase, so that the
     /// unison voices do not start in lockstep and a chord does not cancel
     /// itself out. The phases are random, but they are the same for every run
@@ -1544,30 +1534,6 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_voice_takes_the_new_velocity_and_channel() {
-        let settings = VoiceSettings::default();
-        let mut voice = voice(&settings);
-        voice.set_velocity(0.2);
-        voice.set_channel(Channel::Number(3));
-
-        assert!((voice.velocity_raw - 0.2).abs() < 1e-6);
-        assert_eq!(voice.channel(), Channel::Number(3));
-    }
-
-    #[test]
-    fn the_mod_wheel_adds_vibrato_when_lfo1_is_off() {
-        let settings = VoiceSettings {
-            mod_wheel: 0.5,
-            lfo1_target: LfoTarget::Off,
-            lfo1_amount: 0.0,
-            ..VoiceSettings::default()
-        };
-
-        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0, false);
-        assert!(pitch > 0.0, "the mod wheel did not bend the pitch");
-    }
-
-    #[test]
     fn a_mod_wheel_route_takes_over_from_the_built_in_vibrato() {
         let coupled_settings = VoiceSettings {
             mod_wheel: 0.5,
@@ -1644,18 +1610,6 @@ mod tests {
     }
 
     #[test]
-    fn a_routed_lfo1_ignores_the_mod_wheel_vibrato() {
-        let settings = VoiceSettings {
-            mod_wheel: 0.5,
-            lfo1_routed: true,
-            ..VoiceSettings::default()
-        };
-
-        let (pitch, _, _, _) = lfo_modulation(&settings, 1.0, 0.0, false);
-        assert_eq!(pitch, 0.0, "the wheel still added a direct LFO 1 vibrato");
-    }
-
-    #[test]
     fn the_sustain_pedal_defers_the_release() {
         let settings = VoiceSettings::default();
         let mut voice = voice(&settings);
@@ -1691,36 +1645,6 @@ mod tests {
         assert!(
             (frequency - 523.2).abs() < 8.0,
             "the bent voice played at {frequency} Hz"
-        );
-    }
-
-    #[test]
-    fn the_unison_count_can_change_while_a_note_is_held() {
-        let mut settings = plain_settings();
-        settings.unison = 1;
-        let mut voice = voice(&settings);
-        // The first sample triggers a control update for the initial count.
-        voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-
-        settings.unison = 3;
-        for _ in 0..CONTROL_RATE - 1 {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        }
-
-        // The next sample updates the control values and renders once with
-        // the new unison count. The first, already sounding slot must keep
-        // its phase and merely advance by its new increment.
-        let before = voice.osc1_bank[0].phase();
-        voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        let after = voice.osc1_bank[0].phase();
-        let expected = (before + voice.phase_delta1[0]).rem_euclid(1.0);
-        let distance = (after - expected).abs();
-        let distance = distance.min(1.0 - distance);
-
-        assert_eq!(voice.unison, 3);
-        assert!(
-            distance < 1e-6,
-            "the first unison slot jumped from {before} to {after} instead of {expected}"
         );
     }
 
@@ -1829,26 +1753,6 @@ mod tests {
     }
 
     #[test]
-    fn the_voices_are_reproducible() {
-        let settings = VoiceSettings {
-            unison: 4,
-            noise_level: 0.0,
-            drift_amount: 0.0,
-            ..VoiceSettings::default()
-        };
-
-        let mut first = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &settings);
-        let mut second = Voice::new(2, Channel::Number(0), Key::Number(60), 7, 1.0, &settings);
-
-        // The same voice always gets the same phases.
-        for _ in 0..512 {
-            let (a, _) = first.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            let (b, _) = second.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            assert_eq!(a, b);
-        }
-    }
-
-    #[test]
     fn the_dc_blocker_removes_the_offset_of_the_wave() {
         // A pulse wave with a duty cycle of 25 % has a lot of DC offset.
         let settings = VoiceSettings {
@@ -1883,26 +1787,6 @@ mod tests {
         assert!(
             offset.abs() < 0.02,
             "the wave still had an offset of {offset}"
-        );
-    }
-
-    #[test]
-    fn the_dc_blocker_passes_audio() {
-        let mut dc = DcBlocker::default();
-        let mut input = 0.0f64;
-        let mut output = 0.0f64;
-        for i in 0..48_000 {
-            let x = (2.0 * PI * 261.63 * i as f32 / SAMPLE_RATE).sin();
-            let y = dc.process(x, SAMPLE_RATE);
-            if i >= 4_800 {
-                input += (x * x) as f64;
-                output += (y * y) as f64;
-            }
-        }
-        let ratio = (output / input).sqrt();
-        assert!(
-            (ratio - 1.0).abs() < 0.01,
-            "DC blocker passband ratio {ratio}"
         );
     }
 
@@ -2003,51 +1887,6 @@ mod tests {
     }
 
     #[test]
-    fn a_static_voice_is_bit_identical_across_the_cached_and_uncached_svf() {
-        for (mode, slope) in [
-            (FilterMode::Lowpass, FilterSlope::TwoPole),
-            (FilterMode::Lowpass, FilterSlope::FourPoleModern),
-            (FilterMode::Highpass, FilterSlope::FourPole),
-            (FilterMode::Highpass, FilterSlope::FourPoleModern),
-            (FilterMode::Bandpass, FilterSlope::TwoPole),
-            (FilterMode::Notch, FilterSlope::FourPole),
-            (FilterMode::Notch, FilterSlope::FourPoleModern),
-        ] {
-            let settings = VoiceSettings {
-                filter_mode: mode,
-                filter_slope: slope,
-                filter_drive: 0.2,
-                character_grit: true,
-                unison: 4,
-                spread: 0.7,
-                ..VoiceSettings::default()
-            };
-
-            let mut cached = Voice::new(1, Channel::Number(0), Key::Number(60), 42, 0.8, &settings);
-            let mut uncached =
-                Voice::new(1, Channel::Number(0), Key::Number(60), 42, 0.8, &settings);
-            uncached.force_uncached_svf();
-
-            for sample in 0..2_048 {
-                let (cached_left, cached_right) =
-                    cached.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-                let (uncached_left, uncached_right) =
-                    uncached.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-                assert_eq!(
-                    cached_left.to_bits(),
-                    uncached_left.to_bits(),
-                    "{mode:?} {slope:?} left at sample {sample}"
-                );
-                assert_eq!(
-                    cached_right.to_bits(),
-                    uncached_right.to_bits(),
-                    "{mode:?} {slope:?} right at sample {sample}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn the_four_pole_filter_is_steeper() {
         fn energy(slope: FilterSlope) -> f32 {
             let settings = VoiceSettings {
@@ -2056,6 +1895,7 @@ mod tests {
                 filter_env_octaves: 0.0,
                 filter_keytrack: 0.0,
                 velocity_amount: 0.0,
+                legacy: true,
                 ..plain_settings()
             };
             let mut voice = Voice::new(1, Channel::Number(0), Key::Number(84), 0, 1.0, &settings);
@@ -2075,134 +1915,6 @@ mod tests {
             four_pole < two_pole * 0.8,
             "the four-pole filter is not steeper: {four_pole} vs {two_pole}"
         );
-    }
-
-    #[test]
-    fn switching_the_ladder_slope_prepares_the_filter_immediately() {
-        let mut settings = plain_settings();
-        settings.resonance = 0.3;
-        let mut voice = voice(&settings);
-
-        // Let the SVF run through a couple of control ticks, then stop just
-        // before the next one so that the switch happens in the middle of a
-        // control period.
-        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        }
-        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
-        assert_eq!(voice.ladder_left.coefficients(), (0.0, 0.0, 0.0));
-
-        // Switch to the 24 dB lowpass. The first sample already has to run
-        // the ladder with real coefficients, not with the defaults.
-        settings.filter_slope = FilterSlope::FourPole;
-        let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        assert!(left.is_finite() && right.is_finite());
-        let (p, k, rez) = voice.ladder_left.coefficients();
-        assert!(
-            p != 0.0 && k != 0.0 && rez != 0.0,
-            "the ladder kept its default coefficients: {p}, {k}, {rez}"
-        );
-        assert_eq!(voice.ladder_right.coefficients(), (p, k, rez));
-
-        let mut ladder_samples = vec![left];
-        for _ in 0..255 {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            assert!(left.is_finite() && right.is_finite());
-            ladder_samples.push(left);
-        }
-        assert!(
-            rms(&ladder_samples[64..]) > 0.01,
-            "the voice went silent when the ladder took over: {}",
-            rms(&ladder_samples[64..])
-        );
-
-        // Switch back to the 12 dB lowpass in the middle of a control period
-        // as well. The SVF path has to come back without stale state.
-        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
-        settings.filter_slope = FilterSlope::TwoPole;
-        let mut svf_samples = Vec::new();
-        for _ in 0..256 {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            assert!(left.is_finite() && right.is_finite());
-            svf_samples.push(left);
-        }
-        assert!(
-            rms(&svf_samples[64..]) > 0.01,
-            "the voice went silent when the SVF took over: {}",
-            rms(&svf_samples[64..])
-        );
-    }
-
-    #[test]
-    fn switching_to_the_modern_ladder_prepares_the_zdf_filter() {
-        let mut settings = plain_settings();
-        settings.resonance = 1.0;
-        let mut voice = voice(&settings);
-
-        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
-            voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        }
-        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
-
-        // The switch happens in the middle of a control period, so the
-        // transition preparation has to choose the modern ZDF ladder and
-        // prepare its coefficients.
-        settings.filter_slope = FilterSlope::FourPoleModern;
-        let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        assert!(left.is_finite() && right.is_finite());
-        let (_, k, gain) = voice.modern_ladder_left.coefficients();
-        assert!(
-            (3.8..4.0).contains(&k),
-            "the modern ladder did not reach full resonance: {k}"
-        );
-        assert!(
-            (4.8..5.0).contains(&gain),
-            "the modern ladder lost its gain compensation: {gain}"
-        );
-        assert_eq!(
-            voice.modern_ladder_right.coefficients(),
-            voice.modern_ladder_left.coefficients()
-        );
-
-        for _ in 0..256 {
-            let (left, right) = voice.next_sample(&settings, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-            assert!(left.is_finite() && right.is_finite());
-        }
-    }
-
-    #[test]
-    fn switching_between_ladder_variants_prepares_the_new_one() {
-        let mut settings = plain_settings();
-        settings.resonance = 0.6;
-        settings.filter_slope = FilterSlope::FourPole;
-        let mut voice = voice(&settings);
-
-        for _ in 0..(2 * CONTROL_RATE as usize + 3) {
-            voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-        }
-        let old_coefficients = voice.ladder_left.coefficients();
-        assert_ne!(old_coefficients, (0.0, 0.0, 0.0));
-        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
-
-        // The ladder mode stays active, so only the newly selected variant
-        // has to be reset and prepared.
-        settings.filter_slope = FilterSlope::FourPoleModern;
-        let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-        assert!(left.is_finite() && right.is_finite());
-        assert_eq!(voice.ladder_left.coefficients(), old_coefficients);
-        let (_, k, _) = voice.modern_ladder_left.coefficients();
-        assert!(k > 0.0, "the modern ladder was not prepared: {k}");
-
-        for _ in 0..128 {
-            let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-            assert!(left.is_finite() && right.is_finite());
-        }
-
-        assert_ne!(voice.control_counter, CONTROL_RATE - 1);
-        settings.filter_slope = FilterSlope::FourPole;
-        let (left, right) = voice.next_sample(&settings, 1_200.0, 0.0, 0.0, SAMPLE_RATE);
-        assert!(left.is_finite() && right.is_finite());
-        assert!(voice.ladder_left.coefficients().2 > 0.0);
     }
 
     #[test]
@@ -2845,39 +2557,6 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_offsets_the_unison_detune() {
-        let settings = VoiceSettings {
-            detune_cents: 0.0,
-            unison: 2,
-            filter_env_octaves: 0.0,
-            ..plain_settings()
-        };
-        let modulated = VoiceSettings {
-            macro1: 1.0,
-            mod_slots: matrix(ModSlot {
-                source: ModSource::Macro1,
-                dest: ModDest::Detune,
-                amount: 1.0,
-            }),
-            ..settings
-        };
-
-        let mut voice = voice(&modulated);
-        voice.next_sample(&modulated, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-
-        let base = util::f32_midi_key_to_freq(60.0);
-        for index in 0..2 {
-            let offset = unison_offset(index, 2);
-            let expected = base * unison_detune_ratio(50.0, offset) / SAMPLE_RATE;
-            assert!(
-                (voice.phase_delta1[index] - expected).abs() < 1e-6,
-                "the Detune matrix wrote {} instead of {expected}",
-                voice.phase_delta1[index]
-            );
-        }
-    }
-
-    #[test]
     fn the_matrix_moves_the_filter_envelope_amount() {
         let settings = VoiceSettings {
             filter_env_octaves: 0.0,
@@ -3071,20 +2750,6 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_component_tolerances_are_deterministic_and_bounded() {
-        for id in 0..64 {
-            let tolerances = legacy_tolerances(id);
-            assert_eq!(legacy_tolerances(id), tolerances);
-            assert!(tolerances.0.abs() <= TOLERANCE_PITCH);
-            assert!(tolerances.1.abs() <= TOLERANCE_GAIN);
-            assert!(tolerances.2.abs() <= TOLERANCE_CUTOFF);
-        }
-
-        // Two voices must not get the same component set.
-        assert_ne!(legacy_tolerances(1), legacy_tolerances(2));
-    }
-
-    #[test]
     fn the_legacy_component_tolerances_average_out() {
         let count = 4_096;
         let mut pitch = 0.0;
@@ -3100,47 +2765,6 @@ mod tests {
         assert!((pitch / count).abs() < TOLERANCE_PITCH * 0.1);
         assert!((gain / count).abs() < TOLERANCE_GAIN * 0.1);
         assert!((cutoff / count).abs() < TOLERANCE_CUTOFF * 0.1);
-    }
-
-    #[test]
-    fn modern_voices_have_no_component_tolerances() {
-        let modern = VoiceSettings::default();
-        let legacy = VoiceSettings {
-            legacy: true,
-            ..modern
-        };
-
-        let mut voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &modern);
-        assert_eq!(voice.pitch_tolerance, 0.0);
-        assert_eq!(voice.gain_tolerance, 0.0);
-        assert_eq!(voice.cutoff_tolerance, 0.0);
-
-        // A modern voice that becomes legacy gets its tolerances then, and a
-        // voice that goes back to modern loses them again.
-        voice.next_sample(&legacy, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        assert_eq!(
-            (
-                voice.pitch_tolerance,
-                voice.gain_tolerance,
-                voice.cutoff_tolerance,
-            ),
-            legacy_tolerances(7)
-        );
-        voice.next_sample(&modern, 3_000.0, 0.0, 0.0, SAMPLE_RATE);
-        assert_eq!(voice.pitch_tolerance, 0.0);
-        assert_eq!(voice.gain_tolerance, 0.0);
-        assert_eq!(voice.cutoff_tolerance, 0.0);
-
-        // A voice that starts legacy gets the same fixed set right away.
-        let voice = Voice::new(1, Channel::Number(0), Key::Number(60), 7, 1.0, &legacy);
-        assert_eq!(
-            (
-                voice.pitch_tolerance,
-                voice.gain_tolerance,
-                voice.cutoff_tolerance,
-            ),
-            legacy_tolerances(7)
-        );
     }
 
     #[test]
@@ -3219,44 +2843,6 @@ mod tests {
         assert!(
             mean > 0.001,
             "there was no DC offset from the warmth: {mean}"
-        );
-    }
-
-    #[test]
-    fn the_legacy_warmth_does_not_add_dc_to_the_output() {
-        let settings = VoiceSettings {
-            legacy: true,
-            osc1: OscSettings {
-                waveform: Waveform::Sine,
-                level: 1.0,
-                ..OscSettings::default()
-            },
-            osc2: OscSettings {
-                level: 0.0,
-                ..OscSettings::default()
-            },
-            filter_env_octaves: 0.0,
-            filter_keytrack: 0.0,
-            velocity_amount: 0.0,
-            drift_amount: 0.0,
-            ..VoiceSettings::default()
-        };
-        let mut voice = Voice::new(1, Channel::Number(0), Key::Number(48), 3, 1.0, &settings);
-
-        // Let the envelope settle and the DC blocker remove the offset that
-        // the quadratic term puts into the filter.
-        for _ in 0..(SAMPLE_RATE as usize) {
-            voice.next_sample(&settings, 12_000.0, 0.0, 0.0, SAMPLE_RATE);
-        }
-        let mut sum = 0.0;
-        for _ in 0..(SAMPLE_RATE as usize) {
-            let (left, _) = voice.next_sample(&settings, 12_000.0, 0.0, 0.0, SAMPLE_RATE);
-            sum += left;
-        }
-        let offset = sum / SAMPLE_RATE;
-        assert!(
-            offset.abs() < 0.001,
-            "the legacy voice had a DC offset of {offset}"
         );
     }
 

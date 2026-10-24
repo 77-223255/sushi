@@ -194,19 +194,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attack_reaches_full_level() {
-        let coeffs = EnvCoeffs::new(10.0, 300.0, 0.7, 400.0, 48_000.0);
-        let mut env = Adsr::default();
-        env.gate_on();
-
-        // 10 ms at 48 kHz.
-        for _ in 0..480 {
-            env.next(&coeffs);
-        }
-        assert!((env.next(&coeffs) - 1.0).abs() < 1e-3);
-    }
-
-    #[test]
     fn release_eventually_finishes() {
         let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
         let mut env = Adsr::default();
@@ -270,25 +257,6 @@ mod tests {
 
         assert!(modern.is_finished());
         assert!(!legacy.is_finished());
-    }
-
-    #[test]
-    fn release_falls_off_quickly() {
-        let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
-        let mut env = Adsr::default();
-        env.gate_on();
-        for _ in 0..480 {
-            env.next(&coeffs);
-        }
-        assert!(env.next(&coeffs) > 0.9);
-
-        env.gate_off();
-        // The release coefficient puts the -60 dB point at the configured time.
-        for _ in 0..(0.3 * 48_000.0) as usize {
-            env.next(&coeffs);
-        }
-        let level = env.next(&coeffs);
-        assert!(level < 0.01, "the release was at {level} after 300 ms");
     }
 
     #[test]

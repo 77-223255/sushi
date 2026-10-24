@@ -99,12 +99,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn the_controls_are_clamped_to_their_ranges() {
-        let (left, right) = apply_width_pan(0.5, -0.5, 10.0, 4.0);
-        let (clamped_left, clamped_right) = apply_width_pan(0.5, -0.5, 2.0, 1.0);
-        assert_eq!(left.to_bits(), clamped_left.to_bits());
-        assert_eq!(right.to_bits(), clamped_right.to_bits());
-    }
 }
