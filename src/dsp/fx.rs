@@ -1,20 +1,20 @@
 //! The effect chain: a drive, a phaser, a chorus, a ping-pong delay, a
-//! compact reverb and a three band EQ.
+//! compact reverb, a three band EQ, a compressor and a tremolo/auto-pan.
 //!
 //! All the delay lines are allocated up front (in [`Fx::new`]) so that the
 //! processing itself never allocates. The new effects default to completely
 //! neutral settings, so old patches and presets keep sounding the same.
 //!
-//! The six stages have a fixed original order, `stage_order(0)`. The `order`
-//! parameter selects one of the `6! = 720` permutations of that sequence, and
+//! The eight stages have a fixed original order, `stage_order(0)`. The `order`
+//! parameter selects one of the `8! = 40320` permutations of that sequence, and
 //! `bypass_mask` skips individual stages. `global_mix` is a dry/wet crossfade
 //! around the whole chain; its default of `1.0` returns the wet signal
 //! untouched, bit for bit.
 //!
-//! Orders `0..=5` keep the original rotation semantics, so old patches and
-//! automation keep their sound. Orders `6..=719` use the remaining
-//! permutations in lexicographic order, which makes every order a unique,
-//! reversible description of the chain.
+//! The old `6! = 720` order values keep their exact six-stage chain and get
+//! the compressor and the tremolo appended at the end. Old patches therefore
+//! keep their sound: both new stages are neutral by default. The remaining
+//! full eight-stage permutations start at order 720.
 
 use std::f32::consts::PI;
 
@@ -28,10 +28,16 @@ const CHORUS_BASE_DELAY: f32 = 0.012;
 const CHORUS_MAX_DEPTH: f32 = 0.004;
 /// The frequency of the lowpass of the wet signal of the chorus, in Hz.
 const CHORUS_LOWPASS: f32 = 8_000.0;
+/// The maximum stereo widening of the chorus. At full width the side signal
+/// of the wet chorus is doubled.
+const CHORUS_MAX_WIDTH: f32 = 1.0;
 /// The maximum delay time of the delay line in seconds.
 const DELAY_MAX_TIME: f32 = 2.0;
 /// The frequency of the lowpass in the feedback path of the delay, in Hz.
 const DELAY_LOWPASS: f32 = 5_000.0;
+/// The lowest feedback damping cutoff of the delay, in Hz. Higher damping
+/// moves the fixed 5 kHz lowpass down towards this frequency.
+const DELAY_MIN_LOWPASS: f32 = 150.0;
 /// The time constant of the one-pole that follows a change of the delay time,
 /// in seconds. Without it a moved control jumps the read position, which is
 /// heard as a click or a zipper.
@@ -44,6 +50,12 @@ const DRIVE_MAX_GAIN_DB: f32 = 24.0;
 /// limits the wet signal to ±1; this keeps a hot input from sounding louder
 /// than the dry signal.
 const DRIVE_COMPENSATION: f32 = 1.5;
+/// The crossover of the post-drive tone tilt, in Hz.
+const DRIVE_TONE_FREQUENCY: f32 = 800.0;
+/// The boost or cut of the drive tone tilt at full amount, in decibels.
+const DRIVE_TONE_MAX_DB: f32 = 6.0;
+/// A tone setting closer to zero than this is the exact old algorithm.
+const TONE_BYPASS: f32 = 1e-6;
 /// The number of first-order allpass stages in the phaser.
 const PHASER_STAGES: usize = 4;
 /// The centre frequency of the phaser, in Hz.
@@ -61,12 +73,25 @@ const EQ_HIGH_CROSSOVER: f32 = 4_000.0;
 const EQ_MAX_GAIN_DB: f32 = 12.0;
 /// A band gain closer to 0 dB than this is treated as neutral.
 const EQ_BYPASS_DB: f32 = 1e-4;
+/// The crossover of the reverb tone tilt, in Hz.
+const REVERB_TONE_FREQUENCY: f32 = 1_200.0;
+/// The boost or cut of the reverb tone tilt at full amount, in decibels.
+const REVERB_TONE_MAX_DB: f32 = 9.0;
 
 /// The number of stages in the effect chain.
-pub const FX_STAGE_COUNT: usize = 6;
+pub const FX_STAGE_COUNT: usize = 8;
 
-/// The number of possible stage orders: every permutation of the six stages.
-pub const FX_ORDER_COUNT: usize = 720;
+/// The number of stages in the original six-stage chain.
+pub const FX_LEGACY_STAGE_COUNT: usize = 6;
+
+/// The number of possible stage orders: every permutation of the eight stages.
+pub const FX_ORDER_COUNT: usize = 40_320;
+
+/// The number of the old six-stage permutations, kept for migration.
+pub const FX_LEGACY_ORDER_COUNT: usize = 720;
+
+/// The largest valid value of the old six-stage `fx_order` parameter.
+pub const FX_LEGACY_ORDER_MAX: i32 = FX_LEGACY_ORDER_COUNT as i32 - 1;
 
 /// The largest valid value of the `fx_order` parameter.
 pub const FX_ORDER_MAX: i32 = FX_ORDER_COUNT as i32 - 1;
@@ -87,11 +112,25 @@ pub enum FxStage {
     Delay = 3,
     Reverb = 4,
     Eq = 5,
+    Compressor = 6,
+    Tremolo = 7,
 }
 
 impl FxStage {
-    /// Every stage in the original order.
+    /// Every stage in the original order, with the new stages at the end.
     pub const ALL: [Self; FX_STAGE_COUNT] = [
+        Self::Drive,
+        Self::Phaser,
+        Self::Chorus,
+        Self::Delay,
+        Self::Reverb,
+        Self::Eq,
+        Self::Compressor,
+        Self::Tremolo,
+    ];
+
+    /// The stages of the original six-stage chain.
+    pub const LEGACY: [Self; FX_LEGACY_STAGE_COUNT] = [
         Self::Drive,
         Self::Phaser,
         Self::Chorus,
@@ -113,7 +152,7 @@ impl FxStage {
     }
 }
 
-/// The six stages in the order selected by a permutation index.
+/// The original six stages in the order selected by an old permutation index.
 ///
 /// The first six orders keep the original rotation semantics, where every
 /// step takes the first stage and appends it at the end:
@@ -126,29 +165,105 @@ impl FxStage {
 /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
 ///
 /// Orders `6..=719` are the remaining permutations in lexicographic order.
-/// Together the 720 orders cover every possible chain order exactly once, so
-/// [`stage_order_index()`] is the exact inverse of this function.
+/// Together the 720 orders cover every possible old chain order exactly once.
 ///
 /// Out-of-range indices are clamped, so a bad host value can never index past
 /// the end of the table.
 #[inline]
-pub fn stage_order(order: i32) -> [FxStage; FX_STAGE_COUNT] {
-    STAGE_ORDERS[order.clamp(0, FX_ORDER_MAX) as usize]
+pub fn legacy_stage_order(order: i32) -> [FxStage; FX_LEGACY_STAGE_COUNT] {
+    LEGACY_STAGE_ORDERS[order.clamp(0, FX_LEGACY_ORDER_MAX) as usize]
 }
 
-/// The permutation index of a chain order, `0..=719`.
+/// The permutation index of an old six-stage chain order, `0..=719`.
 ///
-/// This is the inverse of [`stage_order()`]. Every possible permutation of the
-/// six stages appears exactly once in the table, so this always finds a match.
+/// This is the inverse of [`legacy_stage_order()`].
 #[inline]
-pub fn stage_order_index(order: [FxStage; FX_STAGE_COUNT]) -> i32 {
-    STAGE_ORDERS
+pub fn legacy_stage_order_index(order: [FxStage; FX_LEGACY_STAGE_COUNT]) -> i32 {
+    LEGACY_STAGE_ORDERS
         .iter()
         .position(|candidate| *candidate == order)
         .map_or(0, |index| index as i32)
 }
 
-/// `n!` for the tiny values needed by the permutation table.
+/// The explicit migration of an old order value: the old six-stage chain
+/// followed by the compressor and the tremolo.
+///
+/// Both new stages are neutral by default, so an old patch with `fx_order`
+/// `0..=719` keeps its exact sound. This is the mapping that the first 720
+/// entries of [`stage_order()`] use.
+#[inline]
+pub fn migrated_stage_order(order: i32) -> [FxStage; FX_STAGE_COUNT] {
+    let legacy = legacy_stage_order(order);
+    [
+        legacy[0],
+        legacy[1],
+        legacy[2],
+        legacy[3],
+        legacy[4],
+        legacy[5],
+        FxStage::Compressor,
+        FxStage::Tremolo,
+    ]
+}
+
+/// The eight stages in the order selected by a permutation index, `0..=40319`.
+///
+/// Orders `0..=719` are the explicit [`migrated_stage_order()`] of the old
+/// six-stage chain: the old order plus Compressor and Tremolo at the end.
+/// Orders `720..=40319` are the remaining eight-stage permutations in
+/// lexicographic order, which makes every order a unique, reversible
+/// description of the chain.
+///
+/// Out-of-range indices are clamped, so a bad host value can never leave the
+/// valid permutation range.
+#[inline]
+pub fn stage_order(order: i32) -> [FxStage; FX_STAGE_COUNT] {
+    let order = order.clamp(0, FX_ORDER_MAX);
+    if order < FX_LEGACY_ORDER_COUNT as i32 {
+        migrated_stage_order(order)
+    } else {
+        permutation_from_rank(nth_allowed_rank(
+            (order - FX_LEGACY_ORDER_COUNT as i32) as usize,
+        ))
+    }
+}
+
+/// The permutation index of an eight-stage chain order, `0..=40319`.
+///
+/// This is the inverse of [`stage_order()`]. Every possible permutation of the
+/// eight stages appears exactly once, so this always finds the original
+/// order.
+#[inline]
+pub fn stage_order_index(order: [FxStage; FX_STAGE_COUNT]) -> i32 {
+    // The migrated old orders all end in Compressor, Tremolo. Their index is
+    // simply the old six-stage index.
+    if order[FX_LEGACY_STAGE_COUNT].index() == FxStage::Compressor.index()
+        && order[FX_LEGACY_STAGE_COUNT + 1].index() == FxStage::Tremolo.index()
+    {
+        return legacy_stage_order_index([
+            order[0], order[1], order[2], order[3], order[4], order[5],
+        ]);
+    }
+
+    let rank = permutation_rank(order);
+    let allowed_before = rank - reserved_before(rank);
+    FX_LEGACY_ORDER_COUNT as i32 + allowed_before as i32
+}
+
+/// The first six stages of a chain order.
+///
+/// The editor still shows the original six-stage rack, so it uses this view
+/// until the UI grows the two new modules. For an old order it is exactly
+/// [`legacy_stage_order()`].
+#[inline]
+pub fn legacy_view_stage_order(order: i32) -> [FxStage; FX_LEGACY_STAGE_COUNT] {
+    let stages = stage_order(order);
+    [
+        stages[0], stages[1], stages[2], stages[3], stages[4], stages[5],
+    ]
+}
+
+/// `n!` for the tiny values needed by the permutation tables.
 const fn factorial(n: usize) -> usize {
     let mut result = 1;
     let mut factor = 2;
@@ -159,7 +274,8 @@ const fn factorial(n: usize) -> usize {
     result
 }
 
-/// Decodes a zero-based lexicographic permutation rank into stage order.
+/// Decodes a zero-based lexicographic permutation rank into an eight-stage
+/// order.
 const fn permutation_from_rank(mut rank: usize) -> [FxStage; FX_STAGE_COUNT] {
     let mut used = [false; FX_STAGE_COUNT];
     let mut result = [FxStage::Drive; FX_STAGE_COUNT];
@@ -189,7 +305,7 @@ const fn permutation_from_rank(mut rank: usize) -> [FxStage; FX_STAGE_COUNT] {
     result
 }
 
-/// The zero-based lexicographic rank of a stage order.
+/// The zero-based lexicographic rank of an eight-stage order.
 const fn permutation_rank(permutation: [FxStage; FX_STAGE_COUNT]) -> usize {
     let mut used = [false; FX_STAGE_COUNT];
     let mut rank = 0;
@@ -214,34 +330,91 @@ const fn permutation_rank(permutation: [FxStage; FX_STAGE_COUNT]) -> usize {
     rank
 }
 
-/// Builds the order table: the six old rotations first, then every remaining
-/// permutation in lexicographic order.
-const fn build_stage_order_table() -> [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT] {
-    let mut table = [[FxStage::Drive; FX_STAGE_COUNT]; FX_ORDER_COUNT];
+/// Decodes a zero-based lexicographic permutation rank into a six-stage order.
+const fn legacy_permutation_from_rank(mut rank: usize) -> [FxStage; FX_LEGACY_STAGE_COUNT] {
+    let mut used = [false; FX_LEGACY_STAGE_COUNT];
+    let mut result = [FxStage::Drive; FX_LEGACY_STAGE_COUNT];
+    let mut position = 0;
+
+    while position < FX_LEGACY_STAGE_COUNT {
+        let block = factorial(FX_LEGACY_STAGE_COUNT - 1 - position);
+        let mut index = rank / block;
+        rank %= block;
+
+        let mut candidate = 0;
+        while candidate < FX_LEGACY_STAGE_COUNT {
+            if !used[candidate] {
+                if index == 0 {
+                    result[position] = FxStage::LEGACY[candidate];
+                    used[candidate] = true;
+                    break;
+                }
+                index -= 1;
+            }
+            candidate += 1;
+        }
+
+        position += 1;
+    }
+
+    result
+}
+
+/// The zero-based lexicographic rank of a six-stage order.
+const fn legacy_permutation_rank(permutation: [FxStage; FX_LEGACY_STAGE_COUNT]) -> usize {
+    let mut used = [false; FX_LEGACY_STAGE_COUNT];
+    let mut rank = 0;
+    let mut position = 0;
+
+    while position < FX_LEGACY_STAGE_COUNT {
+        let target = permutation[position].index();
+        let mut index = 0;
+        let mut candidate = 0;
+        while candidate < target {
+            if !used[candidate] {
+                index += 1;
+            }
+            candidate += 1;
+        }
+
+        rank += index * factorial(FX_LEGACY_STAGE_COUNT - 1 - position);
+        used[target] = true;
+        position += 1;
+    }
+
+    rank
+}
+
+/// Builds the old order table: the six original rotations first, then every
+/// remaining six-stage permutation in lexicographic order.
+const fn build_legacy_stage_order_table()
+-> [[FxStage; FX_LEGACY_STAGE_COUNT]; FX_LEGACY_ORDER_COUNT] {
+    let mut table = [[FxStage::Drive; FX_LEGACY_STAGE_COUNT]; FX_LEGACY_ORDER_COUNT];
 
     let mut rotation = 0;
-    while rotation < FX_STAGE_COUNT {
+    while rotation < FX_LEGACY_STAGE_COUNT {
         let mut position = 0;
-        while position < FX_STAGE_COUNT {
-            table[rotation][position] = FxStage::ALL[(position + rotation) % FX_STAGE_COUNT];
+        while position < FX_LEGACY_STAGE_COUNT {
+            table[rotation][position] =
+                FxStage::LEGACY[(position + rotation) % FX_LEGACY_STAGE_COUNT];
             position += 1;
         }
         rotation += 1;
     }
 
-    let mut rotation_ranks = [usize::MAX; FX_STAGE_COUNT];
+    let mut rotation_ranks = [usize::MAX; FX_LEGACY_STAGE_COUNT];
     let mut index = 0;
-    while index < FX_STAGE_COUNT {
-        rotation_ranks[index] = permutation_rank(table[index]);
+    while index < FX_LEGACY_STAGE_COUNT {
+        rotation_ranks[index] = legacy_permutation_rank(table[index]);
         index += 1;
     }
 
-    let mut order = FX_STAGE_COUNT;
+    let mut order = FX_LEGACY_STAGE_COUNT;
     let mut rank = 0;
-    while rank < FX_ORDER_COUNT {
+    while rank < FX_LEGACY_ORDER_COUNT {
         let mut is_rotation = false;
         let mut rotation = 0;
-        while rotation < FX_STAGE_COUNT {
+        while rotation < FX_LEGACY_STAGE_COUNT {
             if rotation_ranks[rotation] == rank {
                 is_rotation = true;
                 break;
@@ -250,7 +423,7 @@ const fn build_stage_order_table() -> [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT
         }
 
         if !is_rotation {
-            table[order] = permutation_from_rank(rank);
+            table[order] = legacy_permutation_from_rank(rank);
             order += 1;
         }
         rank += 1;
@@ -259,18 +432,100 @@ const fn build_stage_order_table() -> [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT
     table
 }
 
-/// Every chain order. The table is built at compile time, so looking up an
-/// order in the audio path is just a bounds-checked array read.
-const STAGE_ORDERS: [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT] = build_stage_order_table();
+/// The old six-stage orders, built at compile time.
+const LEGACY_STAGE_ORDERS: [[FxStage; FX_LEGACY_STAGE_COUNT]; FX_LEGACY_ORDER_COUNT] =
+    build_legacy_stage_order_table();
+
+/// Builds the lexicographic ranks of the migrated old orders, sorted so that
+/// the number of reserved ranks below any rank can be counted quickly.
+const fn build_reserved_ranks() -> [u16; FX_LEGACY_ORDER_COUNT] {
+    let mut ranks = [0u16; FX_LEGACY_ORDER_COUNT];
+    let mut count = 0;
+
+    while count < FX_LEGACY_ORDER_COUNT {
+        let legacy = LEGACY_STAGE_ORDERS[count];
+        let mut permutation = [FxStage::Drive; FX_STAGE_COUNT];
+        let mut position = 0;
+        while position < FX_LEGACY_STAGE_COUNT {
+            permutation[position] = legacy[position];
+            position += 1;
+        }
+        permutation[FX_LEGACY_STAGE_COUNT] = FxStage::Compressor;
+        permutation[FX_LEGACY_STAGE_COUNT + 1] = FxStage::Tremolo;
+        let rank = permutation_rank(permutation) as u16;
+
+        // Insertion sort: the table has only 720 entries and is built once.
+        let mut slot = count;
+        while slot > 0 && ranks[slot - 1] > rank {
+            ranks[slot] = ranks[slot - 1];
+            slot -= 1;
+        }
+        ranks[slot] = rank;
+        count += 1;
+    }
+
+    ranks
+}
+
+/// The sorted lexicographic ranks of every permutation that ends in
+/// Compressor, Tremolo; these are the 720 migrated old orders.
+const RESERVED_RANKS: [u16; FX_LEGACY_ORDER_COUNT] = build_reserved_ranks();
+
+/// The number of reserved (migrated old) permutations whose lexicographic
+/// rank is below `rank`.
+#[inline]
+fn reserved_before(rank: usize) -> usize {
+    let mut low = 0;
+    let mut high = RESERVED_RANKS.len();
+    while low < high {
+        let middle = (low + high) / 2;
+        if (RESERVED_RANKS[middle] as usize) < rank {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    low
+}
+
+/// Whether a lexicographic rank belongs to a migrated old order.
+#[inline]
+fn is_reserved_rank(rank: usize) -> bool {
+    RESERVED_RANKS.binary_search(&(rank as u16)).is_ok()
+}
+
+/// The lexicographic rank of the `index`th eight-stage permutation that does
+/// not end in Compressor, Tremolo.
+fn nth_allowed_rank(index: usize) -> usize {
+    // The number of allowed permutations below `rank` is
+    // `rank - reserved_before(rank)`. Find the first rank where that count
+    // reaches `index`, then skip a reserved rank if the boundary sits on one.
+    let mut low = 0;
+    let mut high = FX_ORDER_COUNT;
+    while low < high {
+        let middle = (low + high) / 2;
+        if middle - reserved_before(middle) >= index {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+
+    let mut rank = low;
+    while rank < FX_ORDER_COUNT && is_reserved_rank(rank) {
+        rank += 1;
+    }
+    rank
+}
 
 /// The parameters of the effect chain.
 #[derive(Debug, Clone, Copy)]
 pub struct FxParams {
-    /// The permutation index of the six-stage chain, `0..=719`. See
+    /// The permutation index of the eight-stage chain, `0..=40319`. See
     /// [`stage_order()`] for the exact mapping.
     pub order: i32,
     /// The bypass mask. Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay,
-    /// 4 Reverb and 5 EQ.
+    /// 4 Reverb, 5 EQ, 6 Compressor and 7 Tremolo.
     pub bypass_mask: i32,
     /// The dry/wet crossfade around the entire chain, `0..=1`. At `1` the
     /// chain output is returned bit-for-bit; at `0` the dry input is returned
@@ -278,20 +533,54 @@ pub struct FxParams {
     pub global_mix: f32,
     pub drive_amount: f32,
     pub drive_mix: f32,
+    /// The post-drive tone tilt, `-1..=1`. Zero is bit-exact with the old
+    /// drive.
+    pub drive_tone: f32,
     pub phaser_rate: f32,
     pub phaser_depth: f32,
     pub phaser_mix: f32,
+    /// The feedback around the phaser allpass chain, `0..=0.9`. Zero is
+    /// bit-exact with the old phaser.
+    pub phaser_feedback: f32,
     pub eq_low: f32,
     pub eq_mid: f32,
     pub eq_high: f32,
     pub chorus_mix: f32,
     pub chorus_rate: f32,
     pub chorus_depth: f32,
+    /// The stereo width of the wet chorus, `0..=1`. Zero is the old stereo
+    /// behavior.
+    pub chorus_width: f32,
     pub delay_time_s: f32,
     pub delay_feedback: f32,
     pub delay_mix: f32,
+    /// Extra damping of the delay feedback, `0..=1`. Zero keeps the old fixed
+    /// 5 kHz lowpass.
+    pub delay_damping: f32,
     pub reverb_mix: f32,
     pub reverb_decay: f32,
+    /// The tone of the reverb wet signal, `-1..=1`. Zero is bit-exact with
+    /// the old reverb.
+    pub reverb_tone: f32,
+    /// The threshold of the stereo-linked compressor, in dB.
+    pub comp_threshold: f32,
+    /// The compression ratio, `1..=20`.
+    pub comp_ratio: f32,
+    /// The attack time of the compressor, in milliseconds.
+    pub comp_attack: f32,
+    /// The release time of the compressor, in milliseconds.
+    pub comp_release: f32,
+    /// The makeup gain of the compressor, in dB.
+    pub comp_makeup: f32,
+    /// The dry/wet mix of the compressor.
+    pub comp_mix: f32,
+    /// The rate of the tremolo/auto-pan, in Hz.
+    pub trem_rate: f32,
+    /// The depth of the tremolo/auto-pan, `0..=1`. Zero is exact neutral.
+    pub trem_depth: f32,
+    /// Whether the tremolo pans between the channels instead of modulating
+    /// both channels together.
+    pub trem_stereo: bool,
     /// Use the original Freeverb-style reverb and the unprocessed feedback
     /// path. Set by the legacy flavor.
     pub legacy: bool,
@@ -305,20 +594,34 @@ impl Default for FxParams {
             global_mix: 1.0,
             drive_amount: 0.0,
             drive_mix: 0.0,
+            drive_tone: 0.0,
             phaser_rate: 0.3,
             phaser_depth: 0.5,
             phaser_mix: 0.0,
+            phaser_feedback: 0.0,
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
             chorus_mix: 0.0,
             chorus_rate: 0.8,
             chorus_depth: 0.5,
+            chorus_width: 0.0,
             delay_time_s: 0.35,
             delay_feedback: 0.3,
             delay_mix: 0.0,
+            delay_damping: 0.0,
             reverb_mix: 0.0,
             reverb_decay: 0.6,
+            reverb_tone: 0.0,
+            comp_threshold: 0.0,
+            comp_ratio: 1.0,
+            comp_attack: 20.0,
+            comp_release: 200.0,
+            comp_makeup: 0.0,
+            comp_mix: 0.0,
+            trem_rate: 5.0,
+            trem_depth: 0.0,
+            trem_stereo: false,
             legacy: false,
         }
     }
@@ -336,10 +639,23 @@ impl FxParams {
         }
     }
 
-    /// The bypass mask with every bit outside the six stages cleared.
+    /// The bypass mask with every bit outside the eight stages cleared.
     #[inline]
     pub fn clamped_bypass_mask(&self) -> u32 {
         self.bypass_mask.clamp(0, FX_BYPASS_ALL as i32) as u32
+    }
+
+    /// Whether the compressor would change the signal. Ratio 1, a threshold
+    /// at 0 dB and no makeup gain are all exact neutral.
+    #[inline]
+    fn compressor_active(&self) -> bool {
+        if self.comp_mix.clamp(0.0, 1.0) <= BYPASS_MIX {
+            return false;
+        }
+        let ratio = self.comp_ratio.clamp(1.0, 20.0);
+        let threshold = self.comp_threshold.clamp(-60.0, 0.0);
+        let makeup = self.comp_makeup.clamp(0.0, 24.0);
+        !((ratio <= 1.0 || threshold >= 0.0) && makeup <= 1e-6)
     }
 
     /// Whether a single stage would change the signal. The bypass mask and
@@ -360,6 +676,8 @@ impl FxParams {
                     && mid.abs() <= EQ_BYPASS_DB
                     && high.abs() <= EQ_BYPASS_DB)
             }
+            FxStage::Compressor => self.compressor_active(),
+            FxStage::Tremolo => self.trem_depth.clamp(0.0, 1.0) > BYPASS_MIX,
         }
     }
 
@@ -416,6 +734,24 @@ fn allpass_stage(input: f32, coefficient: f32, state: &mut f32) -> f32 {
     output
 }
 
+/// Splits the input into a low and a high band and applies the two gains.
+/// The caller skips this function at neutral settings, so the old algorithm
+/// stays bit-exact.
+#[inline]
+fn tilt_sample(
+    input: f32,
+    state: &mut f32,
+    coefficient: f32,
+    low_gain: f32,
+    high_gain: f32,
+) -> f32 {
+    *state += (input - *state) * coefficient;
+    *state = flush_denormal(*state);
+    let low = *state;
+    let high = input - low;
+    low * low_gain + high * high_gain
+}
+
 /// The effect chain of the synthesizer.
 pub struct Fx {
     sample_rate: f32,
@@ -423,11 +759,18 @@ pub struct Fx {
     // The drive.
     drive_adaa_left: AdaaTanh,
     drive_adaa_right: AdaaTanh,
+    /// The low band of the post-drive tone tilt.
+    drive_tone_left: f32,
+    drive_tone_right: f32,
+    drive_tone_coefficient: f32,
 
     // The phaser.
     phaser_phase: f32,
     phaser_left: [f32; PHASER_STAGES],
     phaser_right: [f32; PHASER_STAGES],
+    /// The last wet sample, fed back into the allpass chain.
+    phaser_feedback_left: f32,
+    phaser_feedback_right: f32,
 
     // The three band EQ. The low band is the output of a lowpass at the low
     // crossover, the high band is the input minus a lowpass at the high
@@ -472,9 +815,25 @@ pub struct Fx {
     // The reverb.
     reverb: Reverb,
     legacy_reverb: LegacyReverb,
+    /// The low band of the reverb tone tilt.
+    reverb_tone_left: f32,
+    reverb_tone_right: f32,
+    reverb_tone_coefficient: f32,
     /// The flavor used by the previous sample. Switching flavors clears the
     /// reverb that was not running, so it cannot replay stale audio.
     last_legacy: Option<bool>,
+
+    // The compressor. A single gain envelope links the two channels.
+    compressor_gain: f32,
+
+    // The tremolo/auto-pan.
+    tremolo_phase: f32,
+
+    /// The order value and its decoded stage order. Decoding only happens
+    /// when the order changes, not on every sample.
+    last_order: i32,
+    order_cache: [FxStage; FX_STAGE_COUNT],
+
     /// Whether the whole chain was bypassed on the previous sample. The
     /// first bypassed sample clears all the state, so re-enabling an effect
     /// cannot replay an old tail.
@@ -499,9 +858,14 @@ impl Fx {
             sample_rate,
             drive_adaa_left: AdaaTanh::default(),
             drive_adaa_right: AdaaTanh::default(),
+            drive_tone_left: 0.0,
+            drive_tone_right: 0.0,
+            drive_tone_coefficient: lowpass_coefficient(DRIVE_TONE_FREQUENCY, sample_rate),
             phaser_phase: 0.0,
             phaser_left: [0.0; PHASER_STAGES],
             phaser_right: [0.0; PHASER_STAGES],
+            phaser_feedback_left: 0.0,
+            phaser_feedback_right: 0.0,
             eq_low_left: 0.0,
             eq_low_right: 0.0,
             eq_high_left: 0.0,
@@ -527,7 +891,14 @@ impl Fx {
             delay_adaa_right: AdaaTanh::default(),
             reverb: Reverb::new(sample_rate),
             legacy_reverb: LegacyReverb::new(sample_rate),
+            reverb_tone_left: 0.0,
+            reverb_tone_right: 0.0,
+            reverb_tone_coefficient: lowpass_coefficient(REVERB_TONE_FREQUENCY, sample_rate),
             last_legacy: None,
+            compressor_gain: 1.0,
+            tremolo_phase: 0.0,
+            last_order: 0,
+            order_cache: FxStage::ALL,
             bypassed: true,
             last_bypass_mask: 0,
         }
@@ -549,11 +920,15 @@ impl Fx {
             FxStage::Drive => {
                 self.drive_adaa_left.reset();
                 self.drive_adaa_right.reset();
+                self.drive_tone_left = 0.0;
+                self.drive_tone_right = 0.0;
             }
             FxStage::Phaser => {
                 self.phaser_phase = 0.0;
                 self.phaser_left = [0.0; PHASER_STAGES];
                 self.phaser_right = [0.0; PHASER_STAGES];
+                self.phaser_feedback_left = 0.0;
+                self.phaser_feedback_right = 0.0;
             }
             FxStage::Chorus => {
                 self.chorus_left.fill(0.0);
@@ -576,12 +951,20 @@ impl Fx {
             FxStage::Reverb => {
                 self.reverb.reset();
                 self.legacy_reverb.reset();
+                self.reverb_tone_left = 0.0;
+                self.reverb_tone_right = 0.0;
             }
             FxStage::Eq => {
                 self.eq_low_left = 0.0;
                 self.eq_low_right = 0.0;
                 self.eq_high_left = 0.0;
                 self.eq_high_right = 0.0;
+            }
+            FxStage::Compressor => {
+                self.compressor_gain = 1.0;
+            }
+            FxStage::Tremolo => {
+                self.tremolo_phase = 0.0;
             }
         }
     }
@@ -640,8 +1023,13 @@ impl Fx {
         let mut wet_right = right;
 
         // The stage order is a fixed stack array, so reordering allocates
-        // nothing and an out-of-range order simply clamps.
-        for stage in stage_order(params.order) {
+        // nothing and an out-of-range order simply clamps. The decoded order
+        // is cached: the factoradic lookup runs only when the control moves.
+        if params.order != self.last_order {
+            self.last_order = params.order;
+            self.order_cache = stage_order(params.order);
+        }
+        for stage in self.order_cache {
             if bypass_mask & stage.bit() != 0 {
                 continue;
             }
@@ -652,6 +1040,8 @@ impl Fx {
                 FxStage::Delay => self.process_delay(wet_left, wet_right, params),
                 FxStage::Reverb => self.process_reverb(wet_left, wet_right, params),
                 FxStage::Eq => self.process_eq(wet_left, wet_right, params),
+                FxStage::Compressor => self.process_compressor(wet_left, wet_right, params),
+                FxStage::Tremolo => self.process_tremolo(wet_left, wet_right, params),
             };
             wet_left = processed.0;
             wet_right = processed.1;
@@ -680,6 +1070,8 @@ impl Fx {
             // history must not leak into a later enable.
             self.drive_adaa_left.reset();
             self.drive_adaa_right.reset();
+            self.drive_tone_left = 0.0;
+            self.drive_tone_right = 0.0;
             return (left, right);
         }
 
@@ -691,6 +1083,34 @@ impl Fx {
         let compensation = 1.0 / (1.0 + amount * DRIVE_COMPENSATION);
         let wet_left = self.drive_adaa_left.process(left * gain) * compensation;
         let wet_right = self.drive_adaa_right.process(right * gain) * compensation;
+
+        // The tone control tilts the driven signal after the saturator. Zero
+        // skips the split completely, so the old drive stays bit-exact.
+        let tone = params.drive_tone.clamp(-1.0, 1.0);
+        let (wet_left, wet_right) = if tone.abs() > TONE_BYPASS {
+            let high_gain = 10f32.powf(tone * DRIVE_TONE_MAX_DB / 20.0);
+            let low_gain = 10f32.powf(-tone * DRIVE_TONE_MAX_DB / 20.0);
+            (
+                tilt_sample(
+                    wet_left,
+                    &mut self.drive_tone_left,
+                    self.drive_tone_coefficient,
+                    low_gain,
+                    high_gain,
+                ),
+                tilt_sample(
+                    wet_right,
+                    &mut self.drive_tone_right,
+                    self.drive_tone_coefficient,
+                    low_gain,
+                    high_gain,
+                ),
+            )
+        } else {
+            self.drive_tone_left = 0.0;
+            self.drive_tone_right = 0.0;
+            (wet_left, wet_right)
+        };
 
         (
             left * (1.0 - mix) + wet_left * mix,
@@ -707,6 +1127,8 @@ impl Fx {
             self.phaser_phase = 0.0;
             self.phaser_left = [0.0; PHASER_STAGES];
             self.phaser_right = [0.0; PHASER_STAGES];
+            self.phaser_feedback_left = 0.0;
+            self.phaser_feedback_right = 0.0;
             return (left, right);
         }
 
@@ -724,12 +1146,35 @@ impl Fx {
         let coefficient_left = allpass_coefficient(frequency_left, self.sample_rate);
         let coefficient_right = allpass_coefficient(frequency_right, self.sample_rate);
 
-        let wet_left = self.phaser_left.iter_mut().fold(left, |sample, state| {
-            allpass_stage(sample, coefficient_left, state)
-        });
-        let wet_right = self.phaser_right.iter_mut().fold(right, |sample, state| {
-            allpass_stage(sample, coefficient_right, state)
-        });
+        // The feedback wraps around the allpass chain. At zero the old path
+        // is used unchanged, so the old phaser stays bit-exact.
+        let feedback = params.phaser_feedback.clamp(0.0, 0.9);
+        let (wet_left, wet_right) = if feedback > TONE_BYPASS {
+            let fed_left = left + self.phaser_feedback_left * feedback;
+            let fed_right = right + self.phaser_feedback_right * feedback;
+            let wet_left = self.phaser_left.iter_mut().fold(fed_left, |sample, state| {
+                allpass_stage(sample, coefficient_left, state)
+            });
+            let wet_right = self
+                .phaser_right
+                .iter_mut()
+                .fold(fed_right, |sample, state| {
+                    allpass_stage(sample, coefficient_right, state)
+                });
+            self.phaser_feedback_left = flush_denormal(wet_left);
+            self.phaser_feedback_right = flush_denormal(wet_right);
+            (wet_left, wet_right)
+        } else {
+            self.phaser_feedback_left = 0.0;
+            self.phaser_feedback_right = 0.0;
+            let wet_left = self.phaser_left.iter_mut().fold(left, |sample, state| {
+                allpass_stage(sample, coefficient_left, state)
+            });
+            let wet_right = self.phaser_right.iter_mut().fold(right, |sample, state| {
+                allpass_stage(sample, coefficient_right, state)
+            });
+            (wet_left, wet_right)
+        };
 
         (
             left * (1.0 - mix) + wet_left * mix,
@@ -822,6 +1267,17 @@ impl Fx {
         wet_left = self.chorus_lp_left;
         wet_right = self.chorus_lp_right;
 
+        // Widening works on the mid/side image of the wet signal. At zero the
+        // old stereo chorus is returned unchanged.
+        let width = params.chorus_width.clamp(0.0, 1.0);
+        if width > TONE_BYPASS {
+            let mid = (wet_left + wet_right) * 0.5;
+            let side = (wet_left - wet_right) * 0.5;
+            let side_gain = 1.0 + width * CHORUS_MAX_WIDTH;
+            wet_left = mid + side * side_gain;
+            wet_right = mid - side * side_gain;
+        }
+
         if mix <= BYPASS_MIX {
             // Keep the delay line and the LFO moving so re-enabling the
             // chorus cannot play audio from minutes ago.
@@ -881,13 +1337,21 @@ impl Fx {
             self.delay_adaa_right.reset();
             (0.0, 0.0)
         };
-        self.delay_lp_left += (feedback_left - self.delay_lp_left) * self.delay_coefficient;
-        self.delay_lp_right += (feedback_right - self.delay_lp_right) * self.delay_coefficient;
+        // The feedback lowpass is fixed at 5 kHz when the damping is zero.
+        // Raising the damping moves its cutoff down towards 150 Hz.
+        let damping = params.delay_damping.clamp(0.0, 1.0);
+        let damping_coefficient = if damping <= TONE_BYPASS {
+            self.delay_coefficient
+        } else {
+            let cutoff = DELAY_LOWPASS + (DELAY_MIN_LOWPASS - DELAY_LOWPASS) * damping;
+            lowpass_coefficient(cutoff, self.sample_rate)
+        };
+        self.delay_lp_left += (feedback_left - self.delay_lp_left) * damping_coefficient;
+        self.delay_lp_right += (feedback_right - self.delay_lp_right) * damping_coefficient;
         self.delay_lp_left = flush_denormal(self.delay_lp_left);
         self.delay_lp_right = flush_denormal(self.delay_lp_right);
         feedback_left = self.delay_lp_left;
         feedback_right = self.delay_lp_right;
-
         // Ping-pong: the left channel is fed by the right one and vice versa.
         self.delay_left[self.delay_index] = left + feedback_left;
         self.delay_right[self.delay_index] = right + feedback_right;
@@ -905,13 +1369,92 @@ impl Fx {
         )
     }
 
+    /// A stereo-linked, feed-forward compressor with a soft gain envelope.
+    ///
+    /// The peak of the two channels sets the gain for both, so the stereo
+    /// image stays stable. At mix zero, or with ratio 1 / threshold 0 dB and
+    /// no makeup gain, the stage returns the input bit for bit.
+    fn process_compressor(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        if !params.compressor_active() {
+            self.compressor_gain = 1.0;
+            return (left, right);
+        }
+
+        let mix = params.comp_mix.clamp(0.0, 1.0);
+        let threshold = params.comp_threshold.clamp(-60.0, 0.0);
+        let ratio = params.comp_ratio.clamp(1.0, 20.0);
+        let makeup_db = params.comp_makeup.clamp(0.0, 24.0);
+
+        // The detector is the stereo-linked peak. The floor keeps a silent
+        // input out of the logarithm. A non-finite host value is ignored.
+        let level = left.abs().max(right.abs());
+        let level = if level.is_finite() {
+            level.max(1e-12)
+        } else {
+            1e-12
+        };
+        let level_db = 20.0 * level.log10();
+        let over_db = (level_db - threshold).max(0.0);
+        let gain_db = -over_db * (1.0 - 1.0 / ratio);
+        let target = 10f32.powf(gain_db / 20.0);
+
+        let attack = smoothing_coefficient(params.comp_attack.max(0.1) * 0.001, self.sample_rate);
+        let release =
+            smoothing_coefficient(params.comp_release.max(10.0) * 0.001, self.sample_rate);
+        let coefficient = if target < self.compressor_gain {
+            attack
+        } else {
+            release
+        };
+        self.compressor_gain += (target - self.compressor_gain) * coefficient;
+        self.compressor_gain = self.compressor_gain.clamp(0.0, 1.0);
+
+        let makeup = 10f32.powf(makeup_db / 20.0);
+        let wet_left = left * self.compressor_gain * makeup;
+        let wet_right = right * self.compressor_gain * makeup;
+
+        (
+            left * (1.0 - mix) + wet_left * mix,
+            right * (1.0 - mix) + wet_right * mix,
+        )
+    }
+
+    /// A sine tremolo, or an auto-pan when the stereo switch is on.
+    fn process_tremolo(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
+        let depth = params.trem_depth.clamp(0.0, 1.0);
+        if depth <= BYPASS_MIX {
+            self.tremolo_phase = 0.0;
+            return (left, right);
+        }
+
+        let rate = params.trem_rate.clamp(0.05, 20.0);
+        self.tremolo_phase += rate / self.sample_rate;
+        if self.tremolo_phase >= 1.0 {
+            self.tremolo_phase -= self.tremolo_phase.floor();
+        }
+        let lfo = (self.tremolo_phase * PI * 2.0).sin();
+
+        if params.trem_stereo {
+            // Linear auto-pan: at full depth one channel is silent at each
+            // end of the sweep. At zero depth both gains are exactly one.
+            let left_gain = 1.0 - depth * (0.5 - 0.5 * lfo);
+            let right_gain = 1.0 - depth * (0.5 + 0.5 * lfo);
+            (left * left_gain, right * right_gain)
+        } else {
+            // The mono tremolo uses the same gain on both channels, so the
+            // stereo image does not move.
+            let gain = 1.0 - depth * (0.5 - 0.5 * lfo);
+            (left * gain, right * gain)
+        }
+    }
+
     /// A modulated feedback delay network reverb. The dry and wet signals are
     /// crossfaded instead of simply added, so the effect does not raise the
     /// perceived level when the mix is turned up.
     fn process_reverb(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
         let mix = params.reverb_mix.clamp(0.0, 1.0);
 
-        let (wet_left, wet_right) = if params.legacy {
+        let (mut wet_left, mut wet_right) = if params.legacy {
             self.legacy_reverb
                 .process(left, right, params.reverb_decay, mix)
         } else {
@@ -921,7 +1464,34 @@ impl Fx {
         if mix <= BYPASS_MIX {
             // The reverb keeps its lines current while bypassed, so enabling
             // it again cannot replay an old tail.
+            self.reverb_tone_left = 0.0;
+            self.reverb_tone_right = 0.0;
             return (left, right);
+        }
+
+        // The tone tilt colours only the wet signal. Zero skips the split, so
+        // the old reverb (including Freeverb) stays bit-exact.
+        let tone = params.reverb_tone.clamp(-1.0, 1.0);
+        if tone.abs() > TONE_BYPASS {
+            let high_gain = 10f32.powf(tone * REVERB_TONE_MAX_DB / 20.0);
+            let low_gain = 10f32.powf(-tone * REVERB_TONE_MAX_DB / 20.0);
+            wet_left = tilt_sample(
+                wet_left,
+                &mut self.reverb_tone_left,
+                self.reverb_tone_coefficient,
+                low_gain,
+                high_gain,
+            );
+            wet_right = tilt_sample(
+                wet_right,
+                &mut self.reverb_tone_right,
+                self.reverb_tone_coefficient,
+                low_gain,
+                high_gain,
+            );
+        } else {
+            self.reverb_tone_left = 0.0;
+            self.reverb_tone_right = 0.0;
         }
 
         // The old Freeverb path added its wet signal, while the FDN uses a
@@ -970,9 +1540,14 @@ impl Default for Fx {
             sample_rate: 48_000.0,
             drive_adaa_left: AdaaTanh::default(),
             drive_adaa_right: AdaaTanh::default(),
+            drive_tone_left: 0.0,
+            drive_tone_right: 0.0,
+            drive_tone_coefficient: 0.0,
             phaser_phase: 0.0,
             phaser_left: [0.0; PHASER_STAGES],
             phaser_right: [0.0; PHASER_STAGES],
+            phaser_feedback_left: 0.0,
+            phaser_feedback_right: 0.0,
             eq_low_left: 0.0,
             eq_low_right: 0.0,
             eq_high_left: 0.0,
@@ -998,7 +1573,14 @@ impl Default for Fx {
             delay_adaa_right: AdaaTanh::default(),
             reverb: Reverb::default(),
             legacy_reverb: LegacyReverb::default(),
+            reverb_tone_left: 0.0,
+            reverb_tone_right: 0.0,
+            reverb_tone_coefficient: 0.0,
             last_legacy: None,
+            compressor_gain: 1.0,
+            tremolo_phase: 0.0,
+            last_order: i32::MIN,
+            order_cache: FxStage::ALL,
             bypassed: true,
             last_bypass_mask: 0,
         }
@@ -1033,6 +1615,7 @@ mod tests {
             reverb_mix: 0.5,
             reverb_decay: 0.6,
             legacy: false,
+            ..FxParams::default()
         };
 
         for sample in 0..48_000 {
@@ -1194,6 +1777,8 @@ mod tests {
         assert_eq!(fx.eq_low_right, 0.0);
         assert_eq!(fx.eq_high_left, 0.0);
         assert_eq!(fx.eq_high_right, 0.0);
+        assert_eq!(fx.compressor_gain, 1.0);
+        assert_eq!(fx.tremolo_phase, 0.0);
 
         // The old and the new effects start from silence when they are
         // enabled again, with no tail left over from before the bypass.
@@ -1205,7 +1790,13 @@ mod tests {
                 2 => params.chorus_mix = 1.0,
                 3 => params.delay_mix = 1.0,
                 4 => params.reverb_mix = 1.0,
-                _ => params.eq_low = 12.0,
+                5 => params.eq_low = 12.0,
+                6 => {
+                    params.comp_threshold = -30.0;
+                    params.comp_ratio = 4.0;
+                    params.comp_mix = 1.0;
+                }
+                _ => params.trem_depth = 1.0,
             }
             let mut peak: f32 = 0.0;
             for _ in 0..10_000 {
@@ -1262,20 +1853,34 @@ mod tests {
             global_mix: 1.0,
             drive_amount: 0.7,
             drive_mix: 0.6,
+            drive_tone: 0.5,
             phaser_rate: 1.2,
             phaser_depth: 0.8,
             phaser_mix: 0.5,
+            phaser_feedback: 0.4,
             eq_low: 8.0,
             eq_mid: -5.0,
             eq_high: 4.0,
             chorus_mix: 0.5,
             chorus_rate: 0.7,
             chorus_depth: 0.8,
+            chorus_width: 0.7,
             delay_time_s: 0.071,
             delay_feedback: 0.5,
             delay_mix: 0.45,
+            delay_damping: 0.6,
             reverb_mix: 0.4,
             reverb_decay: 0.8,
+            reverb_tone: 0.5,
+            comp_threshold: -30.0,
+            comp_ratio: 4.0,
+            comp_attack: 10.0,
+            comp_release: 150.0,
+            comp_makeup: 3.0,
+            comp_mix: 0.8,
+            trem_rate: 4.0,
+            trem_depth: 0.6,
+            trem_stereo: true,
             legacy: false,
         }
     }
@@ -1480,6 +2085,139 @@ mod tests {
     }
 
     #[test]
+    fn the_compressor_reduces_and_links_the_channels() {
+        let params = FxParams {
+            comp_threshold: -30.0,
+            comp_ratio: 8.0,
+            comp_attack: 0.1,
+            comp_release: 50.0,
+            comp_makeup: 0.0,
+            comp_mix: 1.0,
+            ..FxParams::default()
+        };
+        let mut fx = Fx::new(48_000.0);
+
+        // A loud left channel and a quiet right channel share one gain
+        // envelope, so the right channel is reduced by the same factor.
+        let mut last = (0.0, 0.0);
+        for _ in 0..4_800 {
+            last = fx.process(0.8, 0.1, &params);
+        }
+        let gain = last.0 / 0.8;
+        assert!(
+            gain < 0.2,
+            "the compressor did not reduce the level ({gain})"
+        );
+        assert!(
+            (last.1 - 0.1 * gain).abs() < 1e-4,
+            "the compressor did not link the channels ({} vs {})",
+            last.1,
+            0.1 * gain
+        );
+
+        // Ratio 1, a 0 dB threshold without makeup, and a zero mix are all
+        // exact neutral, even with an otherwise aggressive setting.
+        for neutral in [
+            FxParams {
+                comp_threshold: -40.0,
+                comp_ratio: 1.0,
+                comp_makeup: 0.0,
+                comp_mix: 1.0,
+                ..params
+            },
+            FxParams {
+                comp_threshold: 0.0,
+                comp_ratio: 20.0,
+                comp_makeup: 0.0,
+                comp_mix: 1.0,
+                ..params
+            },
+            FxParams {
+                comp_mix: 0.0,
+                ..params
+            },
+        ] {
+            let mut fx = Fx::new(48_000.0);
+            for _ in 0..1_000 {
+                let (left, right) = fx.process(0.37, -0.21, &neutral);
+                assert_eq!(left.to_bits(), 0.37f32.to_bits());
+                assert_eq!(right.to_bits(), (-0.21f32).to_bits());
+            }
+        }
+
+        // Makeup alone lifts a quiet signal without compressing it.
+        let makeup = FxParams {
+            comp_threshold: 0.0,
+            comp_ratio: 1.0,
+            comp_makeup: 12.0,
+            comp_mix: 1.0,
+            ..params
+        };
+        let mut fx = Fx::new(48_000.0);
+        let (left, right) = fx.process(0.1, -0.1, &makeup);
+        let expected = 0.1 * 10f32.powf(12.0 / 20.0);
+        assert!((left - expected).abs() < 1e-5, "makeup was {left}");
+        assert!((right + expected).abs() < 1e-5, "makeup was {right}");
+    }
+
+    #[test]
+    fn the_tremolo_and_auto_pan_move_the_level_and_never_blow_up() {
+        // At 10 Hz one sample step is 1/4800 of a cycle. After 1200 samples
+        // the sine is +1, after 3600 samples it is -1.
+        let tremolo = FxParams {
+            trem_rate: 10.0,
+            trem_depth: 1.0,
+            trem_stereo: false,
+            ..FxParams::default()
+        };
+        let mut fx = Fx::new(48_000.0);
+        let mut output = (0.0, 0.0);
+        for sample in 0..3_600 {
+            output = fx.process(0.5, -0.5, &tremolo);
+            if sample == 1_199 {
+                // The positive peak of the sine is unity gain.
+                assert!((output.0 - 0.5).abs() < 1e-5);
+                assert!((output.1 + 0.5).abs() < 1e-5);
+            }
+        }
+        // The negative peak silences both channels of the mono tremolo.
+        assert!(output.0.abs() < 1e-5 && output.1.abs() < 1e-5);
+
+        // The stereo mode pans: at the positive peak the left channel is
+        // open and the right channel is closed, and vice versa.
+        let pan = FxParams {
+            trem_stereo: true,
+            ..tremolo
+        };
+        let mut fx = Fx::new(48_000.0);
+        let mut output = (0.0, 0.0);
+        for sample in 0..3_600 {
+            output = fx.process(0.5, -0.5, &pan);
+            if sample == 1_199 {
+                assert!((output.0 - 0.5).abs() < 1e-5);
+                assert!(output.1.abs() < 1e-5);
+            }
+        }
+        assert!(output.0.abs() < 1e-5);
+        assert!((output.1 + 0.5).abs() < 1e-5);
+
+        // Depth zero is a bit-exact bypass for either mode.
+        for stereo in [false, true] {
+            let params = FxParams {
+                trem_depth: 0.0,
+                trem_stereo: stereo,
+                ..tremolo
+            };
+            let mut fx = Fx::new(48_000.0);
+            for _ in 0..1_000 {
+                let (left, right) = fx.process(0.25, -0.75, &params);
+                assert_eq!(left.to_bits(), 0.25f32.to_bits());
+                assert_eq!(right.to_bits(), (-0.75f32).to_bits());
+            }
+        }
+    }
+
+    #[test]
     fn the_default_order_bypass_and_mix_keep_the_old_output() {
         // The hash was taken from the unmodified fixed-order chain. The
         // default order 0, bypass mask 0 and global mix 1 must reproduce it
@@ -1487,44 +2225,191 @@ mod tests {
         let params = FxParams {
             drive_amount: 0.6,
             drive_mix: 0.5,
+            drive_tone: 0.0,
             phaser_rate: 1.1,
             phaser_depth: 0.7,
             phaser_mix: 0.5,
+            phaser_feedback: 0.0,
             eq_low: 6.0,
             eq_mid: -4.0,
             eq_high: 3.0,
             chorus_mix: 0.5,
             chorus_rate: 0.6,
             chorus_depth: 0.7,
+            chorus_width: 0.0,
             delay_time_s: 0.123,
             delay_feedback: 0.45,
             delay_mix: 0.4,
+            delay_damping: 0.0,
             reverb_mix: 0.35,
             reverb_decay: 0.7,
+            reverb_tone: 0.0,
             legacy: false,
             ..FxParams::default()
         };
 
+        // The two new stages are appended at the end and are neutral by
+        // default; the old fixed-order hash must stay bit-identical.
         assert_eq!(params.order, 0);
         assert_eq!(params.bypass_mask, 0);
         assert_eq!(params.global_mix, 1.0);
+        assert_eq!(params.comp_mix, 0.0);
+        assert_eq!(params.trem_depth, 0.0);
         assert_eq!(fx_hash(&params, 96_000), 0x3d47_20ee_a889_07fe);
     }
 
     #[test]
+    fn the_new_components_at_zero_keep_the_old_chain_and_change_at_the_extremes() {
+        // Every old stage is active, while all five new component controls
+        // sit exactly at zero.
+        let base = FxParams {
+            drive_tone: 0.0,
+            phaser_feedback: 0.0,
+            chorus_width: 0.0,
+            delay_damping: 0.0,
+            reverb_tone: 0.0,
+            ..all_stages_active()
+        };
+        let baseline = fx_hash(&base, 48_000);
+
+        for (name, variant) in [
+            (
+                "drive_tone",
+                FxParams {
+                    drive_tone: 1.0,
+                    ..base
+                },
+            ),
+            (
+                "phaser_feedback",
+                FxParams {
+                    phaser_feedback: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "chorus_width",
+                FxParams {
+                    chorus_width: 1.0,
+                    ..base
+                },
+            ),
+            (
+                "delay_damping",
+                FxParams {
+                    delay_damping: 1.0,
+                    ..base
+                },
+            ),
+            (
+                "reverb_tone",
+                FxParams {
+                    reverb_tone: 1.0,
+                    ..base
+                },
+            ),
+        ] {
+            assert_ne!(
+                fx_hash(&variant, 48_000),
+                baseline,
+                "{name} did not change the chain at its extreme"
+            );
+        }
+
+        // Zero keeps the old chain even when the parameter is explicitly
+        // written after the chain has already run.
+        let mut fx = Fx::new(48_000.0);
+        for _ in 0..4_800 {
+            fx.process(
+                0.3,
+                -0.3,
+                &FxParams {
+                    drive_tone: 1.0,
+                    ..base
+                },
+            );
+        }
+        for _ in 0..1_000 {
+            let (left, right) = fx.process(0.3, -0.3, &base);
+            assert!(left.is_finite() && right.is_finite());
+        }
+    }
+
+    #[test]
     fn the_old_orders_keep_their_rotation_semantics() {
-        use FxStage::{Chorus, Delay, Drive, Eq, Phaser, Reverb};
+        use FxStage::{Chorus, Compressor, Delay, Drive, Eq, Phaser, Reverb, Tremolo};
 
         assert_eq!(
             stage_order(0),
-            [Drive, Phaser, Chorus, Delay, Reverb, Eq],
-            "order 0 must be the original chain"
+            [
+                Drive, Phaser, Chorus, Delay, Reverb, Eq, Compressor, Tremolo
+            ],
+            "order 0 must be the original chain with the new stages appended"
         );
-        assert_eq!(stage_order(1), [Phaser, Chorus, Delay, Reverb, Eq, Drive]);
-        assert_eq!(stage_order(2), [Chorus, Delay, Reverb, Eq, Drive, Phaser]);
-        assert_eq!(stage_order(3), [Delay, Reverb, Eq, Drive, Phaser, Chorus]);
-        assert_eq!(stage_order(4), [Reverb, Eq, Drive, Phaser, Chorus, Delay]);
-        assert_eq!(stage_order(5), [Eq, Drive, Phaser, Chorus, Delay, Reverb]);
+        assert_eq!(
+            stage_order(1),
+            [
+                Phaser, Chorus, Delay, Reverb, Eq, Drive, Compressor, Tremolo
+            ]
+        );
+        assert_eq!(
+            stage_order(2),
+            [
+                Chorus, Delay, Reverb, Eq, Drive, Phaser, Compressor, Tremolo
+            ]
+        );
+        assert_eq!(
+            stage_order(3),
+            [
+                Delay, Reverb, Eq, Drive, Phaser, Chorus, Compressor, Tremolo
+            ]
+        );
+        assert_eq!(
+            stage_order(4),
+            [
+                Reverb, Eq, Drive, Phaser, Chorus, Delay, Compressor, Tremolo
+            ]
+        );
+        assert_eq!(
+            stage_order(5),
+            [
+                Eq, Drive, Phaser, Chorus, Delay, Reverb, Compressor, Tremolo
+            ]
+        );
+
+        // Every old order value migrates to exactly its old six-stage chain
+        // with the two neutral new stages at the end.
+        for order in 0..=FX_LEGACY_ORDER_MAX {
+            let stages = stage_order(order);
+            assert_eq!(
+                &stages[..FX_LEGACY_STAGE_COUNT],
+                &legacy_stage_order(order)[..]
+            );
+            assert_eq!(stages[6], Compressor, "order {order}");
+            assert_eq!(stages[7], Tremolo, "order {order}");
+            assert_eq!(stages, migrated_stage_order(order), "order {order}");
+        }
+    }
+
+    #[test]
+    fn the_full_order_range_starts_after_the_old_ones() {
+        use FxStage::Compressor;
+        use FxStage::Tremolo;
+
+        assert_eq!(FX_ORDER_COUNT, 40_320);
+        assert_eq!(FX_ORDER_MAX, 40_319);
+        assert_eq!(FX_LEGACY_ORDER_COUNT, 720);
+        assert_eq!(FX_BYPASS_ALL, 0xff);
+
+        // Orders at and after the legacy range may put the new stages
+        // anywhere in the chain.
+        assert_ne!(
+            stage_order(FX_LEGACY_ORDER_COUNT as i32)[6..],
+            [Compressor, Tremolo]
+        );
+        for order in [720, 721, 10_000, FX_ORDER_MAX] {
+            assert_eq!(stage_order_index(stage_order(order)), order);
+        }
     }
 
     #[test]
@@ -1574,8 +2459,9 @@ mod tests {
         let original = all_stages_active();
 
         // Order 1 is the old rotation; order 317 is one of the newly
-        // available permutations. Both must really reach the processor.
-        for order in [1, 317] {
+        // available six-stage permutations, and order 10_000 is a full
+        // eight-stage permutation. All must really reach the processor.
+        for order in [1, 317, 10_000] {
             assert_ne!(stage_order(order), stage_order(0));
 
             let reordered = FxParams { order, ..original };
@@ -1623,6 +2509,8 @@ mod tests {
                     zero_params.eq_mid = 0.0;
                     zero_params.eq_high = 0.0;
                 }
+                FxStage::Compressor => zero_params.comp_mix = 0.0,
+                FxStage::Tremolo => zero_params.trem_depth = 0.0,
             }
 
             let mut state = 0xB17B_17B1;
@@ -1801,8 +2689,8 @@ mod tests {
         for sample in 0..192_000 {
             if sample % 1_024 == 0 {
                 let block = sample / 1_024;
-                params.order = (block % FX_STAGE_COUNT) as i32;
-                params.bypass_mask = ((block * 13) % 64) as i32;
+                params.order = ((block * 7_919) % FX_ORDER_COUNT) as i32;
+                params.bypass_mask = ((block * 13) % (FX_BYPASS_ALL as usize + 1)) as i32;
                 params.global_mix = mixes[block % mixes.len()];
             }
 

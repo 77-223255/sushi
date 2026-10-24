@@ -675,6 +675,20 @@ sushi_params! {
     "fx_order" => fx_order,
     "fx_bypass_mask" => fx_bypass_mask,
     "fx_global_mix" => fx_global_mix,
+    "drive_tone" => drive_tone,
+    "phaser_feedback" => phaser_feedback,
+    "chorus_width" => chorus_width,
+    "delay_damping" => delay_damping,
+    "reverb_tone" => reverb_tone,
+    "comp_threshold" => comp_threshold,
+    "comp_ratio" => comp_ratio,
+    "comp_attack" => comp_attack,
+    "comp_release" => comp_release,
+    "comp_makeup" => comp_makeup,
+    "comp_mix" => comp_mix,
+    "trem_rate" => trem_rate,
+    "trem_depth" => trem_depth,
+    "trem_stereo" => trem_stereo,
 }
 
 /// Collects the values of all the parameters into a JSON document.
@@ -928,7 +942,7 @@ mod tests {
 
     #[test]
     fn every_parameter_is_in_the_table() {
-        assert_eq!(PARAM_IDS.len(), 126);
+        assert_eq!(PARAM_IDS.len(), 140);
 
         // The macros are modulation targets and must stay in the patch table.
         for id in ["macro_bright", "macro_motion", "macro_space"] {
@@ -938,7 +952,7 @@ mod tests {
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 126, "the ids of the parameters are not unique");
+        assert_eq!(ids.len(), 140, "the ids of the parameters are not unique");
 
         // A saved patch has the format header and exactly the table.
         let params = SushiParams::default();
@@ -946,7 +960,7 @@ mod tests {
         assert_eq!(document["format"], "sushi-patch");
         assert_eq!(document["version"], 1);
         assert_eq!(document["name"], "TEST");
-        assert_eq!(document["params"].as_object().unwrap().len(), 126);
+        assert_eq!(document["params"].as_object().unwrap().len(), 140);
     }
 
     #[test]
@@ -963,7 +977,7 @@ mod tests {
 
         reset_count();
         apply_defaults(&params, &setter);
-        assert_eq!(set_count(), 126, "not every parameter was reset");
+        assert_eq!(set_count(), 140, "not every parameter was reset");
 
         assert_eq!(params.cutoff.value(), 3_000.0);
         assert_eq!(params.resonance.value(), 0.2);
@@ -1079,20 +1093,36 @@ mod tests {
         assert_eq!(document["params"]["fx_bypass_mask"], 40);
         assert!((document["params"]["fx_global_mix"].as_f64().unwrap() - 0.25).abs() < 0.01);
 
-        // Any permutation index is part of the patch, and an out-of-range
-        // value is clamped to the last order instead of breaking the chain.
-        apply_json(&params, &setter, &json!({ "params": { "fx_order": 317 } }))
+        // Any permutation index is part of the patch, from the migrated old
+        // range into the full eight-stage range.
+        for order in [317, crate::dsp::fx::FX_LEGACY_ORDER_COUNT as i32, 40_319] {
+            apply_json(
+                &params,
+                &setter,
+                &json!({ "params": { "fx_order": order } }),
+            )
             .expect("the full-range FX patch could not be applied");
-        assert_eq!(params.fx_order.value(), 317);
-        assert_eq!(to_json(&params, "FX")["params"]["fx_order"], 317);
+            assert_eq!(params.fx_order.value(), order);
+            assert_eq!(to_json(&params, "FX")["params"]["fx_order"], order);
+        }
 
         apply_json(
             &params,
             &setter,
-            &json!({ "params": { "fx_order": 9_999 } }),
+            &json!({ "params": { "fx_order": 999_999 } }),
         )
         .expect("the out-of-range FX patch could not be applied");
         assert_eq!(params.fx_order.value(), crate::dsp::fx::FX_ORDER_MAX);
+
+        // The eight bypass bits survive the patch as well.
+        apply_json(
+            &params,
+            &setter,
+            &json!({ "params": { "fx_bypass_mask": 255 } }),
+        )
+        .expect("the full bypass mask could not be applied");
+        assert_eq!(params.fx_bypass_mask.value(), 255);
+        assert_eq!(to_json(&params, "FX")["params"]["fx_bypass_mask"], 255);
 
         // A patch from before the new controls keeps the original chain.
         let old = SushiParams::default();
@@ -1101,6 +1131,37 @@ mod tests {
         assert_eq!(old.fx_order.value(), 0);
         assert_eq!(old.fx_bypass_mask.value(), 0);
         assert_eq!(old.fx_global_mix.value(), 1.0);
+
+        // The new FX parameters are part of the patch table and round-trip.
+        apply_json(
+            &params,
+            &setter,
+            &json!({
+                "params": {
+                    "drive_tone": 0.5,
+                    "phaser_feedback": 0.4,
+                    "chorus_width": 0.75,
+                    "delay_damping": 0.6,
+                    "reverb_tone": -0.5,
+                    "comp_threshold": -30.0,
+                    "comp_ratio": 4.0,
+                    "comp_attack": 12.0,
+                    "comp_release": 180.0,
+                    "comp_makeup": 3.0,
+                    "comp_mix": 0.8,
+                    "trem_rate": 6.0,
+                    "trem_depth": 0.7,
+                    "trem_stereo": true
+                }
+            }),
+        )
+        .expect("the new FX patch could not be applied");
+        let saved = to_json(&params, "FX");
+        assert_eq!(saved["params"]["trem_stereo"], true);
+        assert!((saved["params"]["comp_threshold"].as_f64().unwrap() + 30.0).abs() < 0.01);
+        assert!((saved["params"]["comp_ratio"].as_f64().unwrap() - 4.0).abs() < 0.01);
+        assert!((saved["params"]["comp_mix"].as_f64().unwrap() - 0.8).abs() < 0.01);
+        assert!((saved["params"]["trem_depth"].as_f64().unwrap() - 0.7).abs() < 0.01);
     }
 
     #[test]

@@ -422,20 +422,34 @@ impl Sushi {
             global_mix: params.fx_global_mix.value(),
             drive_amount: params.drive_amount.value(),
             drive_mix: params.drive_mix.value(),
+            drive_tone: params.drive_tone.value(),
             phaser_rate: params.phaser_rate.value(),
             phaser_depth: params.phaser_depth.value(),
             phaser_mix: params.phaser_mix.value(),
+            phaser_feedback: params.phaser_feedback.value(),
             eq_low: params.eq_low.value(),
             eq_mid: params.eq_mid.value(),
             eq_high: params.eq_high.value(),
             chorus_mix: params.chorus_mix.value(),
             chorus_rate: params.chorus_rate.value(),
             chorus_depth: params.chorus_depth.value(),
+            chorus_width: params.chorus_width.value(),
             delay_time_s: params.delay_time.value() * 0.001,
             delay_feedback: params.delay_feedback.value(),
             delay_mix: params.delay_mix.value(),
+            delay_damping: params.delay_damping.value(),
             reverb_mix: params.reverb_mix.value(),
             reverb_decay: params.reverb_decay.value(),
+            reverb_tone: params.reverb_tone.value(),
+            comp_threshold: params.comp_threshold.value(),
+            comp_ratio: params.comp_ratio.value(),
+            comp_attack: params.comp_attack.value(),
+            comp_release: params.comp_release.value(),
+            comp_makeup: params.comp_makeup.value(),
+            comp_mix: params.comp_mix.value(),
+            trem_rate: params.trem_rate.value(),
+            trem_depth: params.trem_depth.value(),
+            trem_stereo: params.trem_stereo.value(),
             legacy: false,
         }
     }
@@ -1589,20 +1603,33 @@ impl Plugin for Sushi {
             let vca_pan = self.params.vca_pan.smoothed.next();
             fx_params.drive_amount = self.params.drive_amount.smoothed.next();
             fx_params.drive_mix = self.params.drive_mix.smoothed.next();
+            fx_params.drive_tone = self.params.drive_tone.smoothed.next();
             fx_params.phaser_rate = self.params.phaser_rate.smoothed.next();
             fx_params.phaser_depth = self.params.phaser_depth.smoothed.next();
             fx_params.phaser_mix = self.params.phaser_mix.smoothed.next();
+            fx_params.phaser_feedback = self.params.phaser_feedback.smoothed.next();
             fx_params.eq_low = self.params.eq_low.smoothed.next();
             fx_params.eq_mid = self.params.eq_mid.smoothed.next();
             fx_params.eq_high = self.params.eq_high.smoothed.next();
             fx_params.chorus_mix = self.params.chorus_mix.smoothed.next() + space_wet;
             fx_params.chorus_rate = self.params.chorus_rate.smoothed.next();
             fx_params.chorus_depth = self.params.chorus_depth.smoothed.next();
+            fx_params.chorus_width = self.params.chorus_width.smoothed.next();
             fx_params.delay_time_s = self.params.delay_time.smoothed.next() * 0.001;
             fx_params.delay_feedback = self.params.delay_feedback.smoothed.next();
             fx_params.delay_mix = self.params.delay_mix.smoothed.next() + space_wet;
+            fx_params.delay_damping = self.params.delay_damping.smoothed.next();
             fx_params.reverb_mix = self.params.reverb_mix.smoothed.next() + space_wet;
             fx_params.reverb_decay = self.params.reverb_decay.smoothed.next();
+            fx_params.reverb_tone = self.params.reverb_tone.smoothed.next();
+            fx_params.comp_threshold = self.params.comp_threshold.smoothed.next();
+            fx_params.comp_ratio = self.params.comp_ratio.smoothed.next();
+            fx_params.comp_attack = self.params.comp_attack.smoothed.next();
+            fx_params.comp_release = self.params.comp_release.smoothed.next();
+            fx_params.comp_makeup = self.params.comp_makeup.smoothed.next();
+            fx_params.comp_mix = self.params.comp_mix.smoothed.next();
+            fx_params.trem_rate = self.params.trem_rate.smoothed.next();
+            fx_params.trem_depth = self.params.trem_depth.smoothed.next();
             fx_params.chorus_mix = fx_params.chorus_mix.clamp(0.0, 1.0);
             fx_params.delay_mix = fx_params.delay_mix.clamp(0.0, 1.0);
             fx_params.reverb_mix = fx_params.reverb_mix.clamp(0.0, 1.0);
@@ -2606,6 +2633,20 @@ mod tests {
         setter.set_parameter(&params.fx_order, 4);
         setter.set_parameter(&params.fx_bypass_mask, 9);
         setter.set_parameter(&params.fx_global_mix, 0.25);
+        setter.set_parameter(&params.drive_tone, 0.5);
+        setter.set_parameter(&params.phaser_feedback, 0.4);
+        setter.set_parameter(&params.chorus_width, 0.75);
+        setter.set_parameter(&params.delay_damping, 0.6);
+        setter.set_parameter(&params.reverb_tone, -0.5);
+        setter.set_parameter(&params.comp_threshold, -30.0);
+        setter.set_parameter(&params.comp_ratio, 4.0);
+        setter.set_parameter(&params.comp_attack, 12.0);
+        setter.set_parameter(&params.comp_release, 180.0);
+        setter.set_parameter(&params.comp_makeup, 3.0);
+        setter.set_parameter(&params.comp_mix, 0.8);
+        setter.set_parameter(&params.trem_rate, 6.0);
+        setter.set_parameter(&params.trem_depth, 0.7);
+        setter.set_parameter(&params.trem_stereo, true);
 
         let sushi = Sushi {
             params,
@@ -2616,12 +2657,34 @@ mod tests {
         assert_eq!(fx_params.order, 4);
         assert_eq!(fx_params.bypass_mask, 9);
         assert!((fx_params.global_mix - 0.25).abs() < 1e-6);
+        assert!((fx_params.drive_tone - 0.5).abs() < 1e-6);
+        assert!((fx_params.phaser_feedback - 0.4).abs() < 1e-6);
+        assert!((fx_params.chorus_width - 0.75).abs() < 1e-6);
+        assert!((fx_params.delay_damping - 0.6).abs() < 1e-6);
+        assert!((fx_params.reverb_tone + 0.5).abs() < 1e-6);
+        assert!((fx_params.comp_threshold + 30.0).abs() < 1e-6);
+        assert!((fx_params.comp_ratio - 4.0).abs() < 1e-6);
+        assert!((fx_params.comp_attack - 12.0).abs() < 1e-6);
+        assert!((fx_params.comp_release - 180.0).abs() < 1e-6);
+        assert!((fx_params.comp_makeup - 3.0).abs() < 1e-6);
+        assert!((fx_params.comp_mix - 0.8).abs() < 1e-6);
+        assert!((fx_params.trem_rate - 6.0).abs() < 1e-6);
+        assert!((fx_params.trem_depth - 0.7).abs() < 1e-6);
+        assert!(fx_params.trem_stereo);
 
-        // The defaults keep the old chain and the old dry/wet behavior.
+        // The defaults keep the old chain and the old dry/wet behavior, and
+        // both new modules are neutral.
         let defaults = Sushi::default().fx_params();
         assert_eq!(defaults.order, 0);
         assert_eq!(defaults.bypass_mask, 0);
         assert_eq!(defaults.global_mix, 1.0);
+        assert_eq!(defaults.drive_tone, 0.0);
+        assert_eq!(defaults.phaser_feedback, 0.0);
+        assert_eq!(defaults.chorus_width, 0.0);
+        assert_eq!(defaults.delay_damping, 0.0);
+        assert_eq!(defaults.reverb_tone, 0.0);
+        assert_eq!(defaults.comp_mix, 0.0);
+        assert_eq!(defaults.trem_depth, 0.0);
     }
 
     #[test]

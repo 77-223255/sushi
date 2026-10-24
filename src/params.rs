@@ -6,7 +6,7 @@
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
-use crate::dsp::fx::FX_ORDER_MAX;
+use crate::dsp::fx::{FX_BYPASS_ALL, FX_ORDER_MAX};
 
 /// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -341,6 +341,68 @@ fn db_param(name: &str, default: f32) -> FloatParam {
             .ok()
     }))
     .with_unit(" dB")
+    .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
+/// A gain parameter in a custom decibel range.
+fn db_range_param(name: &str, default: f32, min: f32, max: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min, max })
+        .with_value_to_string(formatters::v2s_f32_rounded(1))
+        .with_string_to_value(Arc::new(|text: &str| {
+            text.trim()
+                .trim_end_matches("dB")
+                .trim()
+                .parse::<f32>()
+                .ok()
+        }))
+        .with_unit(" dB")
+        .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
+/// A time parameter in a custom millisecond range.
+fn ms_range_param(name: &str, default: f32, min: f32, max: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Skewed {
+            min,
+            max,
+            factor: FloatRange::skew_factor(-1.0),
+        },
+    )
+    .with_step_size(0.1)
+    .with_unit(" ms")
+    .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
+/// A `0..max` parameter that is displayed as a percentage.
+fn bounded_percentage_param(name: &str, default: f32, max: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max })
+        .with_value_to_string(formatters::v2s_f32_percentage(0))
+        .with_string_to_value(formatters::s2v_f32_percentage())
+        .with_unit("%")
+        .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
+/// A compression ratio, displayed as `x:1`.
+fn ratio_param(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default,
+        FloatRange::Linear {
+            min: 1.0,
+            max: 20.0,
+        },
+    )
+    .with_value_to_string(Arc::new(|value: f32| format!("{value:.1}:1")))
+    .with_string_to_value(Arc::new(|text: &str| {
+        text.trim()
+            .trim_end_matches(":1")
+            .trim()
+            .parse::<f32>()
+            .ok()
+    }))
+    .with_unit(":1")
     .with_smoother(SmoothingStyle::Linear(10.0))
 }
 
@@ -758,29 +820,33 @@ pub struct SushiParams {
     // These are appended after every existing parameter, so the host
     // automation indices of old parameters do not move. Their defaults keep
     // the original chain order, no bypass and a fully wet signal.
-    /// The permutation index of the six-stage effect chain, `0..=719`.
+    /// The permutation index of the eight-stage effect chain, `0..=40319`.
     ///
-    /// `0` is the original order `Drive > Phaser > Chorus > Delay > Reverb >
-    /// EQ`. Orders `1..=5` keep the old rotation definitions (each rotates
-    /// the first stage to the end), so old patches and automation keep their
-    /// sound:
+    /// `0` is the migrated original order `Drive > Phaser > Chorus > Delay >
+    /// Reverb > EQ > Compressor > Tremolo`. Orders `1..=719` keep the old
+    /// six-stage order (including the old rotation definitions for `1..=5`)
+    /// with Compressor and Tremolo appended at the end, so old patches and
+    /// automation keep their sound:
     ///
-    /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ
-    /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive
-    /// - `2`: Chorus > Delay > Reverb > EQ > Drive > Phaser
-    /// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus
-    /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay
-    /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
+    /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ > Comp > Trem
+    /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive > Comp > Trem
+    /// - `2`: Chorus > Delay > Reverb > EQ > Drive > Phaser > Comp > Trem
+    /// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus > Comp > Trem
+    /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay > Comp > Trem
+    /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb > Comp > Trem
     ///
-    /// Orders `6..=719` are the remaining permutations in lexicographic
-    /// order. See `dsp::fx::stage_order` for the exact mapping.
+    /// Orders `6..=719` are the remaining old six-stage permutations in
+    /// lexicographic order, still followed by Compressor and Tremolo. Orders
+    /// `720..=40319` are the remaining full eight-stage permutations in
+    /// lexicographic order. See `dsp::fx::stage_order` for the exact mapping.
     #[id = "fx_order"]
     pub fx_order: IntParam,
 
     /// The stages that are bypassed completely.
     ///
-    /// Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay, 4 Reverb and 5 EQ. A set
-    /// bit skips its stage and clears the state of that stage.
+    /// Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay, 4 Reverb, 5 EQ,
+    /// 6 Compressor and 7 Tremolo. A set bit skips its stage and clears the
+    /// state of that stage.
     #[id = "fx_bypass_mask"]
     pub fx_bypass_mask: IntParam,
 
@@ -789,6 +855,67 @@ pub struct SushiParams {
     /// exactly the dry input and clears the effects.
     #[id = "fx_global_mix"]
     pub fx_global_mix: FloatParam,
+
+    // --- New FX components and modules ------------------------------------
+    // These are appended after every existing parameter, so the host
+    // automation indices of old parameters do not move. Every default is
+    // exactly neutral.
+    /// The post-drive tone tilt, `-1..=1`. Zero is bit-exact with the old
+    /// drive.
+    #[id = "drive_tone"]
+    pub drive_tone: FloatParam,
+
+    /// The feedback around the phaser allpass chain, `0..=0.9`.
+    #[id = "phaser_feedback"]
+    pub phaser_feedback: FloatParam,
+
+    /// The stereo width of the wet chorus, `0..=1`.
+    #[id = "chorus_width"]
+    pub chorus_width: FloatParam,
+
+    /// Extra damping of the delay feedback, `0..=1`.
+    #[id = "delay_damping"]
+    pub delay_damping: FloatParam,
+
+    /// The tone of the reverb wet signal, `-1..=1`.
+    #[id = "reverb_tone"]
+    pub reverb_tone: FloatParam,
+
+    /// The threshold of the stereo-linked compressor, in dB, `-60..=0`.
+    #[id = "comp_threshold"]
+    pub comp_threshold: FloatParam,
+
+    /// The compression ratio, `1..=20`.
+    #[id = "comp_ratio"]
+    pub comp_ratio: FloatParam,
+
+    /// The attack time of the compressor, in milliseconds, `0.1..=100`.
+    #[id = "comp_attack"]
+    pub comp_attack: FloatParam,
+
+    /// The release time of the compressor, in milliseconds, `10..=1000`.
+    #[id = "comp_release"]
+    pub comp_release: FloatParam,
+
+    /// The makeup gain of the compressor, in dB, `0..=24`.
+    #[id = "comp_makeup"]
+    pub comp_makeup: FloatParam,
+
+    /// The dry/wet mix of the compressor, `0..=1`.
+    #[id = "comp_mix"]
+    pub comp_mix: FloatParam,
+
+    /// The rate of the tremolo/auto-pan, in Hz, `0.05..=20`.
+    #[id = "trem_rate"]
+    pub trem_rate: FloatParam,
+
+    /// The depth of the tremolo/auto-pan, `0..=1`.
+    #[id = "trem_depth"]
+    pub trem_depth: FloatParam,
+
+    /// Whether the tremolo becomes an auto-pan.
+    #[id = "trem_stereo"]
+    pub trem_stereo: BoolParam,
 
     // --- Persistent editor state ------------------------------------------
     // These fields are not parameters; nice-plug stores them with the plugin
@@ -1183,9 +1310,29 @@ impl Default for SushiParams {
             fx_bypass_mask: IntParam::new(
                 "FX Bypass Mask",
                 0,
-                IntRange::Linear { min: 0, max: 63 },
+                IntRange::Linear {
+                    min: 0,
+                    max: FX_BYPASS_ALL as i32,
+                },
             ),
             fx_global_mix: percentage_param("FX Global Mix", 1.0),
+
+            // --- New FX components and modules --------------------------------
+            drive_tone: bipolar_param("Drive Tone", 0.0),
+            phaser_feedback: bounded_percentage_param("Phaser Feedback", 0.0, 0.9),
+            chorus_width: percentage_param("Chorus Width", 0.0),
+            delay_damping: percentage_param("Delay Damping", 0.0),
+            reverb_tone: bipolar_param("Reverb Tone", 0.0),
+            comp_threshold: db_range_param("Comp Threshold", 0.0, -60.0, 0.0),
+            comp_ratio: ratio_param("Comp Ratio", 1.0),
+            comp_attack: ms_range_param("Comp Attack", 20.0, 0.1, 100.0),
+            comp_release: ms_range_param("Comp Release", 200.0, 10.0, 1_000.0),
+            comp_makeup: db_range_param("Comp Makeup", 0.0, 0.0, 24.0),
+            comp_mix: percentage_param("Comp Mix", 0.0),
+            trem_rate: frequency_param("Trem Rate", 5.0, 0.05, 20.0, -1.0)
+                .with_smoother(SmoothingStyle::Logarithmic(10.0)),
+            trem_depth: percentage_param("Trem Depth", 0.0),
+            trem_stereo: BoolParam::new("Trem Stereo", false),
 
             patch_name: Mutex::new(None),
             patch_path: Mutex::new(None),
@@ -1336,12 +1483,30 @@ mod tests {
 
         assert_eq!(params.drive_amount.value(), 0.0);
         assert_eq!(params.drive_mix.value(), 0.0);
+        assert_eq!(params.drive_tone.value(), 0.0);
         assert_eq!(params.phaser_rate.value(), 0.3);
         assert_eq!(params.phaser_depth.value(), 0.5);
         assert_eq!(params.phaser_mix.value(), 0.0);
+        assert_eq!(params.phaser_feedback.value(), 0.0);
         assert_eq!(params.eq_low.value(), 0.0);
         assert_eq!(params.eq_mid.value(), 0.0);
         assert_eq!(params.eq_high.value(), 0.0);
+        assert_eq!(params.chorus_width.value(), 0.0);
+        assert_eq!(params.delay_damping.value(), 0.0);
+        assert_eq!(params.reverb_tone.value(), 0.0);
+
+        // The compressor defaults to a unity-ratio, no-makeup, dry stage.
+        assert_eq!(params.comp_threshold.value(), 0.0);
+        assert_eq!(params.comp_ratio.value(), 1.0);
+        assert_eq!(params.comp_attack.value(), 20.0);
+        assert_eq!(params.comp_release.value(), 200.0);
+        assert_eq!(params.comp_makeup.value(), 0.0);
+        assert_eq!(params.comp_mix.value(), 0.0);
+
+        // The tremolo defaults to no modulation.
+        assert_eq!(params.trem_rate.value(), 5.0);
+        assert_eq!(params.trem_depth.value(), 0.0);
+        assert!(!params.trem_stereo.value());
 
         // The global highpass is parked at its minimum, which is an exact
         // bypass, and the VCA is centered with a width of one.

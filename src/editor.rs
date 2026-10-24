@@ -31,7 +31,7 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
-use crate::dsp::fx::{FxStage, stage_order, stage_order_index};
+use crate::dsp::fx::{FX_STAGE_COUNT, FxStage, stage_order, stage_order_index};
 use crate::dsp::mod_feedback::ModFeedback;
 use crate::params::{ModDest, ModSource, SushiParams};
 use crate::patch;
@@ -287,11 +287,11 @@ const FX_CHAIN_PADDING: f32 = 6.0;
 /// The height of the caption at the top of the chain column.
 const FX_CHAIN_TITLE_HEIGHT: f32 = 22.0;
 /// The height of one movable chain tile.
-const FX_CHAIN_TILE_HEIGHT: f32 = 58.0;
+const FX_CHAIN_TILE_HEIGHT: f32 = 48.0;
 /// The gap between two chain tiles.
-const FX_CHAIN_TILE_GAP: f32 = 6.0;
+const FX_CHAIN_TILE_GAP: f32 = 2.0;
 /// The gap between the last chain tile and the global wet fader.
-const FX_CHAIN_WET_GAP: f32 = 12.0;
+const FX_CHAIN_WET_GAP: f32 = 8.0;
 /// The height of the compact global wet fader.
 const FX_CHAIN_WET_HEIGHT: f32 = 24.0;
 /// The height of the caption above the chain preset popup.
@@ -312,23 +312,38 @@ const FX_GLOBAL_LABEL_WIDTH: f32 = 66.0;
 const FX_GLOBAL_VALUE_WIDTH: f32 = 30.0;
 /// The gap between two modules of the module grid.
 const FX_MODULE_GAP: f32 = 8.0;
-/// The six effect stages, in the original order of the chain.
-const FX_STAGES: [&str; 6] = ["DRIVE", "PHASER", "CHORUS", "DELAY", "REVERB", "EQ"];
-/// The titles of the six modules, row by row. The module grid is fixed:
+/// The eight effect stages, in the original order of the chain.
+const FX_STAGES: [&str; FX_STAGE_COUNT] = [
+    "DRIVE",
+    "PHASER",
+    "CHORUS",
+    "DELAY",
+    "REVERB",
+    "EQ",
+    "COMPRESSOR",
+    "TREMOLO",
+];
+/// The titles of the eight modules, row by row. The module grid is fixed:
 /// reordering the chain changes the signal path, not the order of the cards.
-const FX_MODULE_TITLES: [[&str; 2]; 3] =
-    [["DRIVE", "PHASER"], ["CHORUS", "DELAY"], ["REVERB", "EQ"]];
+const FX_MODULE_TITLES: [[&str; 2]; 4] = [
+    ["DRIVE", "PHASER"],
+    ["CHORUS", "DELAY"],
+    ["REVERB", "EQ"],
+    ["COMPRESSOR", "TREMOLO"],
+];
 /// The identifiers of the bypass controls, in the order of the bits of
 /// `fx_bypass_mask`. The identifiers are test geometry keys now; the power
 /// buttons themselves live on the chain tiles.
 #[cfg(test)]
-const FX_BYPASS_IDS: [&str; 6] = [
+const FX_BYPASS_IDS: [&str; FX_STAGE_COUNT] = [
     "fx_bypass_drive",
     "fx_bypass_phaser",
     "fx_bypass_chorus",
     "fx_bypass_delay",
     "fx_bypass_reverb",
     "fx_bypass_eq",
+    "fx_bypass_compressor",
+    "fx_bypass_tremolo",
 ];
 
 /// The named orders of the chain preset popup.
@@ -339,16 +354,18 @@ enum FxChainPreset {
     DriveLast,
     Ambient,
     WideEcho,
+    Glue,
 }
 
 impl FxChainPreset {
     /// Every named preset, in the order of the popup.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Standard,
         Self::EqFirst,
         Self::DriveLast,
         Self::Ambient,
         Self::WideEcho,
+        Self::Glue,
     ];
 
     /// The caption of the preset.
@@ -359,13 +376,14 @@ impl FxChainPreset {
             Self::DriveLast => "DRIVE LAST",
             Self::Ambient => "AMBIENT",
             Self::WideEcho => "WIDE ECHO",
+            Self::Glue => "GLUE",
         }
     }
 
     /// The full chain order of the preset. The order index in the parameter is
     /// derived from this array with `stage_order_index`, so the names can
     /// never point at a different permutation than the one they describe.
-    fn stages(self) -> [FxStage; 6] {
+    fn stages(self) -> [FxStage; FX_STAGE_COUNT] {
         match self {
             Self::Standard => [
                 FxStage::Drive,
@@ -374,6 +392,8 @@ impl FxChainPreset {
                 FxStage::Delay,
                 FxStage::Reverb,
                 FxStage::Eq,
+                FxStage::Compressor,
+                FxStage::Tremolo,
             ],
             Self::EqFirst => [
                 FxStage::Eq,
@@ -382,6 +402,8 @@ impl FxChainPreset {
                 FxStage::Chorus,
                 FxStage::Delay,
                 FxStage::Reverb,
+                FxStage::Compressor,
+                FxStage::Tremolo,
             ],
             Self::DriveLast => [
                 FxStage::Phaser,
@@ -390,6 +412,8 @@ impl FxChainPreset {
                 FxStage::Reverb,
                 FxStage::Eq,
                 FxStage::Drive,
+                FxStage::Compressor,
+                FxStage::Tremolo,
             ],
             // Reverb before delay, so the echoes feed the room.
             Self::Ambient => [
@@ -399,6 +423,8 @@ impl FxChainPreset {
                 FxStage::Reverb,
                 FxStage::Delay,
                 FxStage::Eq,
+                FxStage::Compressor,
+                FxStage::Tremolo,
             ],
             // Delay before chorus, so the chorus smears the repeats.
             Self::WideEcho => [
@@ -408,6 +434,20 @@ impl FxChainPreset {
                 FxStage::Chorus,
                 FxStage::Reverb,
                 FxStage::Eq,
+                FxStage::Compressor,
+                FxStage::Tremolo,
+            ],
+            // The compressor glues the wet chain together before the final
+            // tone shaping; the tremolo stays at the very end.
+            Self::Glue => [
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+                FxStage::Compressor,
+                FxStage::Eq,
+                FxStage::Tremolo,
             ],
         }
     }
@@ -512,13 +552,13 @@ fn fx_chain_preset_rects(rack: Rect, zoom: f32) -> (Rect, Rect) {
     (label, popup)
 }
 
-/// The six module cards of the fixed 2 x 3 grid.
-fn fx_module_rects(rack: Rect, zoom: f32) -> [Rect; 6] {
+/// The eight module cards of the fixed 2 x 4 grid.
+fn fx_module_rects(rack: Rect, zoom: f32) -> [Rect; FX_STAGE_COUNT] {
     let left = rack.left() + (FX_CHAIN_COLUMN_WIDTH + FX_CHAIN_COLUMN_GAP) * zoom;
     let gap = FX_MODULE_GAP * zoom;
     let width = (rack.right() - left - gap) * 0.5;
-    let height = (rack.height() - 2.0 * gap) / 3.0;
-    let mut rects = [Rect::ZERO; 6];
+    let height = (rack.height() - 3.0 * gap) / 4.0;
+    let mut rects = [Rect::ZERO; FX_STAGE_COUNT];
     for (index, rect) in rects.iter_mut().enumerate() {
         let column = index % 2;
         let row = index / 2;
@@ -569,11 +609,11 @@ fn fx_chain_tile_parts(tile: Rect, zoom: f32) -> FxChainTileParts {
 
     let drag = Rect::from_min_max(tile.min, egui::pos2(up.left() - 4.0 * zoom, tile.bottom()));
     let number = Rect::from_min_size(
-        egui::pos2(tile.left() + 14.0 * zoom, tile.top()),
-        egui::vec2(20.0 * zoom, tile.height()),
+        egui::pos2(tile.left() + 12.0 * zoom, tile.top()),
+        egui::vec2(16.0 * zoom, tile.height()),
     );
     let name = Rect::from_min_max(
-        egui::pos2(number.right() + 4.0 * zoom, tile.top()),
+        egui::pos2(number.right() + 3.0 * zoom, tile.top()),
         egui::pos2(drag.right() - 4.0 * zoom, tile.bottom()),
     );
     FxChainTileParts {
@@ -588,7 +628,7 @@ fn fx_chain_tile_parts(tile: Rect, zoom: f32) -> FxChainTileParts {
 
 /// The first position at or above the pointer in a list of tiles. `len` means
 /// that the pointer is below every tile.
-fn fx_chain_drop_slot(pointer_y: f32, tiles: &[Rect; 6]) -> usize {
+fn fx_chain_drop_slot(pointer_y: f32, tiles: &[Rect]) -> usize {
     tiles
         .iter()
         .position(|tile| pointer_y < tile.center().y)
@@ -598,9 +638,12 @@ fn fx_chain_drop_slot(pointer_y: f32, tiles: &[Rect; 6]) -> usize {
 /// The position that a dragged tile takes when it is dropped at a slot. The
 /// tile is removed before it is inserted, so a source above the slot moves
 /// every later position up by one.
-fn fx_chain_drop_position(source: usize, slot: usize) -> usize {
+fn fx_chain_drop_position(source: usize, slot: usize, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
     let target = if source < slot { slot - 1 } else { slot };
-    target.min(6 - 1)
+    target.min(count - 1)
 }
 
 /// The state of a chain tile drag. It is GUI-only, like the undo history.
@@ -983,15 +1026,15 @@ struct EditorState {
     /// the original stage index. The tests click these directly, even after
     /// the chain was reordered.
     #[cfg(test)]
-    fx_chain_tile_rects: [Option<egui::Rect>; 6],
+    fx_chain_tile_rects: [Option<egui::Rect>; FX_STAGE_COUNT],
     #[cfg(test)]
-    fx_chain_drag_rects: [Option<egui::Rect>; 6],
+    fx_chain_drag_rects: [Option<egui::Rect>; FX_STAGE_COUNT],
     #[cfg(test)]
-    fx_chain_up_rects: [Option<egui::Rect>; 6],
+    fx_chain_up_rects: [Option<egui::Rect>; FX_STAGE_COUNT],
     #[cfg(test)]
-    fx_chain_down_rects: [Option<egui::Rect>; 6],
+    fx_chain_down_rects: [Option<egui::Rect>; FX_STAGE_COUNT],
     #[cfg(test)]
-    fx_chain_power_rects: [Option<egui::Rect>; 6],
+    fx_chain_power_rects: [Option<egui::Rect>; FX_STAGE_COUNT],
     /// The track of the compact global wet fader.
     #[cfg(test)]
     fx_global_wet_rect: Option<egui::Rect>,
@@ -1125,15 +1168,15 @@ impl SushiEditor {
                 check_ids: Vec::new(),
                 fx_chain_drag: None,
                 #[cfg(test)]
-                fx_chain_tile_rects: [None; 6],
+                fx_chain_tile_rects: [None; FX_STAGE_COUNT],
                 #[cfg(test)]
-                fx_chain_drag_rects: [None; 6],
+                fx_chain_drag_rects: [None; FX_STAGE_COUNT],
                 #[cfg(test)]
-                fx_chain_up_rects: [None; 6],
+                fx_chain_up_rects: [None; FX_STAGE_COUNT],
                 #[cfg(test)]
-                fx_chain_down_rects: [None; 6],
+                fx_chain_down_rects: [None; FX_STAGE_COUNT],
                 #[cfg(test)]
-                fx_chain_power_rects: [None; 6],
+                fx_chain_power_rects: [None; FX_STAGE_COUNT],
                 #[cfg(test)]
                 fx_global_wet_rect: None,
                 #[cfg(test)]
@@ -1500,11 +1543,11 @@ impl SushiEditor {
             self.state.slider_ids.clear();
             self.state.popup_ids.clear();
             self.state.check_ids.clear();
-            self.state.fx_chain_tile_rects = [None; 6];
-            self.state.fx_chain_drag_rects = [None; 6];
-            self.state.fx_chain_up_rects = [None; 6];
-            self.state.fx_chain_down_rects = [None; 6];
-            self.state.fx_chain_power_rects = [None; 6];
+            self.state.fx_chain_tile_rects = [None; FX_STAGE_COUNT];
+            self.state.fx_chain_drag_rects = [None; FX_STAGE_COUNT];
+            self.state.fx_chain_up_rects = [None; FX_STAGE_COUNT];
+            self.state.fx_chain_down_rects = [None; FX_STAGE_COUNT];
+            self.state.fx_chain_power_rects = [None; FX_STAGE_COUNT];
             self.state.fx_global_wet_rect = None;
             self.state.fx_chain_preset_label_rect = None;
             self.state.fx_chain_preset_rect = None;
@@ -3265,7 +3308,8 @@ fn log_position(value: f32, min: f32, max: f32) -> f32 {
 }
 
 /// The controls of one module of the FX rack. The module index follows the
-/// chain order: drive, phaser, chorus, delay, reverb and EQ.
+/// fixed card grid: drive, phaser, chorus, delay, reverb, EQ, compressor and
+/// tremolo.
 fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
     let zoom = ctx.zoom;
     let p = ctx.params;
@@ -3273,7 +3317,7 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
         0 => column_row_fill(
             ui,
             "fx-drive",
-            2,
+            3,
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
@@ -3285,13 +3329,14 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &Knob::percent(),
                 ),
                 1 => ctx.float(ui, "drive_mix", "Mix", &p.drive_mix, &Knob::percent()),
+                2 => ctx.float(ui, "drive_tone", "Tone", &p.drive_tone, &Knob::bipolar()),
                 _ => {}
             },
         ),
         1 => column_row_fill(
             ui,
             "fx-phaser",
-            3,
+            4,
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
@@ -3310,13 +3355,20 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &Knob::percent(),
                 ),
                 2 => ctx.float(ui, "phaser_mix", "Mix", &p.phaser_mix, &Knob::percent()),
+                3 => ctx.float(
+                    ui,
+                    "phaser_feedback",
+                    "Feedback",
+                    &p.phaser_feedback,
+                    &Knob::scaled(0.0, 0.9, 0),
+                ),
                 _ => {}
             },
         ),
         2 => column_row_fill(
             ui,
             "fx-chorus",
-            3,
+            4,
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
@@ -3335,13 +3387,20 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &p.chorus_depth,
                     &Knob::percent(),
                 ),
+                3 => ctx.float(
+                    ui,
+                    "chorus_width",
+                    "Width",
+                    &p.chorus_width,
+                    &Knob::percent(),
+                ),
                 _ => {}
             },
         ),
         3 => column_row_fill(
             ui,
             "fx-delay",
-            3,
+            4,
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
@@ -3355,18 +3414,25 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                 1 => ctx.float(
                     ui,
                     "delay_feedback",
-                    "FB",
+                    "Feedback",
                     &p.delay_feedback,
                     &Knob::percent(),
                 ),
                 2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
+                3 => ctx.float(
+                    ui,
+                    "delay_damping",
+                    "Damping",
+                    &p.delay_damping,
+                    &Knob::percent(),
+                ),
                 _ => {}
             },
         ),
         4 => column_row_fill(
             ui,
             "fx-reverb",
-            2,
+            3,
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
@@ -3378,10 +3444,11 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &Knob::percent(),
                 ),
                 1 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
+                2 => ctx.float(ui, "reverb_tone", "Tone", &p.reverb_tone, &Knob::bipolar()),
                 _ => {}
             },
         ),
-        _ => {
+        5 => {
             let eq = Knob::plain(-12.0, 12.0, 1);
             column_row_fill(
                 ui,
@@ -3397,6 +3464,71 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                 },
             );
         }
+        6 => column_row_fill(
+            ui,
+            "fx-compressor",
+            6,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "comp_threshold",
+                    "Threshold",
+                    &p.comp_threshold,
+                    &Knob::plain(-60.0, 0.0, 1),
+                ),
+                1 => ctx.float(
+                    ui,
+                    "comp_ratio",
+                    "Ratio",
+                    &p.comp_ratio,
+                    &Knob::plain(1.0, 20.0, 1),
+                ),
+                2 => ctx.float(
+                    ui,
+                    "comp_attack",
+                    "Attack",
+                    &p.comp_attack,
+                    &Knob::logarithmic(0.1, 100.0, 1),
+                ),
+                3 => ctx.float(
+                    ui,
+                    "comp_release",
+                    "Release",
+                    &p.comp_release,
+                    &Knob::logarithmic(10.0, 1_000.0, 0),
+                ),
+                4 => ctx.float(
+                    ui,
+                    "comp_makeup",
+                    "Makeup",
+                    &p.comp_makeup,
+                    &Knob::plain(0.0, 24.0, 1),
+                ),
+                5 => ctx.float(ui, "comp_mix", "Mix", &p.comp_mix, &Knob::percent()),
+                _ => {}
+            },
+        ),
+        _ => column_row_fill(
+            ui,
+            "fx-tremolo",
+            3,
+            WIDE_COLUMN_GAP,
+            zoom,
+            |index, ui| match index {
+                0 => ctx.float(
+                    ui,
+                    "trem_rate",
+                    "Rate",
+                    &p.trem_rate,
+                    &Knob::logarithmic(0.05, 20.0, 2),
+                ),
+                1 => ctx.float(ui, "trem_depth", "Depth", &p.trem_depth, &Knob::percent()),
+                2 => ctx.check(ui, "trem_stereo", &p.trem_stereo, "STEREO"),
+                _ => {}
+            },
+        ),
     }
 }
 
@@ -3589,7 +3721,7 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
         FontId::new(font_size(13.0, zoom), bold()),
         number_color,
     );
-    let name_font = FontId::new(font_size(11.0, zoom), bold());
+    let name_font = FontId::new(font_size(10.0, zoom), bold());
     let name = fit_text(
         &painter,
         fx_stage_name(stage),
@@ -3679,7 +3811,7 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
 /// Draws the live drop indicator of a chain drag and applies the reorder when
 /// the pointer is released. The source tile is only moved once, so a whole
 /// drag is one undo step.
-fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect; 6]) {
+fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect]) {
     let Some(drag) = ctx.state.fx_chain_drag else {
         return;
     };
@@ -3718,7 +3850,7 @@ fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect; 6]) {
         ctx.state.fx_chain_drag = None;
         if let Some(pointer) = pointer {
             let slot = fx_chain_drop_slot(pointer.y, tiles);
-            let target = fx_chain_drop_position(drag.source, slot);
+            let target = fx_chain_drop_position(drag.source, slot, tiles.len());
             if target != drag.source {
                 ctx.fx_move_stage(drag.source, target);
             }
@@ -3729,8 +3861,8 @@ fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect; 6]) {
     }
 }
 
-/// Draws the left chain column: the title, the six movable tiles, the compact
-/// global wet fader and the chain preset popup.
+/// Draws the left chain column: the title, the eight movable tiles, the
+/// compact global wet fader and the chain preset popup.
 fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let p = ctx.params;
@@ -3756,7 +3888,7 @@ fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
         Stroke::new(1.0, palette().rule),
     );
 
-    let mut tiles = [Rect::ZERO; 6];
+    let mut tiles = [Rect::ZERO; FX_STAGE_COUNT];
     for (position, stage) in stages.iter().enumerate() {
         let tile = fx_chain_tile_rect(rack, position, zoom);
         tiles[position] = tile;
@@ -3797,8 +3929,8 @@ fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
     fx_chain_drag_feedback(ui, ctx, &tiles);
 }
 
-/// The FX page: a movable chain column on the left and a compact 2 x 3 grid of
-/// the six effect modules on the right.
+/// The FX page: a movable chain column on the left and a compact 2 x 4 grid of
+/// the eight effect modules on the right.
 ///
 /// The order of the signal path lives entirely in the left column: the tiles
 /// are dragged or stepped with their arrows, and the preset popup selects a
@@ -4137,7 +4269,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.fx_set_bypass(stage, !bypassed);
     }
 
-    /// Applies one of the 720 permutation indices of the chain.
+    /// Applies one of the 40,320 permutation indices of the chain.
     fn fx_apply_chain_index(&mut self, index: i32) {
         if index == self.params.fx_order.value() {
             return;
@@ -4151,7 +4283,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
     /// Applies a complete chain order. The permutation index is derived from
     /// the stage array with `stage_order_index`, so a drag or a preset can
     /// never write a value that does not describe the shown order.
-    fn fx_apply_chain_order(&mut self, stages: [FxStage; 6]) {
+    fn fx_apply_chain_order(&mut self, stages: [FxStage; FX_STAGE_COUNT]) {
         self.fx_apply_chain_index(stage_order_index(stages));
     }
 
@@ -9412,7 +9544,16 @@ faders and the three macros; the VCA is main-page only"
             "the normal page has an effect section: {names:?}"
         );
         for hidden in [
-            "DRIVE", "PHASER", "CHORUS", "DELAY", "REVERB", "EQ", "DECAY", "DEPTH",
+            "DRIVE",
+            "PHASER",
+            "CHORUS",
+            "DELAY",
+            "REVERB",
+            "EQ",
+            "COMPRESSOR",
+            "TREMOLO",
+            "DECAY",
+            "DEPTH",
         ] {
             let in_body = all_texts
                 .iter()
@@ -9434,16 +9575,17 @@ faders and the three macros; the VCA is main-page only"
         editor.state.counts = Counts::default();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        // The six module cards keep their faders: two drive, three phaser,
-        // three chorus, three delay, two reverb and three EQ. The left column
-        // adds the global wet fader, its preset popup and six power buttons.
-        assert_eq!(editor.state.counts.sliders, 17);
+        // The eight module cards keep their faders: three drive, four phaser,
+        // four chorus, four delay, three reverb, three EQ, six compressor and
+        // two tremolo faders, plus the stereo switch. The left column adds the
+        // global wet fader, its preset popup and eight power buttons.
+        assert_eq!(editor.state.counts.sliders, 30);
         assert_eq!(editor.state.counts.popups, 1);
-        assert_eq!(editor.state.counts.checks, 6);
+        assert_eq!(editor.state.counts.checks, 9);
         assert_eq!(editor.state.counts.radios, 0);
         assert_eq!(
             slider_rects(&ctx, &output).len(),
-            16,
+            29,
             "the module grid lost a fader"
         );
         for id in FX_BYPASS_IDS {
@@ -9453,6 +9595,11 @@ faders and the three macros; the VCA is main-page only"
                 editor.state.check_ids
             );
         }
+        assert!(
+            editor.state.check_ids.contains(&"trem_stereo"),
+            "the FX page has no tremolo stereo switch: {:?}",
+            editor.state.check_ids
+        );
         assert!(
             editor.state.slider_ids.contains(&"fx_global_mix"),
             "the FX page has no global wet fader: {:?}",
@@ -9475,6 +9622,8 @@ faders and the three macros; the VCA is main-page only"
             "DELAY",
             "REVERB",
             "EQ",
+            "COMPRESSOR",
+            "TREMOLO",
         ] {
             assert!(
                 names.contains(&name.to_string()),
@@ -9486,7 +9635,24 @@ faders and the three macros; the VCA is main-page only"
             "the old top chain strip is still drawn: {names:?}"
         );
         for caption in [
-            "AMOUNT", "RATE", "DEPTH", "TIME", "DECAY", "LOW", "MID", "HIGH",
+            "AMOUNT",
+            "RATE",
+            "DEPTH",
+            "TIME",
+            "DECAY",
+            "LOW",
+            "MID",
+            "HIGH",
+            "TONE",
+            "FEEDBACK",
+            "WIDTH",
+            "DAMPING",
+            "THRESHOLD",
+            "RATIO",
+            "ATTACK",
+            "RELEASE",
+            "MAKEUP",
+            "STEREO",
         ] {
             assert!(
                 names.contains(&caption.to_string()),
@@ -9519,9 +9685,9 @@ faders and the three macros; the VCA is main-page only"
             );
         }
 
-        // The drive control and the existing delay mix are both wired to their
-        // parameters. The module grid order is drive, phaser, chorus, delay,
-        // reverb, EQ.
+        // The drive control, the delay mix, the EQ and the new compressor
+        // mix are all wired to their parameters. The module grid order is
+        // drive, phaser, chorus, delay, reverb, EQ, compressor, tremolo.
         let sliders = slider_rects(&ctx, &output);
         let top = |index: usize| {
             let rect = sliders[index];
@@ -9535,7 +9701,7 @@ faders and the three macros; the VCA is main-page only"
         );
 
         run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, click(top(10)));
+        run_frames(&ctx, &mut editor, click(top(13)));
         assert!(
             params.delay_mix.value() > 0.9,
             "the delay mix fader is not connected: {}",
@@ -9543,12 +9709,138 @@ faders and the three macros; the VCA is main-page only"
         );
 
         run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, click(top(13)));
+        run_frames(&ctx, &mut editor, click(top(18)));
         assert!(
             params.eq_low.value() > 8.0,
             "the EQ low fader is not connected: {}",
             params.eq_low.value()
         );
+
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(top(26)));
+        assert!(
+            params.comp_mix.value() > 0.9,
+            "the compressor mix fader is not connected: {}",
+            params.comp_mix.value()
+        );
+
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(top(27)));
+        assert!(
+            params.trem_rate.value() > 10.0,
+            "the tremolo rate fader is not connected: {}",
+            params.trem_rate.value()
+        );
+    }
+
+    #[test]
+    fn the_new_fx_modules_expose_all_of_their_controls() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // The order of the faders is the order of the 2 x 4 grid, with the
+        // global wet fader of the chain column in front.
+        let expected = [
+            "fx_global_mix",
+            "drive_amount",
+            "drive_mix",
+            "drive_tone",
+            "phaser_rate",
+            "phaser_depth",
+            "phaser_mix",
+            "phaser_feedback",
+            "chorus_mix",
+            "chorus_rate",
+            "chorus_depth",
+            "chorus_width",
+            "delay_time",
+            "delay_feedback",
+            "delay_mix",
+            "delay_damping",
+            "reverb_decay",
+            "reverb_mix",
+            "reverb_tone",
+            "eq_low",
+            "eq_mid",
+            "eq_high",
+            "comp_threshold",
+            "comp_ratio",
+            "comp_attack",
+            "comp_release",
+            "comp_makeup",
+            "comp_mix",
+            "trem_rate",
+            "trem_depth",
+        ];
+        assert_eq!(editor.state.slider_ids, expected);
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.contains(&"STEREO".to_string()), "{names:?}");
+
+        let sliders = slider_rects(&ctx, &output);
+        let top = |index: usize| {
+            let rect = sliders[index];
+            egui::pos2(rect.center().x, rect.top() + 6.0)
+        };
+        let bottom = |index: usize| {
+            let rect = sliders[index];
+            egui::pos2(rect.center().x, rect.bottom() - 6.0)
+        };
+        let click_top = |editor: &mut SushiEditor, index: usize| {
+            run_frames(&ctx, editor, click(top(index)));
+            run_frames(&ctx, editor, wait());
+        };
+
+        click_top(&mut editor, 2);
+        assert!(params.drive_tone.value() > 0.9);
+        click_top(&mut editor, 6);
+        assert!(params.phaser_feedback.value() > 0.85);
+        click_top(&mut editor, 10);
+        assert!(params.chorus_width.value() > 0.9);
+        click_top(&mut editor, 14);
+        assert!(params.delay_damping.value() > 0.9);
+        click_top(&mut editor, 17);
+        assert!(params.reverb_tone.value() > 0.9);
+        click_top(&mut editor, 22);
+        assert!(params.comp_ratio.value() > 19.0);
+        click_top(&mut editor, 23);
+        assert!(params.comp_attack.value() > 50.0);
+        click_top(&mut editor, 24);
+        assert!(params.comp_release.value() > 500.0);
+        click_top(&mut editor, 25);
+        assert!(params.comp_makeup.value() > 20.0);
+        click_top(&mut editor, 26);
+        assert!(params.comp_mix.value() > 0.9);
+        click_top(&mut editor, 28);
+        assert!(params.trem_depth.value() > 0.9);
+
+        // The threshold and the tremolo rate are logarithmic or negative;
+        // reaching their other end proves that the faders span the range.
+        run_frames(&ctx, &mut editor, click(bottom(21)));
+        assert!(params.comp_threshold.value() < -55.0);
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, click(bottom(27)));
+        assert!(params.trem_rate.value() < 0.2);
+
+        // The stereo switch of the tremolo is a real, undoable control.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let stereo_index = editor
+            .state
+            .check_ids
+            .iter()
+            .position(|id| *id == "trem_stereo")
+            .expect("the tremolo stereo switch is missing");
+        let stereo = editor.state.check_rects[stereo_index];
+        assert!(!params.trem_stereo.value());
+        run_frames(&ctx, &mut editor, click(stereo.center()));
+        assert!(params.trem_stereo.value());
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert!(!params.trem_stereo.value());
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert!(params.trem_stereo.value());
     }
 
     #[test]
@@ -9579,6 +9871,8 @@ faders and the three macros; the VCA is main-page only"
                 "DELAY",
                 "REVERB",
                 "EQ",
+                "COMPRESSOR",
+                "TREMOLO",
             ] {
                 assert!(
                     names.contains(&name.to_string()),
@@ -9586,19 +9880,21 @@ faders and the three macros; the VCA is main-page only"
                 );
             }
 
-            // All 16 module faders are drawn and visible.
+            // All 29 module faders (plus the horizontal global wet fader) are
+            // drawn and visible.
             assert_eq!(
                 slider_rects(&ctx, &output).len(),
-                16,
+                29,
                 "the module grid lost a fader at {percent}%"
             );
 
-            // The six power buttons and the six movable tiles stay inside the
-            // rack, and the preset popup stays inside the chain column.
+            // The eight power buttons, the tremolo stereo switch and the eight
+            // movable tiles stay inside the rack, and the preset popup stays
+            // inside the chain column.
             assert_eq!(
                 editor.state.check_rects.len(),
-                FX_BYPASS_IDS.len(),
-                "the bypass power buttons are missing at {percent}%"
+                FX_BYPASS_IDS.len() + 1,
+                "the bypass power buttons or the stereo switch are missing at {percent}%"
             );
             for rect in &editor.state.check_rects {
                 assert!(
@@ -9649,12 +9945,42 @@ faders and the three macros; the VCA is main-page only"
                 "the global wet fader is outside the rack at {percent}%: {wet:?}"
             );
 
-            // All six modules keep their title in the fixed grid.
+            // The eight compact tiles, the global wet fader and the preset
+            // fit above each other without touching.
+            let last_tile = fx_chain_tile_rect(rack, FX_STAGE_COUNT - 1, zoom);
+            assert!(
+                last_tile.bottom() <= wet.top(),
+                "the last chain tile overlaps the global wet fader at {percent}%"
+            );
+            assert!(
+                wet.bottom() < label.top(),
+                "the global wet fader overlaps the chain preset at {percent}%"
+            );
+
+            // All eight modules keep their title in the fixed 2 x 4 grid.
             for title in FX_MODULE_TITLES.iter().flatten() {
                 assert!(
                     names.contains(&title.to_string()),
                     "the {title} module is missing at {percent}%: {names:?}"
                 );
+            }
+
+            // No two labels inside the rack collide, so the 30-ish controls
+            // of the 2 x 4 grid remain readable at every zoom.
+            let label_rects: Vec<(String, Rect)> = text_shapes(&output)
+                .into_iter()
+                .filter(|(text, _, size)| !text.is_empty() && size.x > 0.0 && size.y > 0.0)
+                .map(|(text, pos, size)| (text, Rect::from_min_size(pos, size)))
+                .filter(|(_, rect)| rack.contains_rect(*rect))
+                .collect();
+            for (index, (first_text, first)) in label_rects.iter().enumerate() {
+                for (second_text, second) in label_rects.iter().skip(index + 1) {
+                    assert!(
+                        !first.intersects(*second),
+                        "the labels {first_text:?} and {second_text:?} overlap at \
+{percent}%: {first:?} / {second:?}"
+                    );
+                }
             }
         }
     }
@@ -9687,7 +10013,7 @@ faders and the three macros; the VCA is main-page only"
         // delay before the chorus. Those are the two named orders whose point
         // is a non-rotation of the original chain.
         let ambient = FxChainPreset::Ambient.stages();
-        let position = |stages: [FxStage; 6], stage: FxStage| {
+        let position = |stages: [FxStage; FX_STAGE_COUNT], stage: FxStage| {
             stages
                 .iter()
                 .position(|candidate| *candidate == stage)
@@ -9696,6 +10022,15 @@ faders and the three macros; the VCA is main-page only"
         assert!(position(ambient, FxStage::Reverb) < position(ambient, FxStage::Delay));
         let wide = FxChainPreset::WideEcho.stages();
         assert!(position(wide, FxStage::Delay) < position(wide, FxStage::Chorus));
+
+        // GLUE puts the compressor near the end, after the reverb and before
+        // the final EQ and tremolo.
+        let glue = FxChainPreset::Glue.stages();
+        let compressor = position(glue, FxStage::Compressor);
+        assert!(compressor >= FX_STAGE_COUNT - 3);
+        assert!(position(glue, FxStage::Reverb) < compressor);
+        assert!(compressor < position(glue, FxStage::Eq));
+        assert_eq!(position(glue, FxStage::Tremolo), FX_STAGE_COUNT - 1);
 
         // An arbitrary drag order is not a named preset and therefore shows
         // CUSTOM.
@@ -9706,6 +10041,8 @@ faders and the three macros; the VCA is main-page only"
             FxStage::Delay,
             FxStage::Reverb,
             FxStage::Eq,
+            FxStage::Compressor,
+            FxStage::Tremolo,
         ]);
         assert_eq!(fx_chain_preset_at(custom), None);
         assert_eq!(fx_chain_preset_name(custom), "CUSTOM");
@@ -9760,6 +10097,20 @@ faders and the three macros; the VCA is main-page only"
             FxChainPreset::WideEcho.stages()
         );
 
+        // GLUE is listed too and applies its full eight-stage order.
+        open(&ctx, &mut editor);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, item) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "GLUE")
+            .expect("the preset popup has no GLUE");
+        run_frames(&ctx, &mut editor, click(item + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.fx_order.value(), FxChainPreset::Glue.order());
+        assert_eq!(
+            stage_order(params.fx_order.value()),
+            FxChainPreset::Glue.stages()
+        );
+
         // Any permutation that is not named shows CUSTOM. The popup still
         // lists the named presets, so the user can return to one of them.
         let custom = stage_order_index([
@@ -9769,6 +10120,8 @@ faders and the three macros; the VCA is main-page only"
             FxStage::Delay,
             FxStage::Reverb,
             FxStage::Eq,
+            FxStage::Compressor,
+            FxStage::Tremolo,
         ]);
         let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
         let setter = gui_ctx.param_setter();
@@ -9807,6 +10160,8 @@ faders and the three macros; the VCA is main-page only"
             FxStage::Delay,
             FxStage::Reverb,
             FxStage::Eq,
+            FxStage::Compressor,
+            FxStage::Tremolo,
         ]);
         assert_eq!(
             params.fx_order.value(),
@@ -9874,6 +10229,8 @@ faders and the three macros; the VCA is main-page only"
                 FxStage::Delay,
                 FxStage::Reverb,
                 FxStage::Eq,
+                FxStage::Compressor,
+                FxStage::Tremolo,
             ]
         );
 
@@ -9887,9 +10244,9 @@ faders and the three macros; the VCA is main-page only"
         assert_eq!(params.fx_order.value(), 0);
 
         // The bottom stage cannot move further down.
-        let eq_down = editor.state.fx_chain_down_rects[FxStage::Eq.index()]
-            .expect("the EQ tile has no down arrow");
-        run_frames(&ctx, &mut editor, click(eq_down.center()));
+        let tremolo_down = editor.state.fx_chain_down_rects[FxStage::Tremolo.index()]
+            .expect("the tremolo tile has no down arrow");
+        run_frames(&ctx, &mut editor, click(tremolo_down.center()));
         assert_eq!(params.fx_order.value(), 0);
     }
 
@@ -9898,7 +10255,11 @@ faders and the three macros; the VCA is main-page only"
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Fx;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(editor.state.check_ids, FX_BYPASS_IDS);
+        assert_eq!(
+            &editor.state.check_ids[..FX_BYPASS_IDS.len()],
+            &FX_BYPASS_IDS
+        );
+        assert_eq!(editor.state.check_ids.last(), Some(&"trem_stereo"));
 
         // The tiles are active and light before any bypass.
         let drive_tile = editor.state.fx_chain_tile_rects[FxStage::Drive.index()]
@@ -9911,14 +10272,16 @@ faders and the three macros; the VCA is main-page only"
 
         // Turn every bit on, one power button after another. Every step has to
         // keep the bits that were set before it.
-        for bit in 0..FX_BYPASS_IDS.len() {
-            let rect = editor.state.check_rects[bit];
+        for stage in FxStage::ALL {
+            let rect = editor.state.fx_chain_power_rects[stage.index()]
+                .expect("a chain power button is missing");
             run_frames(&ctx, &mut editor, click(rect.center()));
-            let expected = (1 << (bit + 1)) - 1;
+            let expected = (1 << (stage.index() + 1)) - 1;
             assert_eq!(
                 params.fx_bypass_mask.value(),
                 expected,
-                "toggling bit {bit} did not preserve the other bits"
+                "toggling bit {} did not preserve the other bits",
+                stage.index()
             );
             run_frames(&ctx, &mut editor, wait());
         }
@@ -9947,9 +10310,10 @@ faders and the three macros; the VCA is main-page only"
             "the drive number left its tile"
         );
 
-        // Clearing one bit leaves the other five untouched.
-        let all = (1 << FX_BYPASS_IDS.len()) - 1;
-        let chorus = editor.state.check_rects[2];
+        // Clearing one bit leaves the other seven untouched.
+        let all = (1 << FX_STAGE_COUNT) - 1;
+        let chorus = editor.state.fx_chain_power_rects[FxStage::Chorus.index()]
+            .expect("the chorus tile has no power button");
         run_frames(&ctx, &mut editor, click(chorus.center()));
         assert_eq!(params.fx_bypass_mask.value(), all & !(1 << 2));
 
@@ -9967,7 +10331,8 @@ faders and the three macros; the VCA is main-page only"
         let setter = gui_ctx.param_setter();
         setter.set_parameter(&params.fx_bypass_mask, 0b10_1010);
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let drive = editor.state.check_rects[0];
+        let drive = editor.state.fx_chain_power_rects[FxStage::Drive.index()]
+            .expect("the drive tile has no power button");
         run_frames(&ctx, &mut editor, click(drive.center()));
         assert_eq!(params.fx_bypass_mask.value(), 0b10_1011);
     }

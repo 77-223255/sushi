@@ -28,7 +28,7 @@ A compact, mouse-first polyphonic synthesizer.
   drift, even-harmonic warmth and a fixed HF loss; old projects keep their
   patch behavior
 - Patch JSON and parameter IDs are unchanged
-- 29 factory presets, all played through the Legacy engine, 126 patch parameters
+- 29 factory presets, all played through the Legacy engine, 140 patch parameters
 
 The LFO sync divisions are 1/4, 1/8, 1/16 and 1/32. A quarter note at 120 BPM
 runs at 2 Hz, and rate changes follow the host tempo with a short glide. The
@@ -56,8 +56,9 @@ PAD** uses the deterministic per-note Random source for pan and cutoff.
   LFO routing stays in the MOD table
 - The main page keeps ARP / VOICE and MACROS / VCA in two wide lower bands;
   VCA adds Width and Pan, envelopes add Curve, and VCO2 adds Ring and RESET
-- MOD and FX page tabs; the FX tab opens a full-panel two-row rack of drive,
-  phaser, chorus, delay, reverb and EQ, with 720 possible chain orders, per-effect bypass, global wet, movable
+- MOD and FX page tabs; the FX tab opens a 2×4 rack of drive, phaser, chorus,
+  delay, reverb, EQ, compressor and tremolo, with 8! chain orders, per-effect
+  bypass, global wet and movable
   chain tiles and named classic chain presets
 - Click the preset LCD to open the full-page JSON patch browser
 - Undo/Redo in the footer, with Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z; a whole fader
