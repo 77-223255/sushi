@@ -114,6 +114,25 @@ cargo nice-plug bundle sushi --release
 The standalone binary is written to `target/release/sushi`; bundles are written
 to `target/bundled/`.
 
+## Patches
+
+The `patches/` folder holds the patches made with Sushi. They are plain
+`sushi-patch` JSON files, so they load in any build: unknown parameters are
+ignored and missing ones keep their factory default.
+
+Point the plugin's patch folder at the checkout, either in the patch browser or
+in `~/.config/sushi/config.json`:
+
+```json
+{
+  "patch_dir": "/path/to/sushi/patches"
+}
+```
+
+After saving a patch, `scripts/sync-patches.sh` commits and pushes the folder to
+GitHub. It stages only `patches/`, so source changes in progress stay out of the
+commit.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
