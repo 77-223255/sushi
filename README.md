@@ -51,14 +51,14 @@ PAD** uses the deterministic per-note Random source for pan and cutoff.
   on the amount bar, and the Target inspector shows the selected route’s
   current value, modulation range and live contribution
 - Coarse lane plus a separate fine lane on every fader
-- LFO 1/2 editors live on the MOD page below the matrix: wave, sync,
-  retrigger, a free-rate fader and the synced division; their routing stays in
-  the MOD table
+- LFO 1/2 and the macros share one MOD row; the full-width Target inspector
+  visualizes the selected route with a range bar and source waveform. LFO
+  routing stays in the MOD table
 - The main page keeps ARP / VOICE and MACROS / VCA in two wide lower bands;
   VCA adds Width and Pan, envelopes add Curve, and VCO2 adds Ring and RESET
 - MOD and FX page tabs; the FX tab opens a full-panel two-row rack of drive,
-  phaser, chorus, delay, reverb and EQ, with chain order, per-effect bypass,
-  global wet and the signal order printed above it
+  phaser, chorus, delay, reverb and EQ, with 720 possible chain orders, per-effect bypass, global wet, movable
+  chain tiles and named classic chain presets
 - Click the preset LCD to open the full-page JSON patch browser
 - Undo/Redo in the footer, with Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z; a whole fader
   drag is one step

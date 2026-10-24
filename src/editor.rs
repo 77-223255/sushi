@@ -31,8 +31,9 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
+use crate::dsp::fx::{FxStage, stage_order, stage_order_index};
 use crate::dsp::mod_feedback::ModFeedback;
-use crate::params::{ModDest, ModSource, SushiParams};
+use crate::params::{LfoWaveform, ModDest, ModSource, SushiParams};
 use crate::patch;
 use presets::{PRESETS, Rng};
 use theme::palette;
@@ -230,7 +231,46 @@ const TARGET_NOISE_RANGE: f32 = 0.5;
 const TARGET_FINE_RANGE: f32 = 100.0;
 const TARGET_DETUNE_RANGE: f32 = 50.0;
 const TARGET_FILTER_ENV_RANGE: f32 = 5.0;
+/// The width of the text block on the left of the target inspector.
+const TARGET_INFO_WIDTH: f32 = 336.0;
+/// The gap between the three blocks of the target inspector.
+const TARGET_BLOCK_GAP: f32 = 16.0;
+/// The height of the range bar of the target inspector.
+const TARGET_RANGE_BAR_HEIGHT: f32 = 14.0;
+/// The width of the source preview of the target inspector.
+const TARGET_PREVIEW_WIDTH: f32 = 156.0;
+/// The height of the source preview of the target inspector.
+const TARGET_PREVIEW_HEIGHT: f32 = 52.0;
+/// The width of the current-position marker of the range bar.
+const TARGET_CURRENT_MARKER_WIDTH: f32 = 2.0;
+/// The size of the live modulation dot of the range bar.
+const TARGET_LIVE_DOT_SIZE: f32 = 6.0;
+/// The line thickness of the waveform and envelope previews.
+const TARGET_PREVIEW_LINE_WIDTH: f32 = 1.2;
 
+/// The heights of the sliders of the macros above their live strips.
+const MACRO_LIVE_RESERVE: f32 = 22.0;
+/// The height of a macro live bar.
+const MACRO_LIVE_BAR_HEIGHT: f32 = 6.0;
+/// The gap between a macro live bar and its caption.
+const MACRO_LIVE_GAP: f32 = 3.0;
+/// The height of the caption row under a macro live bar.
+const MACRO_LIVE_HINT_HEIGHT: f32 = 10.0;
+/// The static target hints of the three macros.
+const MACRO_TARGET_HINTS: [&str; 3] = ["CUTOFF/RES", "DRIFT/LFO", "FX WET"];
+
+/// The height of the output meter of the VCA.
+const VCA_METER_HEIGHT: f32 = 18.0;
+/// The space that the output meter reserves below the VCA faders.
+const VCA_METER_RESERVE: f32 = 22.0;
+/// The number of segments of the output meter of the VCA.
+const VCA_METER_SEGMENTS: usize = 16;
+/// The width of one segment of the output meter.
+const VCA_METER_SEGMENT_WIDTH: f32 = 5.0;
+/// The gap between two segments of the output meter.
+const VCA_METER_SEGMENT_GAP: f32 = 2.0;
+/// The height of one segment of the output meter.
+const VCA_METER_SEGMENT_HEIGHT: f32 = 6.0;
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
@@ -242,46 +282,69 @@ const ROW_A_WIDTHS: [f32; 4] = [228.0, 224.0, 124.0, 332.0];
 /// The widths of the sections of the second row: `VCF | MOD ENV | AMP ENV`.
 const ROW_B_WIDTHS: [f32; 3] = [348.0, 284.0, 288.0];
 /// The widths of the two wide sections of the third row. The normal page
-/// shows `ARP | VOICE`; the modulation page puts `LFO 1 | LFO 2` in the same
-/// two columns.
+/// shows `ARP | VOICE`; the modulation page uses three narrower columns for
+/// `LFO 1 | LFO 2 | MACROS`.
 const ROW_C_WIDTHS: [f32; 2] = [472.0, 472.0];
 /// The widths of the two wide sections of the fourth row. The normal page
-/// shows `MACROS | VCA`; the modulation page shows `TARGET | MACROS`.
+/// shows `MACROS | VCA`; the modulation page gives the whole band to the
+/// target inspector.
 const ROW_D_WIDTHS: [f32; 2] = [472.0, 472.0];
+/// The widths of the three modules of the third row of the modulation page.
+/// The sum is the same 920 units as the base widths of the other rows, so
+/// the columns are equal at every zoom.
+const MOD_ROW_C_WIDTHS: [f32; 3] = [306.0, 306.0, 308.0];
+/// The width of the single target band of the modulation page.
+const MOD_ROW_D_WIDTHS: [f32; 1] = [920.0];
 
 /// The widths of the sections of every row.
 const BASE_ROW_WIDTHS: [&[f32]; 4] = [&ROW_A_WIDTHS, &ROW_B_WIDTHS, &ROW_C_WIDTHS, &ROW_D_WIDTHS];
 
 // --- The FX rack ------------------------------------------------------------
 
-/// The height of the chain strip at the top of the FX rack. It holds the
-/// order control, the live chain caption and the global wet fader, and is not
-/// a fader band of its own.
-const FX_RACK_HEADER_HEIGHT: f32 = 48.0;
-/// The height of one row of the chain strip.
-const FX_CHAIN_ROW_HEIGHT: f32 = 18.0;
-/// The gap between the two rows of the chain strip.
-const FX_CHAIN_ROW_GAP: f32 = 4.0;
-/// The left edge of the order button, measured from the left of the strip.
-const FX_ORDER_LEFT: f32 = 100.0;
-/// The width of the order button.
-const FX_ORDER_WIDTH: f32 = 78.0;
-/// The width of the global wet fader, including its caption and its value.
-const FX_GLOBAL_WET_WIDTH: f32 = 270.0;
+/// The width of the chain column on the left of the FX page.
+const FX_CHAIN_COLUMN_WIDTH: f32 = 196.0;
+/// The gap between the chain column and the module grid.
+const FX_CHAIN_COLUMN_GAP: f32 = 8.0;
+/// The padding inside the chain column.
+const FX_CHAIN_PADDING: f32 = 6.0;
+/// The height of the caption at the top of the chain column.
+const FX_CHAIN_TITLE_HEIGHT: f32 = 22.0;
+/// The height of one movable chain tile.
+const FX_CHAIN_TILE_HEIGHT: f32 = 58.0;
+/// The gap between two chain tiles.
+const FX_CHAIN_TILE_GAP: f32 = 6.0;
+/// The gap between the last chain tile and the global wet fader.
+const FX_CHAIN_WET_GAP: f32 = 12.0;
+/// The height of the compact global wet fader.
+const FX_CHAIN_WET_HEIGHT: f32 = 24.0;
+/// The height of the caption above the chain preset popup.
+const FX_CHAIN_PRESET_LABEL_HEIGHT: f32 = 12.0;
+/// The gap between the preset caption and its popup.
+const FX_CHAIN_PRESET_LABEL_GAP: f32 = 4.0;
+/// The height of the chain preset popup.
+const FX_CHAIN_PRESET_HEIGHT: f32 = 20.0;
+/// The size of the power button of a chain tile.
+const FX_CHAIN_POWER_SIZE: f32 = 16.0;
+/// The width of an up/down arrow of a chain tile.
+const FX_CHAIN_ARROW_WIDTH: f32 = 14.0;
+/// The height of an up/down arrow of a chain tile.
+const FX_CHAIN_ARROW_HEIGHT: f32 = 18.0;
 /// The width of the caption of the global wet fader.
 const FX_GLOBAL_LABEL_WIDTH: f32 = 66.0;
 /// The width of the value readout of the global wet fader.
 const FX_GLOBAL_VALUE_WIDTH: f32 = 30.0;
+/// The gap between two modules of the module grid.
+const FX_MODULE_GAP: f32 = 8.0;
 /// The six effect stages, in the original order of the chain.
 const FX_STAGES: [&str; 6] = ["DRIVE", "PHASER", "CHORUS", "DELAY", "REVERB", "EQ"];
-/// The separator between two stages of the chain caption.
-const FX_CHAIN_SEPARATOR: &str = " > ";
-/// The order in which the six effect modules process the signal.
-const FX_CHAIN_ORDER: &str = "DRIVE > PHASER > CHORUS > DELAY > REVERB > EQ";
-/// The titles of the six modules, row by row, in the order of the chain.
-const FX_RACK_TITLES: [[&str; 3]; 2] = [["DRIVE", "PHASER", "CHORUS"], ["DELAY", "REVERB", "EQ"]];
-/// The identifiers of the bypass check boxes, in the order of the bits of
-/// `fx_bypass_mask`.
+/// The titles of the six modules, row by row. The module grid is fixed:
+/// reordering the chain changes the signal path, not the order of the cards.
+const FX_MODULE_TITLES: [[&str; 2]; 3] =
+    [["DRIVE", "PHASER"], ["CHORUS", "DELAY"], ["REVERB", "EQ"]];
+/// The identifiers of the bypass controls, in the order of the bits of
+/// `fx_bypass_mask`. The identifiers are test geometry keys now; the power
+/// buttons themselves live on the chain tiles.
+#[cfg(test)]
 const FX_BYPASS_IDS: [&str; 6] = [
     "fx_bypass_drive",
     "fx_bypass_phaser",
@@ -291,31 +354,283 @@ const FX_BYPASS_IDS: [&str; 6] = [
     "fx_bypass_eq",
 ];
 
-/// The chain caption for a rotation of the FX order.
-fn fx_chain_order(order: i32) -> String {
-    let stages = FX_STAGES.len() as i32;
-    let offset = order.rem_euclid(stages) as usize;
-    if offset == 0 {
-        return FX_CHAIN_ORDER.to_string();
-    }
-    FX_STAGES
-        .iter()
-        .cycle()
-        .skip(offset)
-        .take(FX_STAGES.len())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(FX_CHAIN_SEPARATOR)
+/// The named orders of the chain preset popup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FxChainPreset {
+    Standard,
+    EqFirst,
+    DriveLast,
+    Ambient,
+    WideEcho,
 }
 
-/// The next rotation of the FX order. The last step wraps around to the
-/// original order.
-fn next_fx_order(order: i32) -> i32 {
-    if (0..FX_STAGES.len() as i32 - 1).contains(&order) {
-        order + 1
-    } else {
-        0
+impl FxChainPreset {
+    /// Every named preset, in the order of the popup.
+    const ALL: [Self; 5] = [
+        Self::Standard,
+        Self::EqFirst,
+        Self::DriveLast,
+        Self::Ambient,
+        Self::WideEcho,
+    ];
+
+    /// The caption of the preset.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "STANDARD",
+            Self::EqFirst => "EQ FIRST",
+            Self::DriveLast => "DRIVE LAST",
+            Self::Ambient => "AMBIENT",
+            Self::WideEcho => "WIDE ECHO",
+        }
     }
+
+    /// The full chain order of the preset. The order index in the parameter is
+    /// derived from this array with `stage_order_index`, so the names can
+    /// never point at a different permutation than the one they describe.
+    fn stages(self) -> [FxStage; 6] {
+        match self {
+            Self::Standard => [
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+                FxStage::Eq,
+            ],
+            Self::EqFirst => [
+                FxStage::Eq,
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+            ],
+            Self::DriveLast => [
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+                FxStage::Eq,
+                FxStage::Drive,
+            ],
+            // Reverb before delay, so the echoes feed the room.
+            Self::Ambient => [
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Reverb,
+                FxStage::Delay,
+                FxStage::Eq,
+            ],
+            // Delay before chorus, so the chorus smears the repeats.
+            Self::WideEcho => [
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Delay,
+                FxStage::Chorus,
+                FxStage::Reverb,
+                FxStage::Eq,
+            ],
+        }
+    }
+
+    /// The permutation index that selects this preset.
+    fn order(self) -> i32 {
+        stage_order_index(self.stages())
+    }
+}
+
+/// The named preset that a permutation index matches, if any.
+fn fx_chain_preset_at(order: i32) -> Option<FxChainPreset> {
+    let stages = stage_order(order);
+    FxChainPreset::ALL
+        .into_iter()
+        .find(|preset| preset.stages() == stages)
+}
+
+/// The caption of the preset popup. Any order that is not one of the named
+/// presets is a custom chain.
+fn fx_chain_preset_name(order: i32) -> &'static str {
+    fx_chain_preset_at(order).map_or("CUSTOM", FxChainPreset::name)
+}
+
+/// The name of one stage on the chain tiles.
+fn fx_stage_name(stage: FxStage) -> &'static str {
+    FX_STAGES[stage.index()]
+}
+
+/// The whole FX rack: the space between the header and the footer.
+fn fx_rack_rect(layout: &Layout) -> Rect {
+    let top = layout.scale(layout.base_rows[0]).left_top();
+    let bottom = layout.scale(layout.base_rows[3]).right_bottom();
+    Rect::from_min_max(top, bottom)
+}
+
+/// The column that holds the chain tiles, the global wet fader and the preset
+/// popup.
+fn fx_chain_column_rect(rack: Rect, zoom: f32) -> Rect {
+    Rect::from_min_size(
+        rack.min,
+        egui::vec2(FX_CHAIN_COLUMN_WIDTH * zoom, rack.height()),
+    )
+}
+
+/// The inner rectangle of the chain column.
+fn fx_chain_inner_rect(rack: Rect, zoom: f32) -> Rect {
+    fx_chain_column_rect(rack, zoom).shrink2(egui::vec2(FX_CHAIN_PADDING, FX_CHAIN_PADDING) * zoom)
+}
+
+/// The rect of the title of the chain column.
+fn fx_chain_title_rect(rack: Rect, zoom: f32) -> Rect {
+    let inner = fx_chain_inner_rect(rack, zoom);
+    Rect::from_min_size(
+        inner.min,
+        egui::vec2(inner.width(), FX_CHAIN_TITLE_HEIGHT * zoom),
+    )
+}
+
+/// The tile at a position of the chain, `0` being the first stage in the
+/// signal path.
+fn fx_chain_tile_rect(rack: Rect, position: usize, zoom: f32) -> Rect {
+    let inner = fx_chain_inner_rect(rack, zoom);
+    let top = inner.top()
+        + (FX_CHAIN_TITLE_HEIGHT + FX_CHAIN_TILE_GAP) * zoom
+        + position as f32 * (FX_CHAIN_TILE_HEIGHT + FX_CHAIN_TILE_GAP) * zoom;
+    Rect::from_min_size(
+        egui::pos2(inner.left(), top),
+        egui::vec2(inner.width(), FX_CHAIN_TILE_HEIGHT * zoom),
+    )
+}
+
+/// The rect of the compact global wet fader.
+fn fx_chain_wet_rect(rack: Rect, zoom: f32) -> Rect {
+    let inner = fx_chain_inner_rect(rack, zoom);
+    let top = inner.top()
+        + (FX_CHAIN_TITLE_HEIGHT + FX_CHAIN_TILE_GAP) * zoom
+        + FX_STAGES.len() as f32 * FX_CHAIN_TILE_HEIGHT * zoom
+        + (FX_STAGES.len() as f32 - 1.0) * FX_CHAIN_TILE_GAP * zoom
+        + FX_CHAIN_WET_GAP * zoom;
+    Rect::from_min_size(
+        egui::pos2(inner.left(), top),
+        egui::vec2(inner.width(), FX_CHAIN_WET_HEIGHT * zoom),
+    )
+}
+
+/// The caption and the popup of the chain presets, anchored to the bottom of
+/// the chain column.
+fn fx_chain_preset_rects(rack: Rect, zoom: f32) -> (Rect, Rect) {
+    let inner = fx_chain_inner_rect(rack, zoom);
+    let popup = Rect::from_min_size(
+        egui::pos2(inner.left(), inner.bottom() - FX_CHAIN_PRESET_HEIGHT * zoom),
+        egui::vec2(inner.width(), FX_CHAIN_PRESET_HEIGHT * zoom),
+    );
+    let label = Rect::from_min_size(
+        egui::pos2(
+            inner.left(),
+            popup.top() - (FX_CHAIN_PRESET_LABEL_GAP + FX_CHAIN_PRESET_LABEL_HEIGHT) * zoom,
+        ),
+        egui::vec2(inner.width(), FX_CHAIN_PRESET_LABEL_HEIGHT * zoom),
+    );
+    (label, popup)
+}
+
+/// The six module cards of the fixed 2 x 3 grid.
+fn fx_module_rects(rack: Rect, zoom: f32) -> [Rect; 6] {
+    let left = rack.left() + (FX_CHAIN_COLUMN_WIDTH + FX_CHAIN_COLUMN_GAP) * zoom;
+    let gap = FX_MODULE_GAP * zoom;
+    let width = (rack.right() - left - gap) * 0.5;
+    let height = (rack.height() - 2.0 * gap) / 3.0;
+    let mut rects = [Rect::ZERO; 6];
+    for (index, rect) in rects.iter_mut().enumerate() {
+        let column = index % 2;
+        let row = index / 2;
+        *rect = Rect::from_min_size(
+            egui::pos2(
+                left + column as f32 * (width + gap),
+                rack.top() + row as f32 * (height + gap),
+            ),
+            egui::vec2(width, height),
+        );
+    }
+    rects
+}
+
+/// The parts of a chain tile. The drag handle covers the number and the name;
+/// the power button and the two reorder arrows keep their own targets so a
+/// drag can never steal a click from them.
+#[derive(Clone, Copy)]
+struct FxChainTileParts {
+    drag: Rect,
+    number: Rect,
+    name: Rect,
+    up: Rect,
+    down: Rect,
+    power: Rect,
+}
+
+/// The internal geometry of one chain tile.
+fn fx_chain_tile_parts(tile: Rect, zoom: f32) -> FxChainTileParts {
+    let pad = 4.0 * zoom;
+    let power_size = FX_CHAIN_POWER_SIZE * zoom;
+    let power = Rect::from_min_size(
+        egui::pos2(
+            tile.right() - pad - power_size,
+            tile.center().y - power_size * 0.5,
+        ),
+        egui::vec2(power_size, power_size),
+    );
+    let arrow = egui::vec2(FX_CHAIN_ARROW_WIDTH, FX_CHAIN_ARROW_HEIGHT) * zoom;
+    let down = Rect::from_center_size(
+        egui::pos2(power.left() - 4.0 * zoom - arrow.x * 0.5, tile.center().y),
+        arrow,
+    );
+    let up = Rect::from_center_size(
+        egui::pos2(down.left() - 2.0 * zoom - arrow.x * 0.5, tile.center().y),
+        arrow,
+    );
+
+    let drag = Rect::from_min_max(tile.min, egui::pos2(up.left() - 4.0 * zoom, tile.bottom()));
+    let number = Rect::from_min_size(
+        egui::pos2(tile.left() + 14.0 * zoom, tile.top()),
+        egui::vec2(20.0 * zoom, tile.height()),
+    );
+    let name = Rect::from_min_max(
+        egui::pos2(number.right() + 4.0 * zoom, tile.top()),
+        egui::pos2(drag.right() - 4.0 * zoom, tile.bottom()),
+    );
+    FxChainTileParts {
+        drag,
+        number,
+        name,
+        up,
+        down,
+        power,
+    }
+}
+
+/// The first position at or above the pointer in a list of tiles. `len` means
+/// that the pointer is below every tile.
+fn fx_chain_drop_slot(pointer_y: f32, tiles: &[Rect; 6]) -> usize {
+    tiles
+        .iter()
+        .position(|tile| pointer_y < tile.center().y)
+        .unwrap_or(tiles.len())
+}
+
+/// The position that a dragged tile takes when it is dropped at a slot. The
+/// tile is removed before it is inserted, so a source above the slot moves
+/// every later position up by one.
+fn fx_chain_drop_position(source: usize, slot: usize) -> usize {
+    let target = if source < slot { slot - 1 } else { slot };
+    target.min(6 - 1)
+}
+
+/// The state of a chain tile drag. It is GUI-only, like the undo history.
+#[derive(Clone, Copy, Debug, Default)]
+struct FxChainDrag {
+    /// The position of the tile in the chain.
+    source: usize,
 }
 
 // --- Widget metrics ---------------------------------------------------------
@@ -460,6 +775,26 @@ impl Layout {
         BASE_ROW_WIDTHS[row].len()
     }
 
+    /// The number of modules of a row of the modulation page. The page uses
+    /// its own proportions: three modules in the third row and one wide target
+    /// band in the fourth.
+    fn mod_group_count(row: usize) -> usize {
+        match row {
+            2 => MOD_ROW_C_WIDTHS.len(),
+            3 => MOD_ROW_D_WIDTHS.len(),
+            _ => 0,
+        }
+    }
+
+    /// The widths of a row of the modulation page.
+    fn mod_widths(row: usize) -> &'static [f32] {
+        match row {
+            2 => &MOD_ROW_C_WIDTHS,
+            3 => &MOD_ROW_D_WIDTHS,
+            _ => &[],
+        }
+    }
+
     /// The rect of the header.
     fn header(&self) -> Rect {
         self.scale(self.base_header)
@@ -468,7 +803,17 @@ impl Layout {
     /// The rect of a section of a row. The sections of a row share its width
     /// and keep their proportions.
     fn group(&self, row: usize, index: usize) -> Rect {
-        let widths = BASE_ROW_WIDTHS[row];
+        self.group_with(BASE_ROW_WIDTHS[row], row, index)
+    }
+
+    /// The rect of a module of the modulation page. Row 2 has three equal
+    /// columns and row 3 has the full width for the target inspector.
+    fn mod_group(&self, row: usize, index: usize) -> Rect {
+        self.group_with(Self::mod_widths(row), row, index)
+    }
+
+    /// The rect of one section of a row with explicit proportions.
+    fn group_with(&self, widths: &[f32], row: usize, index: usize) -> Rect {
         let base: f32 = widths.iter().sum();
         let row = self.base_rows[row];
         let available = row.width() - GROUP_GAP * (widths.len() as f32 - 1.0);
@@ -604,6 +949,25 @@ struct EditorState {
     /// frame, so that a test can click anywhere on a row.
     #[cfg(test)]
     mod_row_rects: Vec<egui::Rect>,
+    /// The live bars under the three macros, and the live markers on them.
+    #[cfg(test)]
+    macro_live_rects: [Option<egui::Rect>; 3],
+    #[cfg(test)]
+    macro_live_marker_rects: [Option<egui::Rect>; 3],
+    /// The output meter of the VCA.
+    #[cfg(test)]
+    vca_meter_rect: Option<egui::Rect>,
+    /// The range bar, its current marker and its live dot in the target
+    /// inspector.
+    #[cfg(test)]
+    target_bar_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    target_current_marker_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    target_live_dot_rect: Option<egui::Rect>,
+    /// The source preview box of the target inspector.
+    #[cfg(test)]
+    target_preview_rect: Option<egui::Rect>,
     /// The identifiers of the faders, popups and switches of the last frame.
     #[cfg(test)]
     slider_ids: Vec<&'static str>,
@@ -611,12 +975,29 @@ struct EditorState {
     popup_ids: Vec<&'static str>,
     #[cfg(test)]
     check_ids: Vec<&'static str>,
-    /// The place of the order button of the FX chain strip.
+    /// The chain tile that is currently being dragged, if any.
+    fx_chain_drag: Option<FxChainDrag>,
+    /// The tile, drag handle, arrows and power button of every stage, keyed by
+    /// the original stage index. The tests click these directly, even after
+    /// the chain was reordered.
     #[cfg(test)]
-    fx_order_rect: Option<egui::Rect>,
-    /// The track of the global wet fader of the FX chain strip.
+    fx_chain_tile_rects: [Option<egui::Rect>; 6],
+    #[cfg(test)]
+    fx_chain_drag_rects: [Option<egui::Rect>; 6],
+    #[cfg(test)]
+    fx_chain_up_rects: [Option<egui::Rect>; 6],
+    #[cfg(test)]
+    fx_chain_down_rects: [Option<egui::Rect>; 6],
+    #[cfg(test)]
+    fx_chain_power_rects: [Option<egui::Rect>; 6],
+    /// The track of the compact global wet fader.
     #[cfg(test)]
     fx_global_wet_rect: Option<egui::Rect>,
+    /// The caption and the popup of the chain presets.
+    #[cfg(test)]
+    fx_chain_preset_label_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    fx_chain_preset_rect: Option<egui::Rect>,
     /// The configuration of the patch browser.
     patch_config: patch::PatchConfig,
     /// Whether the window of the patch browser is open.
@@ -729,15 +1110,42 @@ impl SushiEditor {
                 #[cfg(test)]
                 mod_row_rects: Vec::new(),
                 #[cfg(test)]
+                macro_live_rects: [None; 3],
+                #[cfg(test)]
+                macro_live_marker_rects: [None; 3],
+                #[cfg(test)]
+                vca_meter_rect: None,
+                #[cfg(test)]
+                target_bar_rect: None,
+                #[cfg(test)]
+                target_current_marker_rect: None,
+                #[cfg(test)]
+                target_live_dot_rect: None,
+                #[cfg(test)]
+                target_preview_rect: None,
+                #[cfg(test)]
                 slider_ids: Vec::new(),
                 #[cfg(test)]
                 popup_ids: Vec::new(),
                 #[cfg(test)]
                 check_ids: Vec::new(),
+                fx_chain_drag: None,
                 #[cfg(test)]
-                fx_order_rect: None,
+                fx_chain_tile_rects: [None; 6],
+                #[cfg(test)]
+                fx_chain_drag_rects: [None; 6],
+                #[cfg(test)]
+                fx_chain_up_rects: [None; 6],
+                #[cfg(test)]
+                fx_chain_down_rects: [None; 6],
+                #[cfg(test)]
+                fx_chain_power_rects: [None; 6],
                 #[cfg(test)]
                 fx_global_wet_rect: None,
+                #[cfg(test)]
+                fx_chain_preset_label_rect: None,
+                #[cfg(test)]
+                fx_chain_preset_rect: None,
                 patch_config: patch::PatchConfig::default(),
                 patch_open: false,
                 patch_dir_text: String::new(),
@@ -1090,13 +1498,26 @@ impl SushiEditor {
             self.state.popup_rects.clear();
             self.state.amount_rects.clear();
             self.state.mod_row_rects.clear();
+            self.state.macro_live_rects = [None; 3];
+            self.state.macro_live_marker_rects = [None; 3];
+            self.state.vca_meter_rect = None;
+            self.state.target_bar_rect = None;
+            self.state.target_current_marker_rect = None;
+            self.state.target_live_dot_rect = None;
+            self.state.target_preview_rect = None;
             self.state.check_rects.clear();
             self.state.radio_rects.clear();
             self.state.slider_ids.clear();
             self.state.popup_ids.clear();
             self.state.check_ids.clear();
-            self.state.fx_order_rect = None;
+            self.state.fx_chain_tile_rects = [None; 6];
+            self.state.fx_chain_drag_rects = [None; 6];
+            self.state.fx_chain_up_rects = [None; 6];
+            self.state.fx_chain_down_rects = [None; 6];
+            self.state.fx_chain_power_rects = [None; 6];
             self.state.fx_global_wet_rect = None;
+            self.state.fx_chain_preset_label_rect = None;
+            self.state.fx_chain_preset_rect = None;
         }
         let setter = gui_ctx.param_setter();
 
@@ -2351,15 +2772,30 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
                         ui.horizontal(|ui| {
                             ctx.check(ui, ids.3, retrigger, "RETRIG");
                         });
-                        if sync.value() {
-                            caption(ui, "Div", 9.0, zoom, palette().label);
-                            ctx.popup(ui, ids.2, division, 66.0);
-                        }
+                        caption(ui, "Div", 9.0, zoom, palette().label);
+                        ui.add_space(4.0 * zoom);
+                        ctx.popup(ui, ids.2, division, 66.0);
+                        ui.add_space(3.0 * zoom);
                         text_label(ui, "MOD ROUTE", 7.5, zoom, palette().muted);
                     }
                 },
             );
         }
+    });
+}
+
+/// The third row of the modulation page: the two LFO editors and the three
+/// macros, side by side in one row.
+///
+/// The LFOs sit directly below the routing table, so the waveform, clock and
+/// retrigger of a source are in the same workspace as the routes that use it.
+/// The macros keep their live strips on this page too, because a routed macro
+/// is often adjusted while the matrix is open.
+fn row_c_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    mod_group_row(ui, "row-c-mod", layout, 2, |index, rect, ui| match index {
+        0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
+        _ => macros_group(ui, rect, layout, ctx),
     });
 }
 
@@ -2481,23 +2917,11 @@ fn row_c(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     });
 }
 
-/// The third row of the modulation page: the two LFO editors.
-///
-/// They sit directly below the routing table, so the waveform, clock and
-/// retrigger of a source are in the same workspace as the routes that use
-/// it. The normal page has no LFO controls at all.
-fn row_c_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
-    let zoom = ctx.zoom;
-    group_row(ui, "row-c-mod", layout, 2, |index, rect, ui| {
-        lfo_group(ui, rect, zoom, ctx, index);
-    });
-}
-
 /// The fourth row of the normal page: the macros and the output.
 ///
 /// The normal page keeps `MACROS | VCA`, exactly as before. The modulation
-/// page uses the same band for the target inspector and the macros, so the
-/// VCA stays a main-page control and the macros remain usable while routing.
+/// page gives the same band to the full-width target inspector, so the VCA
+/// stays a main-page control and the macros remain usable while routing.
 fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group_row(ui, "row-d", layout, 3, |index, rect, ui| match index {
@@ -2509,47 +2933,69 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 ctx.radio_pair(ui, "character", &p.character, 58.0);
             }
             Part::Body => {
+                let body = ui.max_rect();
                 column_row_fill(ui, "output", 4, WIDE_COLUMN_GAP, zoom, |index, ui| {
                     let p = ctx.params;
+                    let reserve = VCA_METER_RESERVE * zoom;
                     match index {
-                        0 => ctx.float(
+                        0 => ctx.float_reserved(
                             ui,
                             "volume",
                             "Volume",
                             &p.volume,
                             &Knob::decibels(-60.0, 6.0),
+                            reserve,
                         ),
-                        1 => ctx.float(ui, "tone", "Tone", &p.tone, &Knob::bipolar()),
-                        2 => ctx.float(
+                        1 => ctx.float_reserved(
+                            ui,
+                            "tone",
+                            "Tone",
+                            &p.tone,
+                            &Knob::bipolar(),
+                            reserve,
+                        ),
+                        2 => ctx.float_reserved(
                             ui,
                             "vca_width",
                             "Width",
                             &p.vca_width,
                             &Knob::plain(0.0, 2.0, 2),
+                            reserve,
                         ),
-                        3 => ctx.float(ui, "vca_pan", "Pan", &p.vca_pan, &Knob::bipolar()),
+                        3 => ctx.float_reserved(
+                            ui,
+                            "vca_pan",
+                            "Pan",
+                            &p.vca_pan,
+                            &Knob::bipolar(),
+                            reserve,
+                        ),
                         _ => {}
                     }
                 });
+                let meter = Rect::from_min_size(
+                    egui::pos2(body.left(), body.bottom() - VCA_METER_HEIGHT * zoom),
+                    egui::vec2(body.width(), VCA_METER_HEIGHT * zoom),
+                );
+                vca_output_meter(ui, meter, ctx, zoom);
             }
         }),
     });
 }
 
-/// The fourth row of the modulation page: the target inspector on the left
-/// and the macros on the right.
+/// The fourth row of the modulation page: one full-width target inspector.
 fn row_d_mod(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
-    group_row(ui, "row-d-mod", layout, 3, |index, rect, ui| match index {
-        0 => group(ui, rect, "TARGET", ctx.zoom, |ui, part| match part {
+    mod_group_row(ui, "row-d-mod", layout, 3, |_index, rect, ui| {
+        group(ui, rect, "TARGET", ctx.zoom, |ui, part| match part {
             Part::Header => {}
             Part::Body => target_inspector(ui, ctx),
-        }),
-        _ => macros_group(ui, rect, layout, ctx),
+        });
     });
 }
 
-/// The three macro faders. They are shared by the normal and the modulation
-/// page, so a routed macro can be moved without leaving the matrix.
+/// The three macro faders and their compact live strips. They are shared by
+/// the normal and the modulation page, so a routed macro can be moved without
+/// leaving the matrix.
 fn macros_group(ui: &mut egui::Ui, rect: Rect, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group(ui, rect, "MACROS", zoom, |ui, part| match part {
@@ -2558,30 +3004,166 @@ fn macros_group(ui: &mut egui::Ui, rect: Rect, layout: &Layout, ctx: &mut Ctx) {
             column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
                 let p = ctx.params;
                 let knob = Knob::percent().with_width(layout.macro_width());
-                match index {
-                    0 => ctx.float(ui, "macro_bright", "Brilliance", &p.macro_bright, &knob),
-                    1 => ctx.float(ui, "macro_motion", "Motion", &p.macro_motion, &knob),
-                    2 => ctx.float(ui, "macro_space", "Space", &p.macro_space, &knob),
-                    _ => {}
-                }
+                let (id, label, param, source) = match index {
+                    0 => (
+                        "macro_bright",
+                        "Brilliance",
+                        &p.macro_bright,
+                        ModSource::Macro1,
+                    ),
+                    1 => ("macro_motion", "Motion", &p.macro_motion, ModSource::Macro2),
+                    _ => ("macro_space", "Space", &p.macro_space, ModSource::Macro3),
+                };
+                ctx.float_reserved(ui, id, label, param, &knob, MACRO_LIVE_RESERVE * zoom);
+                let live = live_source_value(source, ctx.mod_feedback).unwrap_or(param.value());
+                macro_live_strip(ctx, ui, ui.max_rect(), index, param.value(), live, zoom);
             });
         }
     });
 }
 
+/// Draws the compact live strip below one macro fader: a horizontal bar with
+/// the live macro value, a small live marker and the static target hint. The
+/// strip explains where the macro goes without adding another control.
+fn macro_live_strip(
+    ctx: &mut Ctx,
+    ui: &egui::Ui,
+    slot: Rect,
+    index: usize,
+    value: f32,
+    live: f32,
+    zoom: f32,
+) {
+    #[cfg(not(test))]
+    let _ = ctx;
+    let hint_height = MACRO_LIVE_HINT_HEIGHT * zoom;
+    let bar_height = MACRO_LIVE_BAR_HEIGHT * zoom;
+    let hint = Rect::from_min_max(
+        egui::pos2(slot.left(), slot.bottom() - hint_height),
+        slot.right_bottom(),
+    );
+    let bar = Rect::from_min_size(
+        egui::pos2(
+            slot.left(),
+            hint.top() - (MACRO_LIVE_GAP * zoom + bar_height),
+        ),
+        egui::vec2(slot.width(), bar_height),
+    );
+    let painter = ui.painter_at(slot);
+    flat_box(&painter, bar, palette().track);
+    let inner = bar.shrink(zoom);
+    let value = value.clamp(0.0, 1.0);
+    let fill = Rect::from_min_max(
+        inner.left_top(),
+        egui::pos2(inner.left() + inner.width() * value, inner.bottom()),
+    );
+    painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
+    let live = live.clamp(0.0, 1.0);
+    let marker = Rect::from_center_size(
+        egui::pos2(inner.left() + inner.width() * live, inner.center().y),
+        egui::vec2(TARGET_CURRENT_MARKER_WIDTH * zoom, inner.height()),
+    );
+    painter.rect_filled(marker, CornerRadius::ZERO, palette().accent);
+
+    let hint_font = FontId::new(font_size(8.0, zoom), bold());
+    let value_font = FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional);
+    painter.text(
+        hint.left_bottom() - egui::vec2(0.0, hint_height * 0.5),
+        Align2::LEFT_CENTER,
+        MACRO_TARGET_HINTS[index],
+        hint_font.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(hint.right(), hint.center().y),
+        Align2::RIGHT_CENTER,
+        format_whole_percent(value),
+        value_font,
+        palette().text,
+    );
+
+    #[cfg(test)]
+    {
+        ctx.state.macro_live_rects[index] = Some(bar);
+        ctx.state.macro_live_marker_rects[index] = Some(marker);
+    }
+}
+
+/// Draws the output activity meter of the VCA: a segmented horizontal bar
+/// driven by the peak level of the last frame, with the live voice count on
+/// its right. It uses the same feedback as the header, so it needs no new DSP
+/// value and no new parameter.
+fn vca_output_meter(ui: &egui::Ui, rect: Rect, ctx: &mut Ctx, zoom: f32) {
+    let painter = ui.painter_at(rect);
+    let font = FontId::new(font_size(8.0, zoom), bold());
+    let value_font = FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional);
+    painter.text(
+        egui::pos2(rect.left(), rect.center().y),
+        Align2::LEFT_CENTER,
+        "OUT",
+        font,
+        palette().muted,
+    );
+
+    let row_width = (VCA_METER_SEGMENTS as f32 * VCA_METER_SEGMENT_WIDTH
+        + (VCA_METER_SEGMENTS as f32 - 1.0) * VCA_METER_SEGMENT_GAP)
+        * zoom;
+    let row_left = rect.left() + 30.0 * zoom;
+    let row = Rect::from_min_size(
+        egui::pos2(
+            row_left,
+            rect.center().y - VCA_METER_SEGMENT_HEIGHT * 0.5 * zoom,
+        ),
+        egui::vec2(row_width, VCA_METER_SEGMENT_HEIGHT * zoom),
+    );
+    let activity = ctx.state.activity.clamp(0.0, 1.0);
+    let lit = (activity * VCA_METER_SEGMENTS as f32).ceil() as usize;
+    for index in 0..VCA_METER_SEGMENTS {
+        let segment = Rect::from_min_size(
+            egui::pos2(
+                row.left()
+                    + index as f32 * (VCA_METER_SEGMENT_WIDTH + VCA_METER_SEGMENT_GAP) * zoom,
+                row.top(),
+            ),
+            egui::vec2(VCA_METER_SEGMENT_WIDTH, VCA_METER_SEGMENT_HEIGHT) * zoom,
+        );
+        let color = if index < lit {
+            palette().led_on
+        } else {
+            palette().led_off
+        };
+        painter.rect_filled(segment, CornerRadius::ZERO, color);
+    }
+
+    let voices = ctx.voice_count.load(Ordering::Relaxed).min(VOICE_LEDS);
+    painter.text(
+        egui::pos2(rect.right(), rect.center().y),
+        Align2::RIGHT_CENTER,
+        format!("VOICE {voices:02}"),
+        value_font,
+        palette().muted,
+    );
+
+    #[cfg(test)]
+    {
+        ctx.state.vca_meter_rect = Some(row);
+    }
+}
+
 /// Draws the read-only inspector for the selected route.
 ///
-/// It answers the three questions of a route in one place: what target does
-/// the route move and where does it stand now, how far can the amount push
-/// it, and what is the source doing at this instant. The band has no fader
-/// bank, so the inspection never competes with a control for the same space.
+/// It answers the questions of a route in one place: what target does the
+/// route move and where does it stand now, how far can the amount push it,
+/// what is the source doing at this instant, and what shape does that source
+/// have. The band has no fader bank, so the inspection never competes with a
+/// control for the same space.
 fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let body = ui.max_rect();
     let painter = ui.painter_at(body);
     // The regular section helper prints the two faint lines of a fader bank.
-    // This band holds text instead, so the body is cleared before the
-    // inspector draws on it.
+    // This band holds text and instruments instead, so the body is cleared
+    // before the inspector draws on it.
     painter.rect_filled(body, CornerRadius::ZERO, palette().bg);
 
     let slot = ctx.state.mod_selected.min(crate::params::MOD_SLOTS - 1);
@@ -2621,13 +3203,22 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         return;
     }
 
+    // Three blocks share the full band: the route facts, the target range bar
+    // and the source preview. The info block is wide enough for the longest
+    // source and destination names at every zoom.
+    let info_right = left + TARGET_INFO_WIDTH * zoom;
+    let preview_left = right - TARGET_PREVIEW_WIDTH * zoom;
+    let range_left = info_right + TARGET_BLOCK_GAP * zoom;
+    let range_right = preview_left - TARGET_BLOCK_GAP * zoom;
+
     let source_name = ModSource::variants()[ModSource::to_index(source)];
     let dest_name = ModDest::variants()[ModDest::to_index(dest)];
     let amount_text = format!("{}%", format_amount(amount));
     let amount_width = text_width(&painter, &amount_text, &value_font);
     let summary = format!("{source_name} > {dest_name}");
     let summary_left = left + TARGET_ROUTE_WIDTH * zoom;
-    let summary_width = (right - summary_left - amount_width - TARGET_AMOUNT_GAP * zoom).max(1.0);
+    let summary_width =
+        (info_right - summary_left - amount_width - TARGET_AMOUNT_GAP * zoom).max(1.0);
     let summary = fit_text(&painter, &summary, summary_width, &route_font);
 
     painter.text(
@@ -2645,7 +3236,7 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         palette().text,
     );
     painter.text(
-        egui::pos2(right, top + line * 0.5),
+        egui::pos2(info_right, top + line * 0.5),
         Align2::RIGHT_CENTER,
         amount_text,
         value_font.clone(),
@@ -2655,7 +3246,8 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
     let current = target_current_text(dest, ctx.params);
     let range = target_range_text(dest, amount);
     let live = target_live_text(source, dest, amount, ctx.mod_feedback);
-    let live_color = if live_source_value(source, ctx.mod_feedback).is_some() {
+    let source_live = live_source_value(source, ctx.mod_feedback);
+    let live_color = if source_live.is_some() {
         palette().text
     } else {
         palette().muted
@@ -2685,6 +3277,424 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
             color,
         );
     }
+
+    // The target axis: the current parameter position, the travel that the
+    // amount allows and the live contribution of the source.
+    let bar = Rect::from_min_size(
+        egui::pos2(range_left, top + line * 1.8),
+        egui::vec2(
+            (range_right - range_left).max(1.0),
+            TARGET_RANGE_BAR_HEIGHT * zoom,
+        ),
+    );
+    let axis = target_axis(dest, ctx.params, amount, source_live);
+    let axis = axis.unwrap_or(TargetAxis {
+        center: 0.5,
+        half: 0.0,
+        live: 0.0,
+    });
+    painter.text(
+        egui::pos2(range_left, top + line * 0.5),
+        Align2::LEFT_CENTER,
+        "POSITION",
+        label_font.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(range_right, top + line * 0.5),
+        Align2::RIGHT_CENTER,
+        "LIVE",
+        label_font.clone(),
+        palette().muted,
+    );
+    painter.rect_filled(bar, CornerRadius::ZERO, palette().track);
+    painter.rect_stroke(
+        bar,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().line),
+        egui::StrokeKind::Inside,
+    );
+    let centre = bar.left() + bar.width() * axis.center.clamp(0.0, 1.0);
+    let half = bar.width() * axis.half.clamp(0.0, 1.0);
+    let band = Rect::from_min_max(
+        egui::pos2(
+            (centre - half).clamp(bar.left(), bar.right()),
+            bar.top() + zoom,
+        ),
+        egui::pos2(
+            (centre + half).clamp(bar.left(), bar.right()),
+            bar.bottom() - zoom,
+        ),
+    );
+    painter.rect_filled(band, CornerRadius::ZERO, palette().button_active);
+    let current_marker = Rect::from_center_size(
+        egui::pos2(centre, bar.center().y),
+        egui::vec2(TARGET_CURRENT_MARKER_WIDTH * zoom, bar.height()),
+    );
+    painter.rect_filled(current_marker, CornerRadius::ZERO, palette().title_blue);
+    let live_dot = source_live.map(|_| {
+        let x = bar.left() + bar.width() * (axis.center + axis.live).clamp(0.0, 1.0);
+        Rect::from_center_size(
+            egui::pos2(x, bar.center().y),
+            egui::vec2(TARGET_LIVE_DOT_SIZE, TARGET_LIVE_DOT_SIZE) * zoom,
+        )
+    });
+    if let Some(dot) = live_dot {
+        painter.rect_filled(dot, CornerRadius::ZERO, palette().accent);
+    }
+    let low_font = FontId::new(font_size(8.0, zoom), bold());
+    painter.text(
+        egui::pos2(bar.left(), top + line * 3.1),
+        Align2::LEFT_CENTER,
+        "LOW",
+        low_font.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(bar.right(), top + line * 3.1),
+        Align2::RIGHT_CENTER,
+        "HIGH",
+        low_font,
+        palette().muted,
+    );
+
+    // The source preview: a waveform, an envelope, a level bar or a neutral
+    // per-voice mark. It is read-only and adds no control.
+    let preview = Rect::from_min_size(
+        egui::pos2(preview_left, top + line * 1.4),
+        egui::vec2(TARGET_PREVIEW_WIDTH, TARGET_PREVIEW_HEIGHT) * zoom,
+    );
+    painter.text(
+        egui::pos2(preview_left, top + line * 0.5),
+        Align2::LEFT_CENTER,
+        "SOURCE",
+        label_font,
+        palette().muted,
+    );
+    painter.rect_filled(preview, CornerRadius::ZERO, palette().field_bg);
+    painter.rect_stroke(
+        preview,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().line),
+        egui::StrokeKind::Inside,
+    );
+    target_source_preview(
+        &painter,
+        preview.shrink(4.0 * zoom),
+        source,
+        ctx.params,
+        ctx.mod_feedback,
+        zoom,
+    );
+
+    #[cfg(test)]
+    {
+        ctx.state.target_bar_rect = Some(bar);
+        ctx.state.target_current_marker_rect = Some(current_marker);
+        ctx.state.target_live_dot_rect = live_dot;
+        ctx.state.target_preview_rect = Some(preview);
+    }
+}
+
+/// The normalized geometry of the target range bar. `center` is the current
+/// position of the target on its own axis, `half` is the travel that the
+/// amount allows and `live` is the current contribution of the source.
+#[derive(Clone, Copy, Debug)]
+struct TargetAxis {
+    center: f32,
+    half: f32,
+    live: f32,
+}
+
+/// Maps the current target value and the modulation range onto a normalized
+/// axis. The axis follows the destination parameter, so a cutoff bar moves
+/// logarithmically while a resonance or pan bar moves linearly.
+fn target_axis(
+    dest: ModDest,
+    params: &SushiParams,
+    amount: f32,
+    source_value: Option<f32>,
+) -> Option<TargetAxis> {
+    let source = source_value.unwrap_or(0.0);
+    let amount_abs = amount.abs();
+    let (center, span, live_scale) = match dest {
+        ModDest::Off => return None,
+        ModDest::Pitch => (0.5, 0.5, 0.5),
+        ModDest::Pulse1 | ModDest::Pulse2 => {
+            let value = if dest == ModDest::Pulse1 {
+                params.osc1_pw.value()
+            } else {
+                params.osc2_pw.value()
+            };
+            (unit_position(value, 0.05, 0.95), 0.5, 0.5)
+        }
+        ModDest::Cutoff => {
+            let octaves = (20_000.0f32 / 20.0).log2();
+            (
+                log_position(params.cutoff.value(), 20.0, 20_000.0),
+                TARGET_CUTOFF_RANGE / octaves,
+                TARGET_CUTOFF_RANGE / octaves,
+            )
+        }
+        ModDest::Resonance => (params.resonance.value().clamp(0.0, 1.0), 1.0, 1.0),
+        ModDest::Drive | ModDest::FilterDrive => {
+            (params.filter_drive.value().clamp(0.0, 1.0), 1.0, 1.0)
+        }
+        ModDest::Pan => ((params.vca_pan.value() + 1.0) * 0.5, 0.5, 0.5),
+        ModDest::Volume => (
+            unit_position(util::gain_to_db(params.volume.value()), -60.0, 6.0),
+            0.5,
+            0.5,
+        ),
+        ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
+            let (octave, semi) = if dest == ModDest::Osc2Pitch {
+                (params.osc2_octave.value(), params.osc2_semi.value())
+            } else {
+                (params.osc1_octave.value(), params.osc1_semi.value())
+            };
+            let semitones = octave as f32 * 12.0 + semi as f32;
+            (unit_position(semitones, -36.0, 36.0), 1.0 / 6.0, 1.0 / 6.0)
+        }
+        ModDest::Osc2Fine | ModDest::Osc1Fine => {
+            let value = if dest == ModDest::Osc2Fine {
+                params.osc2_fine.value()
+            } else {
+                params.osc1_fine.value()
+            };
+            (unit_position(value, -100.0, 100.0), 0.5, 0.5)
+        }
+        ModDest::SubLevel => (params.sub_level.value().clamp(0.0, 1.0), 1.0, 1.0),
+        ModDest::NoiseLevel => (params.noise_level.value().clamp(0.0, 1.0), 0.5, 0.5),
+        ModDest::Detune => (
+            unit_position(params.detune.value(), 0.0, TARGET_DETUNE_RANGE),
+            1.0,
+            1.0,
+        ),
+        ModDest::FilterEnv => ((params.filter_env_amount.value() + 1.0) * 0.5, 0.5, 0.5),
+        ModDest::FilterKeytrack => (params.filter_keytrack.value().clamp(0.0, 1.0), 1.0, 1.0),
+        ModDest::RingMod => (params.ring_mod.value().clamp(0.0, 1.0), 1.0, 1.0),
+    };
+    Some(TargetAxis {
+        center: center.clamp(0.0, 1.0),
+        half: span * amount_abs,
+        live: live_scale * source * amount,
+    })
+}
+
+/// A linear parameter position on its normalized axis.
+fn unit_position(value: f32, min: f32, max: f32) -> f32 {
+    if max <= min {
+        return 0.5;
+    }
+    ((value - min) / (max - min)).clamp(0.0, 1.0)
+}
+
+/// A logarithmic parameter position on its normalized axis.
+fn log_position(value: f32, min: f32, max: f32) -> f32 {
+    if value <= 0.0 || min <= 0.0 || max <= min {
+        return 0.5;
+    }
+    (value / min).ln() / (max / min).ln()
+}
+
+/// Draws the small source preview of the target inspector.
+fn target_source_preview(
+    painter: &egui::Painter,
+    inner: Rect,
+    source: ModSource,
+    params: &SushiParams,
+    feedback: &ModFeedback,
+    zoom: f32,
+) {
+    match source {
+        ModSource::Lfo1 => draw_lfo_preview(painter, inner, params.lfo1_wave.value(), zoom),
+        ModSource::Lfo2 => draw_lfo_preview(painter, inner, params.lfo2_wave.value(), zoom),
+        ModSource::ModEnv => draw_adsr_preview(
+            painter,
+            inner,
+            EnvelopePreview {
+                attack: params.fe_attack.value(),
+                decay: params.fe_decay.value(),
+                sustain: params.fe_sustain.value(),
+                release: params.fe_release.value(),
+                release_max: 4_000.0,
+            },
+            zoom,
+        ),
+        ModSource::AmpEnv => draw_adsr_preview(
+            painter,
+            inner,
+            EnvelopePreview {
+                attack: params.ae_attack.value(),
+                decay: params.ae_decay.value(),
+                sustain: params.ae_sustain.value(),
+                release: params.ae_release.value(),
+                release_max: 8_000.0,
+            },
+            zoom,
+        ),
+        ModSource::Macro1 => draw_level_preview(painter, inner, feedback.macro1(), zoom),
+        ModSource::Macro2 => draw_level_preview(painter, inner, feedback.macro2(), zoom),
+        ModSource::Macro3 => draw_level_preview(painter, inner, feedback.macro3(), zoom),
+        ModSource::ModWheel => draw_level_preview(painter, inner, feedback.mod_wheel(), zoom),
+        ModSource::Velocity | ModSource::Key | ModSource::Random | ModSource::Off => {
+            draw_per_voice_preview(painter, inner, zoom)
+        }
+    }
+}
+
+/// The value of a waveform at a normalized phase, `-1..1`.
+fn lfo_preview_value(wave: LfoWaveform, phase: f32) -> f32 {
+    let phase = phase.rem_euclid(1.0);
+    match wave {
+        LfoWaveform::Sine => (phase * std::f32::consts::TAU).sin(),
+        LfoWaveform::Triangle => {
+            if phase < 0.25 {
+                phase * 4.0
+            } else if phase < 0.75 {
+                2.0 - phase * 4.0
+            } else {
+                phase * 4.0 - 4.0
+            }
+        }
+        LfoWaveform::Saw => phase * 2.0 - 1.0,
+        LfoWaveform::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        LfoWaveform::SampleHold => {
+            let step = (phase * 8.0).floor() as u32;
+            let mut hash = step.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+            hash = ((hash >> ((hash >> 28) & 0xF)) ^ hash).wrapping_mul(2_778_037_377);
+            let hash = (hash >> 22) ^ hash;
+            (hash as f32 / u32::MAX as f32) * 2.0 - 1.0
+        }
+    }
+}
+
+/// Draws one LFO waveform in the source preview.
+fn draw_lfo_preview(painter: &egui::Painter, inner: Rect, wave: LfoWaveform, zoom: f32) {
+    let mid = inner.center().y;
+    painter.line_segment(
+        [
+            egui::pos2(inner.left(), mid),
+            egui::pos2(inner.right(), mid),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+    let amplitude = inner.height() * 0.36;
+    let steps = 96;
+    let points = (0..=steps)
+        .map(|index| {
+            let phase = index as f32 / steps as f32;
+            egui::pos2(
+                inner.left() + phase * inner.width(),
+                mid - lfo_preview_value(wave, phase) * amplitude,
+            )
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        Stroke::new((TARGET_PREVIEW_LINE_WIDTH * zoom).max(1.0), palette().trace),
+    ));
+}
+
+/// A duration on a gently compressed axis, so a 5 ms attack is still visible
+/// in the same small preview as a four-second release.
+fn envelope_time_position(milliseconds: f32, max: f32) -> f32 {
+    ((1.0 + milliseconds.max(0.0)).ln() / (1.0 + max).ln()).clamp(0.0, 1.0)
+}
+
+/// The shape values of an envelope preview.
+#[derive(Clone, Copy, Debug)]
+struct EnvelopePreview {
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    release_max: f32,
+}
+
+/// Draws the ADSR shape of an envelope in the source preview.
+fn draw_adsr_preview(painter: &egui::Painter, inner: Rect, envelope: EnvelopePreview, zoom: f32) {
+    let inner = inner.shrink(2.0 * zoom);
+    let bottom = inner.bottom();
+    let top = inner.top();
+    let attack_width = 0.08 + 0.22 * envelope_time_position(envelope.attack, 4_000.0);
+    let decay_width = 0.10 + 0.25 * envelope_time_position(envelope.decay, 4_000.0);
+    let release_width =
+        0.08 + 0.25 * envelope_time_position(envelope.release, envelope.release_max);
+    let sustain_width = 0.22;
+    let total = attack_width + decay_width + sustain_width + release_width;
+    let x0 = inner.left();
+    let x1 = x0 + inner.width() * attack_width / total;
+    let x2 = x1 + inner.width() * decay_width / total;
+    let x3 = x2 + inner.width() * sustain_width / total;
+    let x4 = inner.right();
+    let sustain_y = bottom - (bottom - top) * envelope.sustain.clamp(0.0, 1.0);
+    painter.line_segment(
+        [
+            egui::pos2(inner.left(), bottom),
+            egui::pos2(inner.right(), bottom),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+    let points = vec![
+        egui::pos2(x0, bottom),
+        egui::pos2(x1, top),
+        egui::pos2(x2, sustain_y),
+        egui::pos2(x3, sustain_y),
+        egui::pos2(x4, bottom),
+    ];
+    painter.add(egui::Shape::line(
+        points,
+        Stroke::new((TARGET_PREVIEW_LINE_WIDTH * zoom).max(1.0), palette().trace),
+    ));
+}
+
+/// Draws a horizontal level bar for a macro or the mod wheel.
+fn draw_level_preview(painter: &egui::Painter, inner: Rect, value: f32, zoom: f32) {
+    let bar = Rect::from_center_size(inner.center(), egui::vec2(inner.width(), 10.0 * zoom));
+    painter.rect_filled(bar, CornerRadius::ZERO, palette().track);
+    painter.rect_stroke(
+        bar,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().line),
+        egui::StrokeKind::Inside,
+    );
+    let fill = Rect::from_min_max(
+        egui::pos2(bar.left() + zoom, bar.top() + zoom),
+        egui::pos2(
+            bar.left() + zoom + (bar.width() - 2.0 * zoom) * value.clamp(0.0, 1.0),
+            bar.bottom() - zoom,
+        ),
+    );
+    painter.rect_filled(fill, CornerRadius::ZERO, palette().accent);
+}
+
+/// Draws the neutral mark of a per-voice source. Such a source has no global
+/// value outside a note, so the preview does not pretend to show one.
+fn draw_per_voice_preview(painter: &egui::Painter, inner: Rect, zoom: f32) {
+    let mark = Rect::from_center_size(
+        inner.center() - egui::vec2(0.0, 5.0 * zoom),
+        egui::vec2(10.0, 10.0) * zoom,
+    );
+    painter.rect_stroke(
+        mark,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().muted),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        egui::pos2(inner.center().x, inner.bottom()),
+        Align2::CENTER_BOTTOM,
+        "PER VOICE",
+        FontId::new(font_size(8.0, zoom), bold()),
+        palette().muted,
+    );
 }
 
 /// The controls of one module of the FX rack. The module index follows the
@@ -2823,40 +3833,370 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
     }
 }
 
-/// The chain strip at the top of the FX rack: the order control, the live
-/// processing order and the global wet fader.
-fn fx_chain_strip(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
+/// Draws the small grip of the drag handle.
+fn fx_chain_grip(painter: &egui::Painter, tile: Rect, zoom: f32) {
+    let color = palette().muted;
+    let radius = 1.1 * zoom;
+    let x = tile.left() + 7.0 * zoom;
+    for row in -1..=1 {
+        for column in 0..2 {
+            painter.circle_filled(
+                egui::pos2(
+                    x + column as f32 * 3.0 * zoom,
+                    tile.center().y + row as f32 * 5.0 * zoom,
+                ),
+                radius,
+                color,
+            );
+        }
+    }
+}
+
+/// Draws one of the compact reorder arrows of a chain tile.
+fn fx_chain_arrow(
+    painter: &egui::Painter,
+    rect: Rect,
+    up: bool,
+    enabled: bool,
+    hovered: bool,
+    zoom: f32,
+) {
+    let fill = if !enabled {
+        palette().track
+    } else if hovered {
+        palette().button_active
+    } else {
+        palette().button_bg
+    };
+    flat_box(painter, rect, fill);
+
+    let center = rect.center();
+    let half_width = (rect.width() * 0.28).max(2.0 * zoom);
+    let half_height = (rect.height() * 0.22).max(2.0 * zoom);
+    let tip = if up {
+        center.y - half_height
+    } else {
+        center.y + half_height
+    };
+    let base = if up {
+        center.y + half_height
+    } else {
+        center.y - half_height
+    };
+    let color = if enabled {
+        palette().text
+    } else {
+        palette().muted
+    };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(center.x, tip),
+            egui::pos2(center.x - half_width, base),
+            egui::pos2(center.x + half_width, base),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// Draws the small power/bypass icon of a chain tile.
+fn fx_chain_power_icon(
+    painter: &egui::Painter,
+    rect: Rect,
+    bypassed: bool,
+    hovered: bool,
+    zoom: f32,
+) {
+    if hovered {
+        painter.rect_filled(rect, CornerRadius::ZERO, palette().button_active);
+    }
+    let center = rect.center();
+    let radius = rect.width() * 0.27;
+    let color = if bypassed {
+        palette().muted
+    } else if hovered {
+        palette().accent
+    } else {
+        palette().title_blue
+    };
+    let stroke = Stroke::new((1.4 * zoom).round().max(1.0), color);
+    painter.circle_stroke(center, radius, stroke);
+    painter.line_segment(
+        [
+            egui::pos2(center.x, center.y - radius - 1.5 * zoom),
+            egui::pos2(center.x, center.y + 1.0 * zoom),
+        ],
+        stroke,
+    );
+    if bypassed {
+        // The diagonal slash makes the bypass state readable even when the
+        // warm palette is flattened by a screenshot.
+        painter.line_segment(
+            [
+                egui::pos2(center.x - radius * 0.75, center.y + radius * 0.75),
+                egui::pos2(center.x + radius * 0.75, center.y - radius * 0.75),
+            ],
+            Stroke::new((1.0 * zoom).round().max(1.0), palette().accent),
+        );
+    }
+}
+
+/// Draws one movable chain tile and handles its power button, its two reorder
+/// arrows and the start of a drag.
+fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxStage, tile: Rect) {
+    let zoom = ctx.zoom;
+    let parts = fx_chain_tile_parts(tile, zoom);
+    let p = ctx.params;
+    let bypassed = p.fx_bypass_mask.value() & (stage.bit() as i32) != 0;
+    let dragging = ctx
+        .state
+        .fx_chain_drag
+        .is_some_and(|drag| drag.source == position);
+
+    let drag_id = ui.scope_id().with(("sushi-fx-chain-drag", stage.index()));
+    let power_id = ui.scope_id().with(("sushi-fx-chain-power", stage.index()));
+    let up_id = ui.scope_id().with(("sushi-fx-chain-up", stage.index()));
+    let down_id = ui.scope_id().with(("sushi-fx-chain-down", stage.index()));
+    let drag_response = ui.interact(parts.drag, drag_id, Sense::click_and_drag());
+    let power_response = ui.interact(parts.power, power_id, Sense::click());
+    let up_response = ui.interact(parts.up, up_id, Sense::click());
+    let down_response = ui.interact(parts.down, down_id, Sense::click());
+
+    #[cfg(test)]
+    {
+        ctx.state.fx_chain_tile_rects[stage.index()] = Some(tile);
+        ctx.state.fx_chain_drag_rects[stage.index()] = Some(parts.drag);
+        ctx.state.fx_chain_up_rects[stage.index()] = Some(parts.up);
+        ctx.state.fx_chain_down_rects[stage.index()] = Some(parts.down);
+        ctx.state.fx_chain_power_rects[stage.index()] = Some(parts.power);
+        ctx.state.check_rects.push(parts.power);
+        ctx.state.check_ids.push(FX_BYPASS_IDS[stage.index()]);
+        ctx.state.count(Widget::Check);
+    }
+
+    let painter = ui.painter_at(tile);
+    let hovered = drag_response.hovered()
+        || power_response.hovered()
+        || up_response.hovered()
+        || down_response.hovered();
+    let fill = if dragging || (hovered && !bypassed) {
+        palette().button_active
+    } else if bypassed {
+        palette().button_bg
+    } else {
+        palette().field_bg
+    };
+    painter.rect_filled(tile, CornerRadius::ZERO, fill);
+    painter.rect_stroke(
+        tile,
+        CornerRadius::ZERO,
+        Stroke::new(
+            if dragging { 2.0 } else { 1.0 },
+            if dragging {
+                palette().accent
+            } else if bypassed {
+                palette().rule
+            } else {
+                palette().line
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+
+    fx_chain_grip(&painter, tile, zoom);
+
+    let number_color = if bypassed {
+        palette().muted
+    } else {
+        palette().title_blue
+    };
+    let text_color = if bypassed {
+        palette().muted
+    } else {
+        palette().text
+    };
+    painter.text(
+        parts.number.center(),
+        Align2::CENTER_CENTER,
+        format!("{}", position + 1),
+        FontId::new(font_size(13.0, zoom), bold()),
+        number_color,
+    );
+    let name_font = FontId::new(font_size(11.0, zoom), bold());
+    let name = fit_text(
+        &painter,
+        fx_stage_name(stage),
+        parts.name.width(),
+        &name_font,
+    );
+    painter.text(
+        egui::pos2(parts.name.left(), parts.name.center().y),
+        Align2::LEFT_CENTER,
+        name,
+        name_font,
+        text_color,
+    );
+
+    fx_chain_arrow(
+        &painter,
+        parts.up,
+        true,
+        position > 0,
+        up_response.hovered(),
+        zoom,
+    );
+    fx_chain_arrow(
+        &painter,
+        parts.down,
+        false,
+        position + 1 < FX_STAGES.len(),
+        down_response.hovered(),
+        zoom,
+    );
+    fx_chain_power_icon(
+        &painter,
+        parts.power,
+        bypassed,
+        power_response.hovered(),
+        zoom,
+    );
+
+    if drag_response.hovered() {
+        ctx.state.readout = Some((
+            "FX CHAIN".to_string(),
+            format!("{} / {}", position + 1, fx_stage_name(stage)),
+        ));
+    }
+    if power_response.hovered() {
+        ctx.state.readout = Some((
+            fx_stage_name(stage).to_string(),
+            if bypassed { "BYPASSED" } else { "ACTIVE" }.to_string(),
+        ));
+    }
+    let power_double_clicked = power_response.double_clicked();
+    let power_clicked = power_response.clicked();
+    let up_clicked = up_response.clicked();
+    let down_clicked = down_response.clicked();
+    let drag_started = drag_response.drag_started();
+
+    drag_response.on_hover_text("Drag to reorder\nUse the arrows for one step");
+    power_response.on_hover_text(if bypassed {
+        "Bypassed - click to enable"
+    } else {
+        "Active - click to bypass"
+    });
+    up_response.on_hover_text("Move this effect up the chain");
+    down_response.on_hover_text("Move this effect down the chain");
+
+    if power_double_clicked {
+        // The first click of the double click already toggled the bit. Merge
+        // that step into the reset, so one undo returns to the state before
+        // the whole double click.
+        ctx.mark_edit();
+        ctx.undo.merge_double_click(ctx.params, ctx.state);
+        ctx.fx_set_bypass(stage, false);
+    } else if power_clicked {
+        ctx.fx_toggle_bypass(stage);
+    }
+    if up_clicked && position > 0 {
+        ctx.fx_move_stage(position, position - 1);
+    }
+    if down_clicked && position + 1 < FX_STAGES.len() {
+        ctx.fx_move_stage(position, position + 1);
+    }
+    if drag_started {
+        ctx.state.fx_chain_drag = Some(FxChainDrag { source: position });
+    }
+}
+
+/// Draws the live drop indicator of a chain drag and applies the reorder when
+/// the pointer is released. The source tile is only moved once, so a whole
+/// drag is one undo step.
+fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect; 6]) {
+    let Some(drag) = ctx.state.fx_chain_drag else {
+        return;
+    };
+    let zoom = ctx.zoom;
+    let (pointer, released, down) = ui.input(|input| {
+        (
+            input
+                .pointer
+                .interact_pos()
+                .or_else(|| input.pointer.latest_pos()),
+            input.pointer.primary_released(),
+            input.pointer.primary_down(),
+        )
+    });
+
+    if let Some(pointer) = pointer {
+        let slot = fx_chain_drop_slot(pointer.y, tiles);
+        let gap = FX_CHAIN_TILE_GAP * zoom * 0.5;
+        let y = if slot == 0 {
+            tiles[0].top() - gap
+        } else if slot >= tiles.len() {
+            tiles[tiles.len() - 1].bottom() + gap
+        } else {
+            tiles[slot].top() - gap
+        };
+        ui.painter().line_segment(
+            [
+                egui::pos2(tiles[0].left(), y),
+                egui::pos2(tiles[0].right(), y),
+            ],
+            Stroke::new(2.0, palette().accent),
+        );
+    }
+
+    if released {
+        ctx.state.fx_chain_drag = None;
+        if let Some(pointer) = pointer {
+            let slot = fx_chain_drop_slot(pointer.y, tiles);
+            let target = fx_chain_drop_position(drag.source, slot);
+            if target != drag.source {
+                ctx.fx_move_stage(drag.source, target);
+            }
+        }
+    } else if !down {
+        // Cancelling outside the window must not leave a dangling drag.
+        ctx.state.fx_chain_drag = None;
+    }
+}
+
+/// Draws the left chain column: the title, the six movable tiles, the compact
+/// global wet fader and the chain preset popup.
+fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     let p = ctx.params;
-    let pad = (GROUP_PADDING + 2.0) * zoom;
-    let row_height = FX_CHAIN_ROW_HEIGHT * zoom;
-    let top = rect.top() + 3.0 * zoom;
-    let center = top + row_height * 0.5;
+    let stages = stage_order(p.fx_order.value());
+    let title = fx_chain_title_rect(rack, zoom);
+    let painter = ui.painter_at(rack);
 
-    let painter = ui.painter_at(rect);
-    let title_font = FontId::new(font_size(13.0, zoom), bold());
-    let title = painter.layout_no_wrap("FX RACK".to_string(), title_font, palette().title_blue);
-    painter.galley(
-        egui::pos2(rect.left() + pad, center - title.size().y * 0.5),
-        title.clone(),
+    painter.text(
+        title.left_center(),
+        Align2::LEFT_CENTER,
+        "CHAIN",
+        FontId::new(font_size(13.0, zoom), bold()),
         palette().title_blue,
     );
 
-    // The order button sits after the title and cycles the rotation. It is a
-    // plain click target, so no drag is needed to change the chain.
-    let order_left =
-        (rect.left() + pad + title.size().x + 10.0 * zoom).max(rect.left() + FX_ORDER_LEFT * zoom);
-    let order_rect = Rect::from_min_size(
-        egui::pos2(order_left, top),
-        egui::vec2(FX_ORDER_WIDTH * zoom, row_height),
+    // A quiet vertical rule separates the chain column from the module grid.
+    let rule_x = rack.left() + (FX_CHAIN_COLUMN_WIDTH + FX_CHAIN_COLUMN_GAP * 0.5) * zoom;
+    painter.line_segment(
+        [
+            egui::pos2(rule_x, rack.top()),
+            egui::pos2(rule_x, rack.bottom()),
+        ],
+        Stroke::new(1.0, palette().rule),
     );
-    ctx.fx_order_control(ui, order_rect, "fx_order", &p.fx_order);
 
-    // The global wet fader on the right of the same row.
-    let wet_rect = Rect::from_min_size(
-        egui::pos2(rect.right() - pad - FX_GLOBAL_WET_WIDTH * zoom, top),
-        egui::vec2(FX_GLOBAL_WET_WIDTH * zoom, row_height),
-    );
+    let mut tiles = [Rect::ZERO; 6];
+    for (position, stage) in stages.iter().enumerate() {
+        let tile = fx_chain_tile_rect(rack, position, zoom);
+        tiles[position] = tile;
+        fx_chain_tile(ui, ctx, position, *stage, tile);
+    }
+
+    let wet_rect = fx_chain_wet_rect(rack, zoom);
     ctx.h_fader(
         ui,
         wet_rect,
@@ -2866,88 +4206,50 @@ fn fx_chain_strip(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         &Knob::percent(),
     );
 
-    // The second row lists the actual processing order of the current
-    // rotation. The caption is rebuilt every frame, so it follows the order
-    // control immediately.
-    let chain_center = top + row_height + FX_CHAIN_ROW_GAP * zoom + row_height * 0.5;
-    let chain_label = painter.layout_no_wrap(
-        "CHAIN".to_string(),
-        FontId::new(font_size(9.0, zoom), bold()),
-        palette().muted,
-    );
-    painter.galley(
-        egui::pos2(rect.left() + pad, chain_center - chain_label.size().y * 0.5),
-        chain_label.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(
-            rect.left() + pad + chain_label.size().x + 8.0 * zoom,
-            chain_center,
-        ),
+    let (label_rect, popup_rect) = fx_chain_preset_rects(rack, zoom);
+    #[cfg(test)]
+    {
+        ctx.state.fx_chain_preset_label_rect = Some(label_rect);
+        ctx.state.fx_chain_preset_rect = Some(popup_rect);
+    }
+    ui.painter_at(label_rect).text(
+        label_rect.left_center(),
         Align2::LEFT_CENTER,
-        fx_chain_order(p.fx_order.value()),
+        "CHAIN PRESET",
         FontId::new(font_size(9.0, zoom), bold()),
         palette().muted,
     );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt("sushi-fx-chain-preset")
+            .max_rect(popup_rect)
+            .layout(EguiLayout::left_to_right(Align::Center)),
+        |ui| ctx.fx_chain_preset_popup(ui, popup_rect.width()),
+    );
+
+    fx_chain_drag_feedback(ui, ctx, &tiles);
 }
 
-/// The FX page: a two-row rack of the six effect modules.
+/// The FX page: a movable chain column on the left and a compact 2 x 3 grid of
+/// the six effect modules on the right.
 ///
-/// The rack uses the whole area between the header and the footer. A slim
-/// chain strip on top holds the order control, the live chain caption and the
-/// global wet fader. Each of the two bands below it holds three modules, and
-/// every module spreads its faders over the full width of its card.
+/// The order of the signal path lives entirely in the left column: the tiles
+/// are dragged or stepped with their arrows, and the preset popup selects a
+/// complete permutation at once. The module cards on the right keep the
+/// original parameter controls and never move, so a reordered chain does not
+/// make the knobs jump around.
 fn row_fx(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
-    let top = layout.scale(layout.base_rows[0]).left_top();
-    let bottom = layout.scale(layout.base_rows[3]).right_bottom();
-    let rack = Rect::from_min_max(top, bottom);
+    let rack = fx_rack_rect(layout);
+    fx_chain_column(ui, rack, ctx);
 
-    let header_bottom = rack.top() + FX_RACK_HEADER_HEIGHT * zoom;
-    let header_rect = Rect::from_min_max(rack.min, egui::pos2(rack.right(), header_bottom));
-    fx_chain_strip(ui, header_rect, ctx);
-
-    ui.painter_at(rack).line_segment(
-        [
-            egui::pos2(rack.left(), header_bottom),
-            egui::pos2(rack.right(), header_bottom),
-        ],
-        Stroke::new(1.0, palette().rule),
-    );
-
-    // Two rows of three equal cards, with the same gap as the rows of the
-    // normal grid.
-    let body_top = header_bottom + GROUP_GAP * 0.5 * zoom;
-    let row_gap = GROUP_GAP * zoom;
-    let column_gap = GROUP_GAP * zoom;
-    let row_height = (rack.bottom() - body_top - row_gap) * 0.5;
-    let column_width = (rack.width() - 2.0 * column_gap) / 3.0;
-
-    for (row, titles) in FX_RACK_TITLES.iter().enumerate() {
-        for (column, title) in titles.iter().enumerate() {
-            let rect = Rect::from_min_size(
-                egui::pos2(
-                    rack.left() + column as f32 * (column_width + column_gap),
-                    body_top + row as f32 * (row_height + row_gap),
-                ),
-                egui::vec2(column_width, row_height),
-            );
-            let module = row * 3 + column;
-            group(ui, rect, title, zoom, |ui, part| match part {
-                Part::Header => {
-                    let p = ctx.params;
-                    ctx.int_bit_check(
-                        ui,
-                        FX_BYPASS_IDS[module],
-                        &p.fx_bypass_mask,
-                        module as u32,
-                        "BYPASS",
-                    );
-                }
-                Part::Body => fx_module_controls(ui, ctx, module),
-            });
-        }
+    for (module, rect) in fx_module_rects(rack, zoom).iter().enumerate() {
+        let title = FX_MODULE_TITLES[module / 2][module % 2];
+        group(ui, *rect, title, zoom, |ui, part| {
+            if let Part::Body = part {
+                fx_module_controls(ui, ctx, module);
+            }
+        });
     }
 }
 
@@ -3143,6 +4445,21 @@ impl<'a, 'b> Ctx<'a, 'b> {
         param: &FloatParam,
         knob: &Knob,
     ) {
+        self.float_reserved(ui, id, label, param, knob, 0.0);
+    }
+
+    /// Draws a continuous parameter with room kept free below its slider.
+    /// The macros and the VCA reserve the height of their live decoration, so
+    /// the fader can never run into the strip or the meter.
+    fn float_reserved(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+        param: &FloatParam,
+        knob: &Knob,
+        reserve: f32,
+    ) {
         #[cfg(test)]
         self.state.count(Widget::Slider);
         #[cfg(test)]
@@ -3155,7 +4472,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         // The slider takes the height that is left in its column above the
         // numeric field, so that a section never overflows its rectangle and
         // the field always sits at the bottom of the column.
-        let height = slider_height(ui, zoom);
+        let height = (slider_height(ui, zoom) - reserve).max(MIN_SLIDER_HEIGHT * zoom);
         let knob = &Knob {
             width: knob.width.max(self.slider_width),
             ..*knob
@@ -3253,56 +4570,94 @@ impl<'a, 'b> Ctx<'a, 'b> {
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
 
-    /// Draws the compact order control of the FX chain strip. Every click
-    /// rotates the chain by one stage, and the last step wraps back to the
-    /// original order.
-    fn fx_order_control(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: Rect,
-        id: &'static str,
-        param: &IntParam,
-    ) {
-        let zoom = self.zoom;
+    /// Sets one bypass bit of the chain without touching the others.
+    fn fx_set_bypass(&mut self, stage: FxStage, bypassed: bool) {
+        let param = &self.params.fx_bypass_mask;
+        let mask = param.value();
+        let bit = stage.bit() as i32;
+        let next = if bypassed { mask | bit } else { mask & !bit };
+        if next == mask {
+            return;
+        }
+        self.mark_edit();
+        self.setter.set_parameter(param, next);
+        self.state.dirty = true;
+        self.commit_edit();
+    }
+
+    /// Toggles the bypass bit of one chain stage.
+    fn fx_toggle_bypass(&mut self, stage: FxStage) {
+        let bypassed = self.params.fx_bypass_mask.value() & (stage.bit() as i32) != 0;
+        self.fx_set_bypass(stage, !bypassed);
+    }
+
+    /// Applies one of the 720 permutation indices of the chain.
+    fn fx_apply_chain_index(&mut self, index: i32) {
+        if index == self.params.fx_order.value() {
+            return;
+        }
+        self.mark_edit();
+        self.setter.set_parameter(&self.params.fx_order, index);
+        self.state.dirty = true;
+        self.commit_edit();
+    }
+
+    /// Applies a complete chain order. The permutation index is derived from
+    /// the stage array with `stage_order_index`, so a drag or a preset can
+    /// never write a value that does not describe the shown order.
+    fn fx_apply_chain_order(&mut self, stages: [FxStage; 6]) {
+        self.fx_apply_chain_index(stage_order_index(stages));
+    }
+
+    /// Moves one stage of the chain to another position and writes the full
+    /// permutation back.
+    fn fx_move_stage(&mut self, from: usize, to: usize) {
+        if from == to || from >= FX_STAGES.len() || to >= FX_STAGES.len() {
+            return;
+        }
+        let mut stages = stage_order(self.params.fx_order.value());
+        if from < to {
+            stages[from..=to].rotate_left(1);
+        } else {
+            stages[to..=from].rotate_right(1);
+        }
+        self.fx_apply_chain_order(stages);
+    }
+
+    /// Draws the chain preset popup. Every named preset sets the complete
+    /// permutation; an order that does not match one of them shows `CUSTOM`
+    /// and can still be restored with the tiles.
+    fn fx_chain_preset_popup(&mut self, ui: &mut egui::Ui, width: f32) {
         #[cfg(test)]
         {
-            self.state.fx_order_rect = Some(rect);
+            self.state.count(Widget::Popup);
+            self.state.popup_ids.push("fx_chain_preset");
         }
 
-        let response = ui.interact(
-            rect,
-            ui.scope_id().with(("sushi-fx-order", id)),
-            Sense::click(),
-        );
-        let painter = ui.painter_at(rect);
-        let fill = if response.hovered() || response.is_pointer_button_down_on() {
-            palette().button_active
-        } else {
-            palette().button_bg
-        };
-        flat_box(&painter, rect, fill);
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            format!("ORDER {}", param.value()),
-            FontId::new(font_size(9.0, zoom), bold()),
-            palette().text,
-        );
+        let current = fx_chain_preset_name(self.params.fx_order.value());
+        let named = fx_chain_preset_at(self.params.fx_order.value());
+        let response = egui::ComboBox::from_id_salt("sushi-fx-chain-preset")
+            .width((width / self.zoom).max(20.0))
+            .selected_text(current)
+            .truncate()
+            .show_ui(ui, |ui| {
+                for preset in FxChainPreset::ALL {
+                    if ui
+                        .selectable_label(named == Some(preset), preset.name())
+                        .clicked()
+                    {
+                        self.fx_apply_chain_index(preset.order());
+                    }
+                }
+            })
+            .response;
+
+        #[cfg(test)]
+        self.state.popup_rects.push(response.rect);
 
         if response.hovered() {
-            self.state.readout = Some((
-                "FX ORDER".to_string(),
-                format!("{} of {}", param.value(), FX_STAGES.len() - 1),
-            ));
+            self.state.readout = Some(("CHAIN PRESET".to_string(), current.to_string()));
         }
-
-        if response.clicked() {
-            self.mark_edit();
-            self.setter
-                .set_parameter(param, next_fx_order(param.value()));
-            self.state.dirty = true;
-        }
-        self.commit_edit();
     }
 
     /// Draws a compact horizontal fader in a given rectangle. The caption sits
@@ -3384,65 +4739,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
             ));
         }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
-    }
-
-    /// Draws a check box for one bit of an integer parameter. A click toggles
-    /// only that bit and leaves every other bit untouched. A double click
-    /// clears the bit again, which is its factory default.
-    fn int_bit_check(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: &'static str,
-        param: &IntParam,
-        bit: u32,
-        label: &str,
-    ) {
-        #[cfg(test)]
-        self.state.count(Widget::Check);
-        #[cfg(test)]
-        self.state.check_ids.push(id);
-
-        let zoom = self.zoom;
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(CHECK_SIZE, CHECK_SIZE) * zoom, Sense::hover());
-        #[cfg(test)]
-        self.state.check_rects.push(rect);
-        let response = ui.interact(
-            rect,
-            ui.scope_id().with(("sushi-bit-check", id)),
-            Sense::click(),
-        );
-        let painter = ui.painter_at(rect);
-        let set = param.value() & (1 << bit) != 0;
-        draw_check_box(&painter, rect, set, zoom);
-
-        if response.hovered() {
-            self.state.readout = Some((
-                label.to_ascii_uppercase(),
-                if set { "ON" } else { "OFF" }.to_string(),
-            ));
-        }
-
-        if response.double_clicked() {
-            self.mark_edit();
-            self.undo.merge_double_click(self.params, self.state);
-            let mask = param.value() & !(1 << bit);
-            self.setter.set_parameter(param, mask);
-            self.state.dirty = true;
-        } else if response.clicked() {
-            self.mark_edit();
-            let mask = param.value();
-            let next = if set {
-                mask & !(1 << bit)
-            } else {
-                mask | (1 << bit)
-            };
-            self.setter.set_parameter(param, next);
-            self.state.dirty = true;
-        }
-        self.commit_edit();
-
-        text_label(ui, label, 9.0, zoom, palette().text);
     }
 
     /// Draws the horizontal bipolar amount of one route of the modulation
@@ -4460,6 +5756,29 @@ fn group_row(
 ) {
     for index in 0..Layout::group_count(row) {
         let box_rect = layout.group(row, index);
+
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("sushi-group", name, index))
+                .max_rect(box_rect)
+                .layout(EguiLayout::top_down(Align::Min)),
+            |ui| add(index, box_rect, ui),
+        );
+    }
+}
+
+/// Lays out the modules of the modulation page with its own proportions.
+/// Row 2 has the three modules `LFO 1 | LFO 2 | MACROS`, and row 3 is the
+/// single full-width `TARGET` band.
+fn mod_group_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    layout: &Layout,
+    row: usize,
+    mut add: impl FnMut(usize, Rect, &mut egui::Ui),
+) {
+    for index in 0..Layout::mod_group_count(row) {
+        let box_rect = layout.mod_group(row, index);
 
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -6448,7 +7767,7 @@ mod tests {
             (0, &params.lfo1_phase, &params.lfo1_curve, "LFO 1"),
             (1, &params.lfo2_phase, &params.lfo2_curve, "LFO 2"),
         ] {
-            let section = layout.group(2, section_index);
+            let section = layout.mod_group(2, section_index);
             let mut bank: Vec<egui::Rect> = sliders
                 .iter()
                 .filter(|rect| section.contains_rect(**rect))
@@ -6679,8 +7998,9 @@ mod tests {
             names.iter().any(|text| text == "TARGET"),
             "the modulation page has no target inspector: {names:?}"
         );
-        // The division only appears once sync is on.
-        assert!(!names.iter().any(|text| text == "1/4"));
+        // The division is always visible, so the clock is readable even
+        // before sync is switched on.
+        assert!(names.iter().any(|text| text == "1/4"));
 
         // The first LFO sync switch is the first check box of the modulation
         // page, because its table has no check boxes.
@@ -6696,8 +8016,8 @@ mod tests {
         );
         assert_eq!(
             editor.state.popup_rects.len(),
-            19,
-            "the LFO 1 division popup is missing"
+            20,
+            "a division popup is missing"
         );
 
         // The retrigger switch sits beside the rate fader.
@@ -7763,7 +9083,7 @@ mod tests {
             "the matrix needs eight bars, ten envelope faders, six LFO faders \
 and the three macros; the VCA is main-page only"
         );
-        assert_eq!(counts.popups, 18, "unexpected number of matrix popups");
+        assert_eq!(counts.popups, 20, "unexpected number of matrix popups");
         assert_eq!(
             editor.state.popup_rects.len(),
             counts.popups,
@@ -7917,22 +9237,21 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_mod_page_keeps_the_shared_band_and_swaps_the_lfo_band() {
+    fn the_mod_page_puts_three_modules_in_one_row_and_a_full_target_band() {
         let (ctx, mut editor, _params) = make_editor();
         let normal = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let normal_texts = texts(&normal);
         let normal_names: Vec<String> = normal_texts.iter().map(|(text, _)| text.clone()).collect();
 
-        // The normal page owns ARP, VOICE and the VCA. The modulation page
-        // owns the two LFO editors and the target inspector, and keeps the
-        // macros on the right of its lower band.
-        for title in ["ARP", "VOICE"] {
+        // The main page keeps its two pairs: ARP / VOICE above and
+        // MACROS / VCA below. The modulation page has no main-page controls.
+        for title in ["ARP", "VOICE", "MACROS", "VCA"] {
             assert!(
                 normal_names.iter().any(|text| text == title),
                 "the normal page has no {title}"
             );
         }
-        for title in ["LFO 1", "LFO 2"] {
+        for title in ["LFO 1", "LFO 2", "TARGET"] {
             assert!(
                 !normal_names.iter().any(|text| text == title),
                 "the normal page still has {title}"
@@ -7943,55 +9262,83 @@ and the three macros; the VCA is main-page only"
         let matrix = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let matrix_texts = texts(&matrix);
         let matrix_names: Vec<String> = matrix_texts.iter().map(|(text, _)| text.clone()).collect();
-        for title in ["LFO 1", "LFO 2"] {
+        for title in ["LFO 1", "LFO 2", "MACROS", "TARGET"] {
             assert!(
                 matrix_names.iter().any(|text| text == title),
                 "the modulation page has no {title}"
             );
         }
-        for title in ["ARP", "VOICE"] {
+        for title in ["ARP", "VOICE", "VCA"] {
             assert!(
                 !matrix_names.iter().any(|text| text == title),
                 "the modulation page still has {title}"
             );
         }
 
-        // The modulation page owns the target inspector and the LFO editors.
-        // The VCA stays on the normal page; the macros remain on the right of
-        // the inspector so a routed macro can still be moved here.
-        for title in ["TARGET", "MACROS"] {
+        // Row C has three modules in one row, not two wide columns.
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let modules = ["LFO 1", "LFO 2", "MACROS"];
+        let mut positions = Vec::new();
+        for (index, title) in modules.into_iter().enumerate() {
+            let (_, pos) = matrix_texts
+                .iter()
+                .find(|(text, _)| text == title)
+                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
+            positions.push(*pos);
+            let group = layout.mod_group(2, index);
             assert!(
-                matrix_names.iter().any(|text| text == title),
-                "the modulation page has no {title}"
+                group.contains(*pos),
+                "{title} is outside its module: {pos:?} / {group:?}"
             );
         }
         assert!(
-            !matrix_names.iter().any(|text| text == "VCA"),
-            "the modulation page still has the main-page VCA"
+            (positions[0].y - positions[1].y).abs() < 1.0
+                && (positions[1].y - positions[2].y).abs() < 1.0,
+            "the three modules are not in one row: {positions:?}"
         );
-
-        // The macro bank keeps the right-hand place of the lower band. Only
-        // its partner changes from the VCA to the target inspector.
-        let (_, normal_macros) = normal_texts
-            .iter()
-            .find(|(text, _)| text == "MACROS")
-            .expect("the normal page has no MACROS");
-        let (_, matrix_macros) = matrix_texts
-            .iter()
-            .find(|(text, _)| text == "MACROS")
-            .expect("the modulation page has no MACROS");
-        assert!((normal_macros.y - matrix_macros.y).abs() < 1.0);
         assert!(
-            matrix_macros.x > 480.0,
-            "the macros did not stay on the right: {matrix_macros:?}"
+            positions[0].x < positions[1].x && positions[1].x < positions[2].x,
+            "the three modules are not three columns: {positions:?}"
         );
+        assert_eq!(
+            Layout::mod_group_count(2),
+            3,
+            "row C does not have three columns"
+        );
+        for index in 0..3 {
+            let group = layout.mod_group(2, index);
+            assert!(
+                (group.height() - ROW_HEIGHTS[2]).abs() < 1.0,
+                "a module of row C has the wrong height: {group:?}"
+            );
+        }
+
+        // Row D is one full-width target inspector.
+        assert_eq!(
+            Layout::mod_group_count(3),
+            1,
+            "row D has more than one target column"
+        );
+        let target_group = layout.mod_group(3, 0);
         let (_, target) = matrix_texts
             .iter()
             .find(|(text, _)| text == "TARGET")
             .expect("the modulation page has no TARGET");
         assert!(
-            target.x < 20.0 && (target.y - matrix_macros.y).abs() < 1.0,
-            "the target inspector does not share the lower-left band: {target:?}"
+            target_group.contains(*target),
+            "the target title is outside its band: {target:?} / {target_group:?}"
+        );
+        assert!(
+            (target_group.width() - (WINDOW_WIDTH - 2.0 * MARGIN)).abs() < 1.0,
+            "the target inspector does not fill the row: {target_group:?}"
+        );
+        assert!(
+            target.y > positions[0].y,
+            "the target inspector is not below the modules: {target:?}"
         );
     }
 
@@ -8308,8 +9655,8 @@ and the three macros; the VCA is main-page only"
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
             let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
                 .expect("the window is big enough");
-            let target = layout.group(3, 0);
-            let macros = layout.group(3, 1);
+            let target = layout.mod_group(3, 0);
+            let macros = layout.mod_group(2, 2);
 
             let target_texts: Vec<(String, Rect)> = text_shapes(&output)
                 .into_iter()
@@ -8327,10 +9674,6 @@ and the three macros; the VCA is main-page only"
                     target.contains_rect(*first_rect),
                     "the inspector text {first:?} leaves its section at {percent}%: \
 {first_rect:?} / {target:?}"
-                );
-                assert!(
-                    first_rect.right() <= macros.left() + 1.0,
-                    "the inspector text {first:?} runs into the macros at {percent}%"
                 );
             }
             for (index, (first, first_rect)) in target_texts.iter().enumerate() {
@@ -8351,6 +9694,244 @@ and the three macros; the VCA is main-page only"
                 .count();
             assert_eq!(macro_faders, 3, "the macros lost a fader at {percent}%");
         }
+    }
+
+    #[test]
+    fn the_macros_show_live_strips_with_their_target_hints() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.mod_feedback.store(ModFeedbackValues {
+            macro1: 0.25,
+            macro2: 0.5,
+            macro3: 0.75,
+            ..Default::default()
+        });
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let macros = layout.group(3, 0);
+        let zoom = layout.zoom;
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for hint in MACRO_TARGET_HINTS {
+            assert!(
+                names.iter().any(|text| text == hint),
+                "the macros have no {hint:?} hint: {names:?}"
+            );
+        }
+
+        // Every macro has a live bar and a live marker in its own column.
+        let sliders: Vec<Rect> = slider_rects(&ctx, &output)
+            .into_iter()
+            .filter(|rect| macros.contains_rect(*rect))
+            .collect();
+        assert_eq!(sliders.len(), 3, "the macros lost a fader");
+        for (index, expected) in [0.25f32, 0.5, 0.75].into_iter().enumerate() {
+            let bar = editor.state.macro_live_rects[index].expect("a macro has no live strip");
+            let marker =
+                editor.state.macro_live_marker_rects[index].expect("a macro has no live marker");
+            assert!(
+                macros.contains_rect(bar),
+                "a macro live strip left its section: {bar:?} / {macros:?}"
+            );
+            assert!(
+                bar.contains_rect(marker),
+                "a macro live marker left its strip: {marker:?} / {bar:?}"
+            );
+            let inner = bar.shrink(zoom);
+            let expected_x = inner.left() + inner.width() * expected;
+            assert!(
+                (marker.center().x - expected_x).abs() < 1.0,
+                "the live marker of macro {} is at {:?} instead of {expected_x}",
+                index + 1,
+                marker.center()
+            );
+            assert!(
+                sliders[index].bottom() <= bar.top() + 1.0,
+                "the fader of macro {} runs into its live strip: {:?} / {bar:?}",
+                index + 1,
+                sliders[index]
+            );
+        }
+    }
+
+    #[test]
+    fn the_vca_shows_an_output_activity_meter() {
+        let (ctx, mut editor, _params) = make_editor();
+        editor.state.activity = 1.0;
+        editor.voice_count.store(3, Ordering::Relaxed);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let vca = layout.group(3, 1);
+        let meter = editor
+            .state
+            .vca_meter_rect
+            .expect("the VCA has no output meter");
+        assert!(
+            vca.contains_rect(meter),
+            "the output meter left the VCA: {meter:?} / {vca:?}"
+        );
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.iter().any(|text| text == "OUT"));
+        assert!(
+            names.iter().any(|text| text == "VOICE 03"),
+            "the output meter has no voice count: {names:?}"
+        );
+
+        // A loud frame lights a run of segments and leaves the rest dark.
+        let fills = rect_fills(&output);
+        let lit = fills
+            .iter()
+            .filter(|(rect, fill)| *fill == palette().led_on && meter.contains_rect(*rect))
+            .count();
+        let dark = fills
+            .iter()
+            .filter(|(rect, fill)| *fill == palette().led_off && meter.contains_rect(*rect))
+            .count();
+        assert!(lit > 0, "the output meter never lights up: {fills:?}");
+        assert!(dark > 0, "the output meter is completely full");
+
+        // The faders stop above the meter, so the label stays readable.
+        for slider in slider_rects(&ctx, &output)
+            .into_iter()
+            .filter(|rect| vca.contains_rect(*rect))
+        {
+            assert!(
+                slider.bottom() <= meter.top() + 1.0,
+                "a VCA fader runs into the output meter: {slider:?} / {meter:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_target_inspector_draws_a_range_bar_and_source_previews() {
+        let (ctx, mut editor, params) = make_editor();
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
+        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
+        setter.set_parameter(&params.mod1_amount, 0.62);
+        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
+        setter.set_parameter(&params.mod2_amount, 0.5);
+        setter.set_parameter(&params.mod3_source, ModSource::Macro1);
+        setter.set_parameter(&params.mod3_dest, ModDest::Resonance);
+        setter.set_parameter(&params.mod3_amount, 0.75);
+        setter.set_parameter(&params.mod4_source, ModSource::Velocity);
+        setter.set_parameter(&params.mod4_dest, ModDest::Pitch);
+        setter.set_parameter(&params.mod4_amount, 0.5);
+        editor.state.page = Page::Mod;
+        editor.mod_feedback.store(ModFeedbackValues {
+            lfo1: 0.8,
+            macro1: 0.4,
+            ..Default::default()
+        });
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let target = layout.mod_group(3, 0);
+
+        // An LFO route: the range bar has a current marker and a separate
+        // live dot, and the preview contains a waveform path.
+        editor.state.mod_selected = 0;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for expected in ["POSITION", "LIVE", "SOURCE", "LFO 1 > Cutoff"] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the inspector has no {expected:?}: {names:?}"
+            );
+        }
+        let bar = editor
+            .state
+            .target_bar_rect
+            .expect("the inspector has no range bar");
+        let preview = editor
+            .state
+            .target_preview_rect
+            .expect("the inspector has no source preview");
+        let current = editor
+            .state
+            .target_current_marker_rect
+            .expect("the range bar has no current marker");
+        let dot = editor
+            .state
+            .target_live_dot_rect
+            .expect("a live LFO route has no live dot");
+        assert!(
+            target.contains_rect(bar),
+            "the range bar left the target band"
+        );
+        assert!(
+            target.contains_rect(preview),
+            "the source preview left the target band"
+        );
+        assert!(bar.contains_rect(current));
+        assert!(bar.contains_rect(dot));
+        assert!(
+            (dot.center().x - current.center().x).abs() > 2.0,
+            "the live dot sits on the current marker"
+        );
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::epaint::Shape::Path(_))
+                    && preview.contains_rect(shape.shape.visual_bounding_rect())
+            }),
+            "the LFO preview has no waveform"
+        );
+
+        // An envelope route: no global live value, but an ADSR path.
+        editor.state.mod_selected = 1;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert_eq!(
+            editor.state.target_live_dot_rect, None,
+            "a per-voice source invented a live dot"
+        );
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.iter().any(|text| text == "per-voice"),
+            "the envelope route lost its per-voice fallback: {names:?}"
+        );
+        let preview = editor.state.target_preview_rect.expect("no preview");
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::epaint::Shape::Path(_))
+                    && preview.contains_rect(shape.shape.visual_bounding_rect())
+            }),
+            "the envelope preview has no ADSR shape"
+        );
+
+        // A macro route: a level bar inside the preview.
+        editor.state.mod_selected = 2;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let preview = editor.state.target_preview_rect.expect("no preview");
+        assert!(
+            rect_fills(&output)
+                .iter()
+                .any(|(rect, fill)| { *fill == palette().accent && preview.contains_rect(*rect) }),
+            "the macro preview has no level bar"
+        );
+
+        // A velocity route is per-voice, so the preview is a neutral mark.
+        editor.state.mod_selected = 3;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let preview = editor.state.target_preview_rect.expect("no preview");
+        let preview_texts: Vec<(String, egui::Pos2)> = texts(&output)
+            .into_iter()
+            .filter(|(_, pos)| preview.contains(*pos))
+            .collect();
+        assert!(
+            preview_texts.iter().any(|(text, _)| text == "PER VOICE"),
+            "the per-voice preview has no neutral mark: {preview_texts:?}"
+        );
+        assert_eq!(editor.state.target_live_dot_rect, None);
     }
 
     #[test]
@@ -8383,7 +9964,7 @@ and the three macros; the VCA is main-page only"
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         let zoom = zoom_of(&ctx);
-        assert_eq!(editor.state.popup_rects.len(), 18);
+        assert_eq!(editor.state.popup_rects.len(), 20);
         for rect in editor.state.popup_rects.iter().take(16) {
             assert!(
                 (rect.height() - 24.0 * zoom).abs() < 1.0,
@@ -9048,7 +10629,7 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_fx_tab_opens_a_full_two_row_rack() {
+    fn the_fx_tab_opens_the_chain_column_and_the_module_grid() {
         let (ctx, mut editor, params) = make_editor();
         let rects = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
 
@@ -9057,23 +10638,22 @@ and the three macros; the VCA is main-page only"
         editor.state.counts = Counts::default();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        // Two rows of three modules: two drive faders, three phaser faders,
-        // three chorus faders, three delay faders, two reverb faders and
-        // three EQ faders, plus the global wet fader of the chain strip. Each
-        // module header also has its own bypass check box.
+        // The six module cards keep their faders: two drive, three phaser,
+        // three chorus, three delay, two reverb and three EQ. The left column
+        // adds the global wet fader, its preset popup and six power buttons.
         assert_eq!(editor.state.counts.sliders, 17);
-        assert_eq!(editor.state.counts.popups, 0);
+        assert_eq!(editor.state.counts.popups, 1);
         assert_eq!(editor.state.counts.checks, 6);
         assert_eq!(editor.state.counts.radios, 0);
         assert_eq!(
             slider_rects(&ctx, &output).len(),
             16,
-            "the FX rack lost a fader"
+            "the module grid lost a fader"
         );
         for id in FX_BYPASS_IDS {
             assert!(
                 editor.state.check_ids.contains(&id),
-                "the FX page has no bypass check box {id}: {:?}",
+                "the FX page has no bypass control {id}: {:?}",
                 editor.state.check_ids
             );
         }
@@ -9082,34 +10662,69 @@ and the three macros; the VCA is main-page only"
             "the FX page has no global wet fader: {:?}",
             editor.state.slider_ids
         );
+        assert!(
+            editor.state.popup_ids.contains(&"fx_chain_preset"),
+            "the FX page has no chain preset popup: {:?}",
+            editor.state.popup_ids
+        );
 
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         for name in [
-            "FX RACK",
+            "CHAIN",
+            "CHAIN PRESET",
+            "STANDARD",
             "DRIVE",
             "PHASER",
             "CHORUS",
             "DELAY",
             "REVERB",
             "EQ",
-            FX_CHAIN_ORDER,
         ] {
             assert!(
                 names.contains(&name.to_string()),
                 "the FX page has no {name}: {names:?}"
             );
         }
+        assert!(
+            !names.contains(&"FX RACK".to_string()),
+            "the old top chain strip is still drawn: {names:?}"
+        );
         for caption in [
             "AMOUNT", "RATE", "DEPTH", "TIME", "DECAY", "LOW", "MID", "HIGH",
         ] {
             assert!(
                 names.contains(&caption.to_string()),
-                "the FX rack has no {caption} control: {names:?}"
+                "the module grid has no {caption} control: {names:?}"
             );
         }
 
-        // The new drive control and the existing delay mix are both wired to
-        // their parameters. The rack order is drive, phaser, chorus, delay,
+        // Every chain tile at the standard order shows its one-based position
+        // and its effect name inside the tile rectangle.
+        let tile_texts = |tile: Rect| -> Vec<String> {
+            text_shapes(&output)
+                .into_iter()
+                .filter(|(_, pos, size)| tile.contains_rect(Rect::from_min_size(*pos, *size)))
+                .map(|(text, _, _)| text)
+                .collect()
+        };
+        for (position, stage) in stage_order(0).iter().enumerate() {
+            let tile = editor.state.fx_chain_tile_rects[stage.index()]
+                .unwrap_or_else(|| panic!("the {} tile is missing", fx_stage_name(*stage)));
+            let inside = tile_texts(tile);
+            assert!(
+                inside.contains(&format!("{}", position + 1)),
+                "the {} tile does not show its position: {inside:?}",
+                fx_stage_name(*stage)
+            );
+            assert!(
+                inside.contains(&fx_stage_name(*stage).to_string()),
+                "the {} tile does not show its name: {inside:?}",
+                fx_stage_name(*stage)
+            );
+        }
+
+        // The drive control and the existing delay mix are both wired to their
+        // parameters. The module grid order is drive, phaser, chorus, delay,
         // reverb, EQ.
         let sliders = slider_rects(&ctx, &output);
         let top = |index: usize| {
@@ -9144,107 +10759,395 @@ and the three macros; the VCA is main-page only"
     fn the_fx_page_fits_into_the_panel() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.page = Page::Fx;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let panel = Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        );
-        assert_the_widgets_fit(&ctx, &output, panel);
 
-        // The chain caption has to stay inside the rack header at any zoom,
-        // not just at the design size.
+        // Every part of the page is measured at every zoom, not just at the
+        // design size.
         for percent in (100..=400).step_by(5) {
             let zoom = percent as f32 / 100.0;
             let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
             let layout = Layout::for_rect(Rect::from_min_size(Pos2::ZERO, size))
                 .expect("the window is big enough");
-            let rack = Rect::from_min_max(
-                layout.scale(layout.base_rows[0]).left_top(),
-                layout.scale(layout.base_rows[3]).right_bottom(),
-            );
-            let (_, pos, text_size) = text_shapes(&output)
-                .into_iter()
-                .find(|(text, _, _)| text == FX_CHAIN_ORDER)
-                .unwrap_or_else(|| panic!("the chain caption is missing at {percent}%"));
-            let text = Rect::from_min_size(pos, text_size);
-            assert!(
-                rack.contains_rect(text),
-                "the chain caption is outside the rack at {percent}%: {text:?} / {rack:?}"
+            let rack = fx_rack_rect(&layout);
+            let panel = Rect::from_min_size(Pos2::ZERO, size);
+            assert_the_widgets_fit(&ctx, &output, panel);
+
+            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+            for name in [
+                "CHAIN",
+                "CHAIN PRESET",
+                "STANDARD",
+                "DRIVE",
+                "PHASER",
+                "CHORUS",
+                "DELAY",
+                "REVERB",
+                "EQ",
+            ] {
+                assert!(
+                    names.contains(&name.to_string()),
+                    "the FX page has no {name} at {percent}%: {names:?}"
+                );
+            }
+
+            // All 16 module faders are drawn and visible.
+            assert_eq!(
+                slider_rects(&ctx, &output).len(),
+                16,
+                "the module grid lost a fader at {percent}%"
             );
 
-            // All six modules are still drawn, and each of their header check
-            // boxes stays inside the panel at every zoom.
-            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-            for title in FX_RACK_TITLES.iter().flatten() {
+            // The six power buttons and the six movable tiles stay inside the
+            // rack, and the preset popup stays inside the chain column.
+            assert_eq!(
+                editor.state.check_rects.len(),
+                FX_BYPASS_IDS.len(),
+                "the bypass power buttons are missing at {percent}%"
+            );
+            for rect in &editor.state.check_rects {
+                assert!(
+                    panel.contains_rect(*rect),
+                    "a bypass power button is outside the panel at {percent}%: {rect:?}"
+                );
+            }
+            for stage in FxStage::ALL {
+                let tile = editor.state.fx_chain_tile_rects[stage.index()]
+                    .unwrap_or_else(|| panic!("a chain tile is missing at {percent}%"));
+                assert!(
+                    rack.contains_rect(tile),
+                    "a chain tile is outside the rack at {percent}%: {tile:?} / {rack:?}"
+                );
+                for rect in [
+                    editor.state.fx_chain_drag_rects[stage.index()],
+                    editor.state.fx_chain_up_rects[stage.index()],
+                    editor.state.fx_chain_down_rects[stage.index()],
+                    editor.state.fx_chain_power_rects[stage.index()],
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    assert!(
+                        tile.contains_rect(rect),
+                        "a chain control is outside its tile at {percent}%: {rect:?} / {tile:?}"
+                    );
+                }
+            }
+            let preset = editor
+                .state
+                .fx_chain_preset_rect
+                .expect("the chain preset popup is missing");
+            let label = editor
+                .state
+                .fx_chain_preset_label_rect
+                .expect("the chain preset caption is missing");
+            assert!(
+                rack.contains_rect(preset) && rack.contains_rect(label),
+                "the chain preset is outside the rack at {percent}%"
+            );
+            let wet = editor
+                .state
+                .fx_global_wet_rect
+                .expect("the global wet fader is missing");
+            assert!(
+                rack.contains_rect(wet.expand(8.0 * zoom)),
+                "the global wet fader is outside the rack at {percent}%: {wet:?}"
+            );
+
+            // All six modules keep their title in the fixed grid.
+            for title in FX_MODULE_TITLES.iter().flatten() {
                 assert!(
                     names.contains(&title.to_string()),
                     "the {title} module is missing at {percent}%: {names:?}"
                 );
             }
-            assert_eq!(
-                editor.state.check_rects.len(),
-                FX_BYPASS_IDS.len(),
-                "the bypass check boxes are missing at {percent}%"
-            );
-            for rect in &editor.state.check_rects {
-                assert!(
-                    Rect::from_min_size(Pos2::ZERO, size).contains_rect(*rect),
-                    "a bypass check box is outside the panel at {percent}%: {rect:?}"
-                );
-            }
         }
     }
 
     #[test]
-    fn the_fx_order_control_cycles_and_updates_the_chain_caption() {
+    fn the_chain_presets_are_valid_full_permutations() {
+        for preset in FxChainPreset::ALL {
+            let order = preset.order();
+            assert!(
+                (0..=crate::dsp::fx::FX_ORDER_MAX).contains(&order),
+                "{} has an invalid order {order}",
+                preset.name()
+            );
+            assert_eq!(
+                stage_order(order),
+                preset.stages(),
+                "{} does not round-trip through stage_order_index",
+                preset.name()
+            );
+            assert_eq!(
+                fx_chain_preset_at(order),
+                Some(preset),
+                "{} is not found by its own order",
+                preset.name()
+            );
+        }
+        assert_eq!(FxChainPreset::Standard.order(), 0);
+
+        // AMBIENT puts the reverb before the delay, and WIDE ECHO puts the
+        // delay before the chorus. Those are the two named orders whose point
+        // is a non-rotation of the original chain.
+        let ambient = FxChainPreset::Ambient.stages();
+        let position = |stages: [FxStage; 6], stage: FxStage| {
+            stages
+                .iter()
+                .position(|candidate| *candidate == stage)
+                .unwrap()
+        };
+        assert!(position(ambient, FxStage::Reverb) < position(ambient, FxStage::Delay));
+        let wide = FxChainPreset::WideEcho.stages();
+        assert!(position(wide, FxStage::Delay) < position(wide, FxStage::Chorus));
+
+        // An arbitrary drag order is not a named preset and therefore shows
+        // CUSTOM.
+        let custom = stage_order_index([
+            FxStage::Drive,
+            FxStage::Chorus,
+            FxStage::Phaser,
+            FxStage::Delay,
+            FxStage::Reverb,
+            FxStage::Eq,
+        ]);
+        assert_eq!(fx_chain_preset_at(custom), None);
+        assert_eq!(fx_chain_preset_name(custom), "CUSTOM");
+    }
+
+    #[test]
+    fn the_chain_preset_popup_selects_a_full_order() {
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Fx;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.contains(&"ORDER 0".to_string()), "{names:?}");
-        assert!(names.contains(&FX_CHAIN_ORDER.to_string()), "{names:?}");
+        assert!(names.contains(&"STANDARD".to_string()), "{names:?}");
 
-        let order = editor
+        let button = editor
             .state
-            .fx_order_rect
-            .expect("the FX chain strip has no order control");
-        for expected in 1..=5 {
-            run_frames(&ctx, &mut editor, click(order.center()));
-            assert_eq!(params.fx_order.value(), expected);
+            .fx_chain_preset_rect
+            .expect("the chain preset popup is missing");
+        let open = |ctx: &egui::Context, editor: &mut SushiEditor| {
+            run_frames(ctx, editor, click(button.center()));
+            run_frames(ctx, editor, vec![input(vec![])]);
+        };
 
-            let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-            let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-            assert!(
-                names.contains(&format!("ORDER {expected}")),
-                "the order control does not show {expected}: {names:?}"
-            );
-            assert!(
-                names.contains(&fx_chain_order(expected)),
-                "the chain caption does not follow order {expected}: {names:?}"
-            );
-            assert!(
-                !names.contains(&fx_chain_order(expected - 1)),
-                "the chain caption still shows the old order {expected}: {names:?}"
-            );
-        }
-
-        // The last step wraps back to the original chain.
-        run_frames(&ctx, &mut editor, click(order.center()));
-        assert_eq!(params.fx_order.value(), 0);
+        // AMBIENT sets the full permutation, not a rotation.
+        open(&ctx, &mut editor);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, item) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "AMBIENT")
+            .expect("the preset popup has no AMBIENT");
+        run_frames(&ctx, &mut editor, click(item + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.fx_order.value(), FxChainPreset::Ambient.order());
+        assert_eq!(
+            stage_order(params.fx_order.value()),
+            FxChainPreset::Ambient.stages()
+        );
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.contains(&FX_CHAIN_ORDER.to_string()), "{names:?}");
+        assert!(names.contains(&"AMBIENT".to_string()), "{names:?}");
+        assert!(!names.contains(&"CUSTOM".to_string()), "{names:?}");
+
+        // WIDE ECHO is another complete order and replaces the first one.
+        open(&ctx, &mut editor);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, item) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "WIDE ECHO")
+            .expect("the preset popup has no WIDE ECHO");
+        run_frames(&ctx, &mut editor, click(item + egui::vec2(2.0, 2.0)));
+        assert_eq!(params.fx_order.value(), FxChainPreset::WideEcho.order());
+        assert_eq!(
+            stage_order(params.fx_order.value()),
+            FxChainPreset::WideEcho.stages()
+        );
+
+        // Any permutation that is not named shows CUSTOM. The popup still
+        // lists the named presets, so the user can return to one of them.
+        let custom = stage_order_index([
+            FxStage::Drive,
+            FxStage::Chorus,
+            FxStage::Phaser,
+            FxStage::Delay,
+            FxStage::Reverb,
+            FxStage::Eq,
+        ]);
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        setter.set_parameter(&params.fx_order, custom);
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.contains(&"CUSTOM".to_string()), "{names:?}");
     }
 
     #[test]
-    fn every_fx_bypass_bit_toggles_only_its_own_stage() {
+    fn dragging_a_chain_tile_reorders_and_is_undoable() {
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Fx;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // Drag the drive handle onto the chorus tile. Dropping at its centre
+        // inserts the drive after the chorus.
+        let drive_handle = editor.state.fx_chain_drag_rects[FxStage::Drive.index()]
+            .expect("the drive tile has no drag handle");
+        let chorus_tile = editor.state.fx_chain_tile_rects[FxStage::Chorus.index()]
+            .expect("the chorus tile is missing");
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(
+                drive_handle.center(),
+                chorus_tile.center(),
+                egui::Modifiers::default(),
+            ),
+        );
+
+        let expected = stage_order_index([
+            FxStage::Phaser,
+            FxStage::Chorus,
+            FxStage::Drive,
+            FxStage::Delay,
+            FxStage::Reverb,
+            FxStage::Eq,
+        ]);
+        assert_eq!(
+            params.fx_order.value(),
+            expected,
+            "the drag did not write the full permutation"
+        );
+        assert_eq!(stage_order(params.fx_order.value()), stage_order(expected));
+        assert!(editor.state.dirty, "the drag did not mark the sound dirty");
+
+        // The moved tile now shows position 3, and the preset readout says
+        // CUSTOM because the order is not one of the named presets.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let drive_tile = editor.state.fx_chain_tile_rects[FxStage::Drive.index()]
+            .expect("the drive tile is missing");
+        let inside: Vec<String> = text_shapes(&output)
+            .into_iter()
+            .filter(|(_, pos, size)| drive_tile.contains_rect(Rect::from_min_size(*pos, *size)))
+            .map(|(text, _, _)| text)
+            .collect();
+        assert!(
+            inside.contains(&"3".to_string()) && inside.contains(&"DRIVE".to_string()),
+            "the moved tile does not show its new position: {inside:?}"
+        );
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(names.contains(&"CUSTOM".to_string()), "{names:?}");
+
+        // The reorder is one undo step and redo puts the permutation back.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert_eq!(params.fx_order.value(), 0, "undo did not restore the order");
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert_eq!(
+            params.fx_order.value(),
+            expected,
+            "redo did not restore the dragged order"
+        );
+    }
+
+    #[test]
+    fn dragging_a_chain_tile_up_also_reorders() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // Drag the last tile above the first one.
+        let eq_handle = editor.state.fx_chain_drag_rects[FxStage::Eq.index()]
+            .expect("the EQ tile has no drag handle");
+        let first_tile = editor.state.fx_chain_tile_rects[FxStage::Drive.index()]
+            .expect("the drive tile is missing");
+        run_frames(
+            &ctx,
+            &mut editor,
+            drag(
+                eq_handle.center(),
+                egui::pos2(first_tile.center().x, first_tile.top() + 2.0),
+                egui::Modifiers::default(),
+            ),
+        );
+
+        assert_eq!(
+            stage_order(params.fx_order.value()),
+            [
+                FxStage::Eq,
+                FxStage::Drive,
+                FxStage::Phaser,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_chain_arrows_move_one_stage_at_a_time() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+
+        // Drive starts at the top. Its up arrow is disabled, its down arrow
+        // moves it one step.
+        let drive_up = editor.state.fx_chain_up_rects[FxStage::Drive.index()]
+            .expect("the drive tile has no up arrow");
+        let drive_down = editor.state.fx_chain_down_rects[FxStage::Drive.index()]
+            .expect("the drive tile has no down arrow");
+        run_frames(&ctx, &mut editor, click(drive_up.center()));
+        assert_eq!(
+            params.fx_order.value(),
+            0,
+            "the disabled up arrow moved the chain"
+        );
+
+        run_frames(&ctx, &mut editor, click(drive_down.center()));
+        assert_eq!(
+            stage_order(params.fx_order.value()),
+            [
+                FxStage::Phaser,
+                FxStage::Drive,
+                FxStage::Chorus,
+                FxStage::Delay,
+                FxStage::Reverb,
+                FxStage::Eq,
+            ]
+        );
+
+        // The up arrow now moves it back. The tile geometry is re-read after
+        // the reorder, because the drive tile is now in the second position.
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let drive_up = editor.state.fx_chain_up_rects[FxStage::Drive.index()]
+            .expect("the moved drive tile has no up arrow");
+        run_frames(&ctx, &mut editor, click(drive_up.center()));
+        assert_eq!(params.fx_order.value(), 0);
+
+        // The bottom stage cannot move further down.
+        let eq_down = editor.state.fx_chain_down_rects[FxStage::Eq.index()]
+            .expect("the EQ tile has no down arrow");
+        run_frames(&ctx, &mut editor, click(eq_down.center()));
+        assert_eq!(params.fx_order.value(), 0);
+    }
+
+    #[test]
+    fn every_fx_bypass_power_button_toggles_only_its_own_stage() {
+        let (ctx, mut editor, params) = make_editor();
+        editor.state.page = Page::Fx;
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert_eq!(editor.state.check_ids, FX_BYPASS_IDS);
 
-        // Turn every bit on, one check box after another. Every step has to
+        // The tiles are active and light before any bypass.
+        let drive_tile = editor.state.fx_chain_tile_rects[FxStage::Drive.index()]
+            .expect("the drive tile is missing");
+        assert_eq!(
+            fill_of(drive_tile, &rect_fills(&output)),
+            palette().field_bg,
+            "an active tile is not drawn on the light tile fill"
+        );
+
+        // Turn every bit on, one power button after another. Every step has to
         // keep the bits that were set before it.
         for bit in 0..FX_BYPASS_IDS.len() {
             let rect = editor.state.check_rects[bit];
@@ -9257,6 +11160,30 @@ and the three macros; the VCA is main-page only"
             );
             run_frames(&ctx, &mut editor, wait());
         }
+
+        // A bypassed tile is muted and grey, even while the pointer is away.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::PointerMoved(egui::pos2(
+                500.0, 300.0,
+            ))])],
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert_eq!(
+            fill_of(drive_tile, &rect_fills(&output)),
+            palette().button_bg,
+            "a bypassed tile is not drawn muted"
+        );
+        let (number_pos, number_size) = text_shapes(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == "1")
+            .map(|(_, pos, size)| (pos, size))
+            .expect("the drive tile lost its number");
+        assert!(
+            drive_tile.contains_rect(Rect::from_min_size(number_pos, number_size)),
+            "the drive number left its tile"
+        );
 
         // Clearing one bit leaves the other five untouched.
         let all = (1 << FX_BYPASS_IDS.len()) - 1;
@@ -9291,23 +11218,37 @@ and the three macros; the VCA is main-page only"
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         assert!(
             names.contains(&"GLOBAL WET".to_string()),
-            "the FX chain strip has no global wet caption: {names:?}"
+            "the chain column has no global wet caption: {names:?}"
         );
         assert!(names.contains(&"100%".to_string()), "{names:?}");
 
         let track = editor
             .state
             .fx_global_wet_rect
-            .expect("the FX chain strip has no global wet fader");
+            .expect("the chain column has no global wet fader");
         assert!(track.width() > 0.0);
 
-        // A click at a quarter of the track sets the mix to about a quarter.
+        // A click at a quarter of the track sets the mix to about a quarter,
+        // and the change has its own undo step.
         let quarter = egui::pos2(track.left() + track.width() * 0.25, track.center().y);
         run_frames(&ctx, &mut editor, click(quarter));
         let value = params.fx_global_mix.value();
         assert!(
             (0.2..0.3).contains(&value),
             "the global wet fader did not reach 25%: {value}"
+        );
+        run_frames(&ctx, &mut editor, wait());
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
+        assert!(
+            (params.fx_global_mix.value() - 1.0).abs() < 0.001,
+            "undo did not restore the global wet: {}",
+            params.fx_global_mix.value()
+        );
+        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
+        assert!(
+            (params.fx_global_mix.value() - value).abs() < 0.001,
+            "redo did not restore the global wet: {}",
+            params.fx_global_mix.value()
         );
 
         // A click near the right end opens it fully again.
@@ -10507,56 +12448,42 @@ and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn the_mod_page_puts_the_lfo_editors_in_the_third_row() {
+    fn the_lfo_faders_share_the_first_two_columns_of_row_c() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.page = Page::Mod;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let positions: Vec<(String, egui::Pos2)> = texts(&output)
-            .into_iter()
-            .filter(|(text, _)| matches!(text.as_str(), "LFO 1" | "LFO 2"))
-            .collect();
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
 
-        // The two LFO titles share the third band with the ARP / VOICE pair
-        // of the normal page, in the two wide lower columns.
-        let expected = [("LFO 1", 12.0), ("LFO 2", 490.0)];
-        for (title, x) in expected {
-            let (_, pos) = positions
-                .iter()
-                .find(|(text, _)| text == title)
-                .unwrap_or_else(|| panic!("the modulation page has no {title}"));
+        // The LFO faders are in the first two of the three modules of row C.
+        let lfo_faders = slider_rects(&ctx, &output)
+            .into_iter()
+            .filter(|rect| {
+                layout.mod_group(2, 0).contains_rect(*rect)
+                    || layout.mod_group(2, 1).contains_rect(*rect)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lfo_faders.len(), 6, "the LFO faders left row C");
+        for rect in &lfo_faders {
             assert!(
-                (pos.x - x).abs() < 1.0,
-                "the title {title} is at {pos:?} instead of {x}"
-            );
-            assert!(
-                pos.y >= 326.0 && pos.y <= 326.0 + TITLE_HEIGHT,
-                "the title {title} is not in the third row: {pos:?}"
+                rect.center().y > layout.mod_group(2, 0).top()
+                    && rect.center().y < layout.mod_group(2, 0).bottom(),
+                "an LFO fader left the third row: {rect:?}"
             );
         }
 
-        // The rate, phase and curve faders of both editors are in the same
-        // band, three per editor.
-        let zoom = zoom_of(&ctx);
-        let lfo_faders: Vec<egui::Rect> = slider_rects(&ctx, &output)
+        // The macros have their own third column in the same row.
+        let macro_faders = slider_rects(&ctx, &output)
             .into_iter()
-            .filter(|rect| rect.center().y > 326.0 * zoom && rect.center().y < 448.0 * zoom)
-            .collect();
-        assert_eq!(lfo_faders.len(), 6, "the LFO faders are not in row C");
+            .filter(|rect| layout.mod_group(2, 2).contains_rect(*rect))
+            .count();
+        assert_eq!(macro_faders, 3, "the macros are not in the third column");
         assert!(
-            lfo_faders[0].center().x < lfo_faders[1].center().x
-                && lfo_faders[1].center().x < lfo_faders[2].center().x
-                && lfo_faders[2].center().x < lfo_faders[3].center().x
-                && lfo_faders[3].center().x < lfo_faders[4].center().x
-                && lfo_faders[4].center().x < lfo_faders[5].center().x,
-            "the LFO faders are in the wrong order"
-        );
-        assert!(
-            lfo_faders[2].center().x < 480.0 * zoom,
-            "the first LFO does not have three faders"
-        );
-        assert!(
-            lfo_faders[3].center().x > 480.0 * zoom,
-            "the second LFO does not have three faders"
+            layout.mod_group(2, 1).right() < layout.mod_group(2, 2).left(),
+            "the second LFO and the macros share one column"
         );
     }
 
@@ -10796,6 +12723,24 @@ and the three macros; the VCA is main-page only"
                 assert!(
                     (last.right() - (layout.panel.right() - MARGIN * layout.zoom)).abs() < 0.01,
                     "the sections of the row {row} do not fill the panel: {last:?}"
+                );
+            }
+
+            // The modulation page has three modules in row C and one wide
+            // target band in row D. Both fill their rows without gaps or
+            // overlaps at every size of the window.
+            for (row, count) in [(2, 3), (3, 1)] {
+                let first = layout.mod_group(row, 0);
+                assert!(layout.panel.contains_rect(first));
+                for index in 1..count {
+                    let group = layout.mod_group(row, index);
+                    assert!(layout.panel.contains_rect(group));
+                    assert!(!first.intersects(group));
+                }
+                let last = layout.mod_group(row, count - 1);
+                assert!(
+                    (last.right() - (layout.panel.right() - MARGIN * layout.zoom)).abs() < 0.01,
+                    "the modulation sections of the row {row} do not fill the panel: {last:?}"
                 );
             }
         }

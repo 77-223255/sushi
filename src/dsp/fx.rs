@@ -5,10 +5,16 @@
 //! processing itself never allocates. The new effects default to completely
 //! neutral settings, so old patches and presets keep sounding the same.
 //!
-//! The six stages have a fixed original order, `stage_order(0)`. The
-//! `order` parameter rotates that sequence, and `bypass_mask` skips individual
-//! stages. `global_mix` is a dry/wet crossfade around the whole chain; its
-//! default of `1.0` returns the wet signal untouched, bit for bit.
+//! The six stages have a fixed original order, `stage_order(0)`. The `order`
+//! parameter selects one of the `6! = 720` permutations of that sequence, and
+//! `bypass_mask` skips individual stages. `global_mix` is a dry/wet crossfade
+//! around the whole chain; its default of `1.0` returns the wet signal
+//! untouched, bit for bit.
+//!
+//! Orders `0..=5` keep the original rotation semantics, so old patches and
+//! automation keep their sound. Orders `6..=719` use the remaining
+//! permutations in lexicographic order, which makes every order a unique,
+//! reversible description of the chain.
 
 use std::f32::consts::PI;
 
@@ -59,6 +65,12 @@ const EQ_BYPASS_DB: f32 = 1e-4;
 /// The number of stages in the effect chain.
 pub const FX_STAGE_COUNT: usize = 6;
 
+/// The number of possible stage orders: every permutation of the six stages.
+pub const FX_ORDER_COUNT: usize = 720;
+
+/// The largest valid value of the `fx_order` parameter.
+pub const FX_ORDER_MAX: i32 = FX_ORDER_COUNT as i32 - 1;
+
 /// The mask with every stage bit set.
 pub const FX_BYPASS_ALL: u32 = (1 << FX_STAGE_COUNT) - 1;
 
@@ -101,10 +113,10 @@ impl FxStage {
     }
 }
 
-/// The six stages in the order selected by a rotation offset.
+/// The six stages in the order selected by a permutation index.
 ///
-/// Offset `0` is the original order `Drive > Phaser > Chorus > Delay >
-/// Reverb > EQ`. Every step takes the first stage and appends it at the end:
+/// The first six orders keep the original rotation semantics, where every
+/// step takes the first stage and appends it at the end:
 ///
 /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ
 /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive
@@ -113,20 +125,149 @@ impl FxStage {
 /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay
 /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
 ///
-/// Out-of-range offsets are clamped, so a bad host value can never index past
-/// the end of the chain.
+/// Orders `6..=719` are the remaining permutations in lexicographic order.
+/// Together the 720 orders cover every possible chain order exactly once, so
+/// [`stage_order_index()`] is the exact inverse of this function.
+///
+/// Out-of-range indices are clamped, so a bad host value can never index past
+/// the end of the table.
 #[inline]
-pub fn stage_order(rotation: i32) -> [FxStage; FX_STAGE_COUNT] {
-    let rotation = rotation.clamp(0, FX_STAGE_COUNT as i32 - 1) as usize;
-    let mut order = FxStage::ALL;
-    order.rotate_left(rotation);
-    order
+pub fn stage_order(order: i32) -> [FxStage; FX_STAGE_COUNT] {
+    STAGE_ORDERS[order.clamp(0, FX_ORDER_MAX) as usize]
 }
+
+/// The permutation index of a chain order, `0..=719`.
+///
+/// This is the inverse of [`stage_order()`]. Every possible permutation of the
+/// six stages appears exactly once in the table, so this always finds a match.
+#[inline]
+pub fn stage_order_index(order: [FxStage; FX_STAGE_COUNT]) -> i32 {
+    STAGE_ORDERS
+        .iter()
+        .position(|candidate| *candidate == order)
+        .map_or(0, |index| index as i32)
+}
+
+/// `n!` for the tiny values needed by the permutation table.
+const fn factorial(n: usize) -> usize {
+    let mut result = 1;
+    let mut factor = 2;
+    while factor <= n {
+        result *= factor;
+        factor += 1;
+    }
+    result
+}
+
+/// Decodes a zero-based lexicographic permutation rank into stage order.
+const fn permutation_from_rank(mut rank: usize) -> [FxStage; FX_STAGE_COUNT] {
+    let mut used = [false; FX_STAGE_COUNT];
+    let mut result = [FxStage::Drive; FX_STAGE_COUNT];
+    let mut position = 0;
+
+    while position < FX_STAGE_COUNT {
+        let block = factorial(FX_STAGE_COUNT - 1 - position);
+        let mut index = rank / block;
+        rank %= block;
+
+        let mut candidate = 0;
+        while candidate < FX_STAGE_COUNT {
+            if !used[candidate] {
+                if index == 0 {
+                    result[position] = FxStage::ALL[candidate];
+                    used[candidate] = true;
+                    break;
+                }
+                index -= 1;
+            }
+            candidate += 1;
+        }
+
+        position += 1;
+    }
+
+    result
+}
+
+/// The zero-based lexicographic rank of a stage order.
+const fn permutation_rank(permutation: [FxStage; FX_STAGE_COUNT]) -> usize {
+    let mut used = [false; FX_STAGE_COUNT];
+    let mut rank = 0;
+    let mut position = 0;
+
+    while position < FX_STAGE_COUNT {
+        let target = permutation[position].index();
+        let mut index = 0;
+        let mut candidate = 0;
+        while candidate < target {
+            if !used[candidate] {
+                index += 1;
+            }
+            candidate += 1;
+        }
+
+        rank += index * factorial(FX_STAGE_COUNT - 1 - position);
+        used[target] = true;
+        position += 1;
+    }
+
+    rank
+}
+
+/// Builds the order table: the six old rotations first, then every remaining
+/// permutation in lexicographic order.
+const fn build_stage_order_table() -> [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT] {
+    let mut table = [[FxStage::Drive; FX_STAGE_COUNT]; FX_ORDER_COUNT];
+
+    let mut rotation = 0;
+    while rotation < FX_STAGE_COUNT {
+        let mut position = 0;
+        while position < FX_STAGE_COUNT {
+            table[rotation][position] = FxStage::ALL[(position + rotation) % FX_STAGE_COUNT];
+            position += 1;
+        }
+        rotation += 1;
+    }
+
+    let mut rotation_ranks = [usize::MAX; FX_STAGE_COUNT];
+    let mut index = 0;
+    while index < FX_STAGE_COUNT {
+        rotation_ranks[index] = permutation_rank(table[index]);
+        index += 1;
+    }
+
+    let mut order = FX_STAGE_COUNT;
+    let mut rank = 0;
+    while rank < FX_ORDER_COUNT {
+        let mut is_rotation = false;
+        let mut rotation = 0;
+        while rotation < FX_STAGE_COUNT {
+            if rotation_ranks[rotation] == rank {
+                is_rotation = true;
+                break;
+            }
+            rotation += 1;
+        }
+
+        if !is_rotation {
+            table[order] = permutation_from_rank(rank);
+            order += 1;
+        }
+        rank += 1;
+    }
+
+    table
+}
+
+/// Every chain order. The table is built at compile time, so looking up an
+/// order in the audio path is just a bounds-checked array read.
+const STAGE_ORDERS: [[FxStage; FX_STAGE_COUNT]; FX_ORDER_COUNT] = build_stage_order_table();
 
 /// The parameters of the effect chain.
 #[derive(Debug, Clone, Copy)]
 pub struct FxParams {
-    /// The rotation offset of the six-stage chain, `0..=5`.
+    /// The permutation index of the six-stage chain, `0..=719`. See
+    /// [`stage_order()`] for the exact mapping.
     pub order: i32,
     /// The bypass mask. Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay,
     /// 4 Reverb and 5 EQ.
@@ -499,7 +640,7 @@ impl Fx {
         let mut wet_right = right;
 
         // The stage order is a fixed stack array, so reordering allocates
-        // nothing and an out-of-range rotation simply clamps.
+        // nothing and an out-of-range order simply clamps.
         for stage in stage_order(params.order) {
             if bypass_mask & stage.bit() != 0 {
                 continue;
@@ -1579,7 +1720,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stage_order_rotates_exactly_as_documented() {
+    fn the_old_orders_keep_their_rotation_semantics() {
         use FxStage::{Chorus, Delay, Drive, Eq, Phaser, Reverb};
 
         assert_eq!(
@@ -1592,37 +1733,79 @@ mod tests {
         assert_eq!(stage_order(3), [Delay, Reverb, Eq, Drive, Phaser, Chorus]);
         assert_eq!(stage_order(4), [Reverb, Eq, Drive, Phaser, Chorus, Delay]);
         assert_eq!(stage_order(5), [Eq, Drive, Phaser, Chorus, Delay, Reverb]);
-
-        // Bad host values cannot index outside the fixed chain.
-        assert_eq!(stage_order(-1), stage_order(0));
-        assert_eq!(stage_order(99), stage_order(5));
     }
 
     #[test]
-    fn rotating_the_order_changes_the_result() {
-        let original = all_stages_active();
-        let rotated = FxParams {
-            order: 1,
-            ..original
-        };
-        let mut straight = Fx::new(48_000.0);
-        let mut wrapped = Fx::new(48_000.0);
-        let mut state = 0x0BAD_5EED;
-        let mut difference = 0.0f32;
+    fn every_order_is_a_unique_reversible_permutation() {
+        use std::collections::HashSet;
 
-        for _ in 0..48_000 {
-            let left = noise(&mut state) * 0.4;
-            let right = noise(&mut state) * 0.4;
-            let (straight_left, straight_right) = straight.process(left, right, &original);
-            let (wrapped_left, wrapped_right) = wrapped.process(left, right, &rotated);
-            difference +=
-                (straight_left - wrapped_left).abs() + (straight_right - wrapped_right).abs();
+        let mut seen = HashSet::with_capacity(FX_ORDER_COUNT);
+        for order in 0..FX_ORDER_COUNT as i32 {
+            let stages = stage_order(order);
+
+            // Every stage must appear exactly once.
+            let mut present = [false; FX_STAGE_COUNT];
+            for stage in stages {
+                assert!(
+                    !present[stage.index()],
+                    "order {order} repeats {stage:?}: {stages:?}"
+                );
+                present[stage.index()] = true;
+            }
+            assert!(
+                present.iter().all(|&value| value),
+                "order {order} is incomplete"
+            );
+
+            // The table covers every permutation exactly once and the inverse
+            // index returns the original order.
+            assert!(
+                seen.insert(stages.map(|stage| stage.index() as u8)),
+                "order {order} duplicates another permutation"
+            );
+            assert_eq!(stage_order_index(stages), order);
         }
+        assert_eq!(seen.len(), FX_ORDER_COUNT);
+    }
 
-        assert!(
-            difference > 1.0,
-            "the rotated chain sounded identical ({difference})"
-        );
+    #[test]
+    fn out_of_range_orders_clamp_to_the_table_ends() {
+        assert_eq!(stage_order(-1), stage_order(0));
+        assert_eq!(stage_order(i32::MIN), stage_order(0));
+        assert_eq!(stage_order(FX_ORDER_MAX + 1), stage_order(FX_ORDER_MAX));
+        assert_eq!(stage_order(i32::MAX), stage_order(FX_ORDER_MAX));
+        assert_ne!(stage_order(FX_ORDER_MAX), stage_order(0));
+    }
+
+    #[test]
+    fn reordering_the_chain_changes_the_result() {
+        let original = all_stages_active();
+
+        // Order 1 is the old rotation; order 317 is one of the newly
+        // available permutations. Both must really reach the processor.
+        for order in [1, 317] {
+            assert_ne!(stage_order(order), stage_order(0));
+
+            let reordered = FxParams { order, ..original };
+            let mut straight = Fx::new(48_000.0);
+            let mut shuffled = Fx::new(48_000.0);
+            let mut state = 0x0BAD_5EED;
+            let mut difference = 0.0f32;
+
+            for _ in 0..48_000 {
+                let left = noise(&mut state) * 0.4;
+                let right = noise(&mut state) * 0.4;
+                let (straight_left, straight_right) = straight.process(left, right, &original);
+                let (shuffled_left, shuffled_right) = shuffled.process(left, right, &reordered);
+                difference +=
+                    (straight_left - shuffled_left).abs() + (straight_right - shuffled_right).abs();
+            }
+
+            assert!(
+                difference > 1.0,
+                "order {order} sounded identical to the original chain ({difference})"
+            );
+        }
     }
 
     #[test]

@@ -933,6 +933,11 @@ mod tests {
     fn every_parameter_is_in_the_table() {
         assert_eq!(PARAM_IDS.len(), 126);
 
+        // The macros are modulation targets and must stay in the patch table.
+        for id in ["macro_bright", "macro_motion", "macro_space"] {
+            assert!(PARAM_IDS.contains(&id), "{id} is missing from the table");
+        }
+
         let mut ids: Vec<&str> = PARAM_IDS.to_vec();
         ids.sort_unstable();
         ids.dedup();
@@ -1094,6 +1099,21 @@ mod tests {
         assert_eq!(document["params"]["fx_order"], 3);
         assert_eq!(document["params"]["fx_bypass_mask"], 40);
         assert!((document["params"]["fx_global_mix"].as_f64().unwrap() - 0.25).abs() < 0.01);
+
+        // Any permutation index is part of the patch, and an out-of-range
+        // value is clamped to the last order instead of breaking the chain.
+        apply_json(&params, &setter, &json!({ "params": { "fx_order": 317 } }))
+            .expect("the full-range FX patch could not be applied");
+        assert_eq!(params.fx_order.value(), 317);
+        assert_eq!(to_json(&params, "FX")["params"]["fx_order"], 317);
+
+        apply_json(
+            &params,
+            &setter,
+            &json!({ "params": { "fx_order": 9_999 } }),
+        )
+        .expect("the out-of-range FX patch could not be applied");
+        assert_eq!(params.fx_order.value(), crate::dsp::fx::FX_ORDER_MAX);
 
         // A patch from before the new controls keeps the original chain.
         let old = SushiParams::default();

@@ -6,6 +6,8 @@
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
+use crate::dsp::fx::FX_ORDER_MAX;
+
 /// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Waveform {
@@ -232,6 +234,39 @@ fn percentage_param(name: &str, default: f32) -> FloatParam {
         .with_string_to_value(formatters::s2v_f32_percentage())
         .with_unit("%")
         .with_smoother(SmoothingStyle::Linear(10.0))
+}
+
+/// The parameter flags that expose a parameter as a host automation and
+/// modulation target.
+///
+/// nice-plug 0.4.2 has no separate `MODULATABLE` or `AUTOMATABLE` flag. Both
+/// its CLAP and VST3 wrappers treat a parameter as automatable and modulatable
+/// unless it carries `NON_AUTOMATABLE` or `HIDDEN`; the CLAP wrapper then
+/// advertises `CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE` for it.
+/// The empty flag set is therefore the explicit, correct setting for this
+/// version.
+const HOST_MODULATABLE_FLAGS: ParamFlags = ParamFlags::empty();
+
+/// Whether nice-plug exposes a parameter to host automation and modulation.
+/// This is the exact condition used by the CLAP and VST3 wrappers.
+fn host_modulatable(flags: ParamFlags) -> bool {
+    !flags.intersects(ParamFlags::NON_AUTOMATABLE | ParamFlags::HIDDEN)
+}
+
+/// Builds a macro parameter and marks it explicitly as a host modulation
+/// target by checking the flags that the host wrappers use.
+fn macro_param(name: &str, default: f32) -> FloatParam {
+    let param = percentage_param(name, default).with_smoother(SmoothingStyle::Linear(20.0));
+    debug_assert_eq!(
+        param.flags(),
+        HOST_MODULATABLE_FLAGS,
+        "the macro {name} must not carry HIDDEN or NON_AUTOMATABLE"
+    );
+    debug_assert!(
+        host_modulatable(param.flags()),
+        "the macro {name} must be a host modulation target"
+    );
+    param
 }
 
 /// A time parameter in milliseconds. The range is skewed towards the short end
@@ -563,6 +598,9 @@ pub struct SushiParams {
     pub mod8_amount: FloatParam,
 
     // --- Macros ------------------------------------------------------------
+    // These are host modulation targets. nice-plug exposes them as
+    // automatable and modulatable because `macro_param` keeps their flags
+    // empty (no HIDDEN or NON_AUTOMATABLE).
     #[id = "macro_bright"]
     pub macro_bright: FloatParam,
 
@@ -720,10 +758,12 @@ pub struct SushiParams {
     // These are appended after every existing parameter, so the host
     // automation indices of old parameters do not move. Their defaults keep
     // the original chain order, no bypass and a fully wet signal.
-    /// A rotation offset of the six-stage effect chain.
+    /// The permutation index of the six-stage effect chain, `0..=719`.
     ///
     /// `0` is the original order `Drive > Phaser > Chorus > Delay > Reverb >
-    /// EQ`; every step rotates the first stage to the end:
+    /// EQ`. Orders `1..=5` keep the old rotation definitions (each rotates
+    /// the first stage to the end), so old patches and automation keep their
+    /// sound:
     ///
     /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ
     /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive
@@ -731,6 +771,9 @@ pub struct SushiParams {
     /// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus
     /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay
     /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb
+    ///
+    /// Orders `6..=719` are the remaining permutations in lexicographic
+    /// order. See `dsp::fx::stage_order` for the exact mapping.
     #[id = "fx_order"]
     pub fx_order: IntParam,
 
@@ -1014,12 +1057,9 @@ impl Default for SushiParams {
             mod8_amount: bipolar_param("MOD 8 Amount", 0.0),
 
             // --- Macros -------------------------------------------------------
-            macro_bright: percentage_param("Macro Bright", 0.5)
-                .with_smoother(SmoothingStyle::Linear(20.0)),
-            macro_motion: percentage_param("Macro Motion", 0.5)
-                .with_smoother(SmoothingStyle::Linear(20.0)),
-            macro_space: percentage_param("Macro Space", 0.5)
-                .with_smoother(SmoothingStyle::Linear(20.0)),
+            macro_bright: macro_param("Macro Bright", 0.5),
+            macro_motion: macro_param("Macro Motion", 0.5),
+            macro_space: macro_param("Macro Space", 0.5),
 
             // --- Character ---------------------------------------------------
             character: EnumParam::new("Character", Character::Silk),
@@ -1132,7 +1172,14 @@ impl Default for SushiParams {
             arp_probability: percentage_param("Arp Probability", 1.0),
 
             // --- Effect chain order, bypass and global mix --------------------
-            fx_order: IntParam::new("FX Order", 0, IntRange::Linear { min: 0, max: 5 }),
+            fx_order: IntParam::new(
+                "FX Order",
+                0,
+                IntRange::Linear {
+                    min: 0,
+                    max: FX_ORDER_MAX,
+                },
+            ),
             fx_bypass_mask: IntParam::new(
                 "FX Bypass Mask",
                 0,
@@ -1326,8 +1373,47 @@ mod tests {
         // The effect chain starts in its original order, without a bypass
         // and fully wet, so old patches keep their sound.
         assert_eq!(params.fx_order.value(), 0);
+        assert!(
+            matches!(
+                params.fx_order.range(),
+                IntRange::Linear {
+                    min: 0,
+                    max: FX_ORDER_MAX
+                }
+            ),
+            "the FX order must offer all 720 permutations"
+        );
         assert_eq!(params.fx_bypass_mask.value(), 0);
         assert_eq!(params.fx_global_mix.value(), 1.0);
+    }
+
+    #[test]
+    fn the_macros_are_host_modulation_targets() {
+        let params = SushiParams::default();
+        let macros = [
+            ("macro_bright", params.macro_bright.flags()),
+            ("macro_motion", params.macro_motion.flags()),
+            ("macro_space", params.macro_space.flags()),
+        ];
+
+        for (name, flags) in macros {
+            assert_eq!(
+                flags, HOST_MODULATABLE_FLAGS,
+                "{name} must carry the host-modulatable flags"
+            );
+            assert!(
+                host_modulatable(flags),
+                "{name} is not exposed as a host modulation target"
+            );
+            assert!(
+                !flags.contains(ParamFlags::NON_AUTOMATABLE),
+                "{name} must stay automatable"
+            );
+            assert!(
+                !flags.contains(ParamFlags::HIDDEN),
+                "{name} must stay visible to the host"
+            );
+        }
     }
 
     #[test]
