@@ -10,7 +10,6 @@ pub mod lfo;
 pub mod mod_feedback;
 pub mod mod_matrix;
 pub mod osc;
-pub mod reverb;
 pub mod reverb_legacy;
 pub mod vca;
 pub mod voice;

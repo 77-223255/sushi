@@ -1,8 +1,8 @@
 //! The original Freeverb-style reverb from the first Sushi release.
 //!
-//! It is kept as a separate engine for the legacy flavor. The topology and the
-//! fixed 44.1 kHz tunings are intentionally unchanged; only the bypass path
-//! now flushes the lines instead of freezing them.
+//! The Legacy engine uses this as its only reverb. The topology and the fixed
+//! 44.1 kHz tunings are intentionally unchanged; only the bypass path flushes
+//! the lines instead of freezing them.
 
 use std::f32::consts::PI;
 

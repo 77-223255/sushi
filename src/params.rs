@@ -31,11 +31,10 @@ pub enum FilterMode {
 
 /// The slope of the filter.
 ///
-/// `TwoPole` uses a single state variable filter. `FourPole` is the original
-/// 24 dB ladder, which is kept bit-identical for old patches and host states.
-/// `FourPoleModern` uses a zero-delay-feedback four-pole ladder with a
-/// monotonic resonance curve and gain compensation. The first two variants
-/// stay at indices 0 and 1, so old host states keep their original behavior.
+/// `TwoPole` uses a single state variable filter. `FourPole` and
+/// `FourPoleModern` both run a second cascaded stage, which is the 24 dB path
+/// of the Legacy engine. The two 24 dB names are aliases kept for old patches
+/// and host states; their indices and names must not change.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FilterSlope {
     #[default]
@@ -1718,7 +1717,7 @@ mod tests {
         assert_eq!(ArpChord::to_index(ArpChord::Major), 4);
         assert_eq!(Character::variants(), ["Silk", "Grit"]);
         assert_eq!(FilterSlope::variants(), ["12 dB", "24 dB OLD", "24 dB"]);
-        // Old host states address the old ladder by its index.
+        // Old host states address the first 24 dB alias by its index.
         assert_eq!(FilterSlope::from_index(1), FilterSlope::FourPole);
     }
 }

@@ -274,9 +274,9 @@ fn normalize_name(name: &str) -> String {
 
 /// The name with which a variant is written into a patch.
 ///
-/// The modern 24 dB ladder is displayed as "24 dB", but old patches already
-/// used that text for the old ladder. The modern one is therefore spelled out
-/// so that a patch can never turn an old sound into a new one by accident.
+/// The second 24 dB alias is displayed as "24 dB", but old patches already
+/// used that text for the first one. It is therefore spelled out so that a
+/// patch can never change the saved slope value by accident.
 fn variant_to_json_name(variants: &[&str], name: &str) -> String {
     if name == "24 dB" && variants.contains(&"24 dB OLD") {
         "24 dB NEW".to_string()
@@ -287,8 +287,8 @@ fn variant_to_json_name(variants: &[&str], name: &str) -> String {
 
 /// The index of a variant that was read from a patch.
 ///
-/// "24 dB" is the name that old patches gave to the old ladder, so it keeps
-/// resolving to "24 dB OLD". The modern ladder is only selected by the
+/// "24 dB" is the name that old patches gave to the first 24 dB alias, so it
+/// keeps resolving to "24 dB OLD". The second alias is only selected by the
 /// explicit "24 dB NEW" spelling, which is what this version writes.
 fn variant_index_from_name(variants: &[&str], name: &str) -> Option<usize> {
     let wanted = normalize_name(name);
@@ -1165,12 +1165,12 @@ mod tests {
     }
 
     #[test]
-    fn old_patches_load_the_old_four_pole_ladder() {
+    fn old_patches_load_the_first_four_pole_alias() {
         let params = SushiParams::default();
         let setter = setter();
 
         // "24 dB" is the name that every old patch and factory preset uses.
-        // It has to keep meaning the old ladder, not the corrected one.
+        // It has to keep resolving to the first 24 dB alias.
         apply_json(
             &params,
             &setter,
@@ -1179,13 +1179,13 @@ mod tests {
         .expect("the legacy patch could not be applied");
         assert_eq!(params.filter_slope.value(), FilterSlope::FourPole);
 
-        // An old patch that is saved again spells out the old ladder.
+        // An old patch that is saved again spells out the first alias.
         let document = to_json(&params, "LEGACY 24 DB");
         assert_eq!(document["params"]["filter_slope"], "24 dB OLD");
     }
 
     #[test]
-    fn the_two_four_pole_ladders_have_distinct_patch_names() {
+    fn the_two_four_pole_aliases_have_distinct_patch_names() {
         let params = SushiParams::default();
         let setter = setter();
 
@@ -1198,7 +1198,7 @@ mod tests {
         assert_eq!(
             other.filter_slope.value(),
             FilterSlope::FourPoleModern,
-            "the modern patch did not restore the corrected ladder"
+            "the second alias was not restored"
         );
 
         // The explicit names and the host indices all select the right one.

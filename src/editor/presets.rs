@@ -1085,13 +1085,13 @@ mod tests {
     }
 
     #[test]
-    fn the_original_presets_keep_the_old_ladder() {
+    fn the_original_presets_keep_the_old_slope_value() {
         let params = SushiParams::default();
         let setter = setter();
         let mut checked = 0;
 
-        // The first 26 presets existed before the ZDF ladder was added. None
-        // of them may silently move to the new ladder.
+        // The first 26 presets existed before the second 24 dB alias was
+        // added. None of them may silently move to that alias.
         for (index, preset) in PRESETS[..26].iter().enumerate() {
             let document: Value = serde_json::from_str(preset.json)
                 .unwrap_or_else(|error| panic!("the preset {} is broken: {error}", preset.name));
@@ -1102,7 +1102,7 @@ mod tests {
             assert_ne!(
                 params.filter_slope.value(),
                 FilterSlope::FourPoleModern,
-                "the original preset {} uses the new ladder",
+                "the original preset {} uses the second 24 dB alias",
                 preset.name
             );
             if uses_old_four_pole {
@@ -1110,7 +1110,7 @@ mod tests {
                 assert_eq!(
                     params.filter_slope.value(),
                     FilterSlope::FourPole,
-                    "the preset {} lost its old ladder",
+                    "the preset {} lost its original 24 dB alias",
                     preset.name
                 );
             }
@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn the_zdf_acid_preset_uses_the_modern_ladder() {
+    fn the_zdf_acid_preset_uses_the_second_24_db_alias() {
         let params = SushiParams::default();
         let setter = setter();
         let index = PRESETS

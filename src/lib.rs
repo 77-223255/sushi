@@ -17,7 +17,6 @@ mod editor;
 pub mod params;
 pub mod patch;
 
-use dsp::adaa::{AdaaTanh, AdaaTanhAsym};
 use dsp::adsr::{EnvCoeffs, curve_exponent};
 use dsp::arp::{Arp, MAX_CHORD_NOTES};
 use dsp::fx::{Fx, FxParams};
@@ -231,12 +230,6 @@ pub struct Sushi {
     /// intentionally asymmetric and otherwise leaves a DC offset.
     character_dc_left: DcBlocker,
     character_dc_right: DcBlocker,
-    /// Anti-aliased nonlinear stages.
-    character_adaa_left: AdaaTanhAsym,
-    character_adaa_right: AdaaTanhAsym,
-    master_adaa_left: AdaaTanh,
-    master_adaa_right: AdaaTanh,
-
     editor_state: Arc<EguiEditorState>,
     repaint_notifier: RepaintNotifier,
     scope_tx: rtrb::Producer<f32>,
@@ -286,10 +279,6 @@ impl Default for Sushi {
             tone_right: 0.0,
             character_dc_left: DcBlocker::default(),
             character_dc_right: DcBlocker::default(),
-            character_adaa_left: AdaaTanhAsym::default(),
-            character_adaa_right: AdaaTanhAsym::default(),
-            master_adaa_left: AdaaTanh::default(),
-            master_adaa_right: AdaaTanh::default(),
 
             // Open the editor a little larger than the 960x600 design so
             // the panel is comfortable on a normal DAW screen. The design
@@ -450,7 +439,6 @@ impl Sushi {
             trem_rate: params.trem_rate.value(),
             trem_depth: params.trem_depth.value(),
             trem_stereo: params.trem_stereo.value(),
-            legacy: false,
         }
     }
 
@@ -600,7 +588,7 @@ impl Sushi {
     /// The asymmetry only changes the gain of the two halves of the wave. That
     /// does introduce a DC offset on non-silent signals, which the character
     /// DC blocker after this stage removes; silence stays exactly silent.
-    fn saturate(&mut self, left: f32, right: f32, grit: bool, legacy: bool) -> (f32, f32) {
+    fn saturate(&mut self, left: f32, right: f32, grit: bool) -> (f32, f32) {
         let amount = if grit { 0.30 } else { 0.10 };
         let drive = 1.0 + 2.0 * amount;
         let normalizer = 1.0 / (1.0 + amount);
@@ -608,19 +596,9 @@ impl Sushi {
         // the negative one.
         let negative_gain = if grit { 1.0 - 0.6 * amount } else { 1.0 };
 
-        if legacy {
-            return (
-                flush_denormal(saturate_sample(left, drive, negative_gain) * normalizer),
-                flush_denormal(saturate_sample(right, drive, negative_gain) * normalizer),
-            );
-        }
-
-        self.character_adaa_left.set_negative_gain(negative_gain);
-        self.character_adaa_right.set_negative_gain(negative_gain);
-
         (
-            flush_denormal(self.character_adaa_left.process(left * drive) * normalizer),
-            flush_denormal(self.character_adaa_right.process(right * drive) * normalizer),
+            flush_denormal(saturate_sample(left, drive, negative_gain) * normalizer),
+            flush_denormal(saturate_sample(right, drive, negative_gain) * normalizer),
         )
     }
 
@@ -1262,10 +1240,6 @@ impl Plugin for Sushi {
         self.tone_right = 0.0;
         self.character_dc_left = DcBlocker::default();
         self.character_dc_right = DcBlocker::default();
-        self.character_adaa_left = AdaaTanhAsym::default();
-        self.character_adaa_right = AdaaTanhAsym::default();
-        self.master_adaa_left = AdaaTanh::default();
-        self.master_adaa_right = AdaaTanh::default();
         self.arp_led.store(0, Ordering::Relaxed);
         self.arp_position.store(0, Ordering::Relaxed);
         self.voice_count.store(0, Ordering::Relaxed);
@@ -1293,10 +1267,6 @@ impl Plugin for Sushi {
         // consulted, so old projects cannot switch back to the Modern path.
         let legacy = LEGACY_ENGINE;
         if self.last_legacy != Some(legacy) {
-            self.character_adaa_left = AdaaTanhAsym::default();
-            self.character_adaa_right = AdaaTanhAsym::default();
-            self.master_adaa_left = AdaaTanh::default();
-            self.master_adaa_right = AdaaTanh::default();
             self.character_dc_left = DcBlocker::default();
             self.character_dc_right = DcBlocker::default();
             self.last_legacy = Some(legacy);
@@ -1349,7 +1319,6 @@ impl Plugin for Sushi {
             };
         }
         let mut fx_params = self.fx_params();
-        fx_params.legacy = legacy;
 
         // The global highpass sits on the summed voices, before the character
         // saturator. Its default 20 Hz cutoff is an exact bypass.
@@ -1757,7 +1726,7 @@ impl Plugin for Sushi {
             // The character saturator, its DC blocker, the effect chain and
             // the tone tilt. Only the asymmetric grit character needs the DC
             // blocker; the symmetric silk character keeps its old low end.
-            let (left, right) = self.saturate(left, right, grit, legacy);
+            let (left, right) = self.saturate(left, right, grit);
             let (left, right) = if grit {
                 (
                     self.character_dc_left.process(left, sample_rate),
@@ -1784,16 +1753,8 @@ impl Plugin for Sushi {
             let right = right * volume;
 
             // Gentle saturation keeps stacked voices from clipping harshly.
-            let left = if legacy {
-                flush_denormal(left.tanh())
-            } else {
-                flush_denormal(self.master_adaa_left.process(left))
-            };
-            let right = if legacy {
-                flush_denormal(right.tanh())
-            } else {
-                flush_denormal(self.master_adaa_right.process(right))
-            };
+            let left = flush_denormal(left.tanh());
+            let right = flush_denormal(right.tanh());
 
             // Feed the editor's oscilloscope, but only while the editor is open.
             if self.editor_state.is_open() {
@@ -2247,14 +2208,14 @@ mod tests {
         let mut sushi = Sushi::default();
 
         for grit in [false, true] {
-            let (left, right) = sushi.saturate(10.0, -10.0, grit, false);
+            let (left, right) = sushi.saturate(10.0, -10.0, grit);
             assert!(left.is_finite() && right.is_finite());
             assert!(left.abs() <= 1.0 && right.abs() <= 1.0);
 
             // Silence stays exactly silent, without an offset, also when the
             // saturator starts from a clean state.
             let mut silent = Sushi::default();
-            let (left, right) = silent.saturate(0.0, 0.0, grit, false);
+            let (left, right) = silent.saturate(0.0, 0.0, grit);
             assert_eq!(left, 0.0);
             assert_eq!(right, 0.0);
         }
@@ -2263,9 +2224,9 @@ mod tests {
     #[test]
     fn the_grit_character_is_harsher_than_the_silk_character() {
         let mut silk_sushi = Sushi::default();
-        let (silk, _) = silk_sushi.saturate(0.1, 0.1, false, false);
+        let (silk, _) = silk_sushi.saturate(0.1, 0.1, false);
         let mut grit_sushi = Sushi::default();
-        let (grit, _) = grit_sushi.saturate(0.1, 0.1, true, false);
+        let (grit, _) = grit_sushi.saturate(0.1, 0.1, true);
         assert!(
             grit > silk,
             "the grit character was not louder ({grit} vs {silk})"
@@ -2274,9 +2235,9 @@ mod tests {
         // The grit character is a little asymmetric, so the negative half of
         // the wave is driven less hard.
         let mut silk_sushi = Sushi::default();
-        let (silk, _) = silk_sushi.saturate(-0.1, -0.1, false, false);
+        let (silk, _) = silk_sushi.saturate(-0.1, -0.1, false);
         let mut grit_sushi = Sushi::default();
-        let (grit, _) = grit_sushi.saturate(-0.1, -0.1, true, false);
+        let (grit, _) = grit_sushi.saturate(-0.1, -0.1, true);
         assert!(
             grit.abs() < silk.abs(),
             "the grit character was not asymmetric ({grit} vs {silk})"
@@ -2295,7 +2256,7 @@ mod tests {
         // blocker that the output uses.
         for sample in 0..48_000 {
             let x = (sample as f32 * 440.0 / SAMPLE_RATE * std::f32::consts::TAU).sin() * 0.5;
-            let (saturated_left, saturated_right) = sushi.saturate(x, x, true, false);
+            let (saturated_left, saturated_right) = sushi.saturate(x, x, true);
             let output = left.process(saturated_left, SAMPLE_RATE);
             let _ = right.process(saturated_right, SAMPLE_RATE);
 

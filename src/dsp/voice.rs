@@ -5,7 +5,7 @@ use nice_plug::util;
 use std::f32::consts::PI;
 
 use super::adsr::{Adsr, EnvCoeffs, shape_envelope};
-use super::filter::{Ladder, LadderModern, Svf};
+use super::filter::Svf;
 use super::mod_matrix::{ModSources, Modulation, evaluate, key_source};
 use super::osc::{Noise, Oscillator};
 use crate::params::{
@@ -87,26 +87,6 @@ fn unison_offset(index: usize, count: usize) -> f32 {
     } else {
         (index as f32 * 2.0 / (count - 1) as f32) - 1.0
     }
-}
-
-/// Whether these settings run a ladder instead of the cascaded SVF. Only the
-/// modern four-pole lowpass uses one, in either the old or the new flavor.
-#[inline]
-fn uses_ladder(settings: &VoiceSettings) -> bool {
-    !settings.legacy
-        && matches!(
-            settings.filter_slope,
-            FilterSlope::FourPole | FilterSlope::FourPoleModern
-        )
-        && settings.filter_mode == FilterMode::Lowpass
-}
-
-/// Whether the ladder should use the zero-delay-feedback topology. This is
-/// only true for the `24 dB` option in the modern flavor; `24 dB OLD` keeps
-/// the original one-sample-delayed ladder.
-#[inline]
-fn uses_modern_ladder(settings: &VoiceSettings) -> bool {
-    uses_ladder(settings) && settings.filter_slope == FilterSlope::FourPoleModern
 }
 
 /// The settings of a single oscillator.
@@ -361,10 +341,6 @@ pub struct Voice {
     filter_right: Svf,
     filter_left2: Svf,
     filter_right2: Svf,
-    ladder_left: Ladder,
-    ladder_right: Ladder,
-    modern_ladder_left: LadderModern,
-    modern_ladder_right: LadderModern,
     dc_left: DcBlocker,
     dc_right: DcBlocker,
     /// The fixed top-end loss of the legacy flavor, after the DC blockers.
@@ -431,18 +407,10 @@ pub struct Voice {
     /// The flavor used by the previous sample. A switch clears the filter
     /// state that belongs to the other topology.
     last_legacy: bool,
-    /// Whether the previous sample ran the nonlinear ladder. A switch resets
-    /// the filter path that becomes active, so that it never runs with stale
-    /// or default coefficients while waiting for the next control tick.
-    last_ladder_mode: bool,
-    /// Whether the active ladder was the zero-delay-feedback one. The old and
-    /// new ladders are separate filters, so a switch between them has to
-    /// prepare the newly active one as well.
-    last_modern_ladder: bool,
-    /// The cutoff that the last control tick used by the filter, in Hz.
+    /// The cutoff that the last control tick used by the filter, in Hz. Only
+    /// the regression tests inspect it.
+    #[cfg(test)]
     current_cutoff: f32,
-    /// The resonance that the last control tick used by the filter, `0..1`.
-    current_resonance: f32,
 }
 
 impl Voice {
@@ -523,10 +491,6 @@ impl Voice {
             filter_right: Svf::new(),
             filter_left2: Svf::new(),
             filter_right2: Svf::new(),
-            ladder_left: Ladder::new(),
-            ladder_right: Ladder::new(),
-            modern_ladder_left: LadderModern::new(),
-            modern_ladder_right: LadderModern::new(),
             dc_left: DcBlocker::default(),
             dc_right: DcBlocker::default(),
             hf_left: LegacyHfShelf::default(),
@@ -554,10 +518,8 @@ impl Voice {
             modulation: Modulation::default(),
             mod_wheel_routed: has_mod_wheel_route(&settings.mod_slots),
             last_legacy: settings.legacy,
-            last_ladder_mode: uses_ladder(settings),
-            last_modern_ladder: uses_modern_ladder(settings),
+            #[cfg(test)]
             current_cutoff: 1_000.0,
-            current_resonance: settings.resonance.clamp(0.0, 1.0),
         };
 
         if settings.osc_phase_reset {
@@ -685,8 +647,8 @@ impl Voice {
         let sample_rate = sample_rate.max(1.0);
 
         if settings.legacy != self.last_legacy {
-            // The ladder and the cascaded SVF have different state. Clear
-            // both when the flavor changes so no old filter state leaks in.
+            // The two flavors have different filter state. Clear it when the
+            // flavor changes so no old state leaks in.
             self.filter_left = Svf::new();
             self.filter_right = Svf::new();
             self.filter_left2 = Svf::new();
@@ -697,10 +659,6 @@ impl Voice {
             self.filter_right.set(self.g, self.k);
             self.filter_left2.set(self.g, self.k);
             self.filter_right2.set(self.g, self.k);
-            self.ladder_left.reset();
-            self.ladder_right.reset();
-            self.modern_ladder_left.reset();
-            self.modern_ladder_right.reset();
             self.hf_left.reset();
             self.hf_right.reset();
             if settings.legacy {
@@ -761,36 +719,6 @@ impl Voice {
                 filter_octaves + self.modulation.filter_octaves,
                 sample_rate,
             );
-        }
-
-        // The filter topology can change between two control ticks. The
-        // ladder is only prepared by the control tick while it is active, so
-        // a switch has to reset the newly active path and prepare its
-        // coefficients here. Otherwise it would run with stale or default
-        // coefficients for up to seven samples.
-        let ladder_mode = uses_ladder(settings);
-        let modern_ladder = ladder_mode && uses_modern_ladder(settings);
-        if ladder_mode != self.last_ladder_mode {
-            self.last_ladder_mode = ladder_mode;
-            self.filter_left = Svf::new();
-            self.filter_right = Svf::new();
-            self.filter_left2 = Svf::new();
-            self.filter_right2 = Svf::new();
-            self.filter_left.set(self.g, self.k);
-            self.filter_right.set(self.g, self.k);
-            self.filter_left2.set(self.g, self.k);
-            self.filter_right2.set(self.g, self.k);
-            self.ladder_left.reset();
-            self.ladder_right.reset();
-            self.modern_ladder_left.reset();
-            self.modern_ladder_right.reset();
-            self.last_modern_ladder = modern_ladder;
-            if ladder_mode {
-                self.reset_and_prepare_ladder(modern_ladder, sample_rate);
-            }
-        } else if ladder_mode && modern_ladder != self.last_modern_ladder {
-            self.last_modern_ladder = modern_ladder;
-            self.reset_and_prepare_ladder(modern_ladder, sample_rate);
         }
 
         let unison = self.unison;
@@ -870,52 +798,32 @@ impl Voice {
             (left * attenuation, right * attenuation)
         };
 
-        // The 24 dB lowpass uses the nonlinear ladder; the other modes keep
-        // the transparent cascaded SVF so they can still provide highpass,
-        // bandpass and notch outputs.
-        let (left, right) = if ladder_mode {
-            if modern_ladder {
-                (
-                    self.modern_ladder_left.process(left, drive),
-                    self.modern_ladder_right.process(right, drive),
-                )
-            } else {
-                (
-                    self.ladder_left.process(left, drive),
-                    self.ladder_right.process(right, drive),
-                )
-            }
+        // The 24 dB slopes run a second cascaded SVF stage. The original
+        // ladder filter is gone; the legacy engine has always used this
+        // transparent cascade, so old patches keep their sound.
+        let left =
+            self.filter_left
+                .process_prepared(left, settings.filter_mode, drive, settings.legacy);
+        let right =
+            self.filter_right
+                .process_prepared(right, settings.filter_mode, drive, settings.legacy);
+        let (left, right) = if settings.filter_slope != FilterSlope::TwoPole {
+            (
+                self.filter_left2.process_prepared(
+                    left,
+                    settings.filter_mode,
+                    drive,
+                    settings.legacy,
+                ),
+                self.filter_right2.process_prepared(
+                    right,
+                    settings.filter_mode,
+                    drive,
+                    settings.legacy,
+                ),
+            )
         } else {
-            let left = self.filter_left.process_prepared(
-                left,
-                settings.filter_mode,
-                drive,
-                settings.legacy,
-            );
-            let right = self.filter_right.process_prepared(
-                right,
-                settings.filter_mode,
-                drive,
-                settings.legacy,
-            );
-            if settings.filter_slope != FilterSlope::TwoPole {
-                (
-                    self.filter_left2.process_prepared(
-                        left,
-                        settings.filter_mode,
-                        drive,
-                        settings.legacy,
-                    ),
-                    self.filter_right2.process_prepared(
-                        right,
-                        settings.filter_mode,
-                        drive,
-                        settings.legacy,
-                    ),
-                )
-            } else {
-                (left, right)
-            }
+            (left, right)
         };
 
         // The DC blocker, which takes the offset of the wave out of the
@@ -969,27 +877,6 @@ impl Voice {
         }
     }
 
-    /// Clears the state of the newly active ladder and prepares its
-    /// coefficients. Called when the slope changes between two control ticks,
-    /// so the first sample already uses the right topology and cutoff.
-    fn reset_and_prepare_ladder(&mut self, modern: bool, sample_rate: f32) {
-        if modern {
-            self.modern_ladder_left.reset();
-            self.modern_ladder_right.reset();
-            self.modern_ladder_left
-                .set(self.current_cutoff, self.current_resonance, sample_rate);
-            self.modern_ladder_right
-                .set(self.current_cutoff, self.current_resonance, sample_rate);
-        } else {
-            self.ladder_left.reset();
-            self.ladder_right.reset();
-            self.ladder_left
-                .set(self.current_cutoff, self.current_resonance, sample_rate);
-            self.ladder_right
-                .set(self.current_cutoff, self.current_resonance, sample_rate);
-        }
-    }
-
     /// Updates the pitch and the filter of the voice. This only happens every
     /// eighth sample.
     fn update_control(
@@ -1029,12 +916,14 @@ impl Voice {
             octaves += self.cutoff_tolerance;
         }
         let cutoff = (cutoff_hz * 2f32.powf(octaves)).clamp(20.0, sample_rate * 0.45);
-        self.current_cutoff = cutoff;
+        #[cfg(test)]
+        {
+            self.current_cutoff = cutoff;
+        }
         self.g = (PI * cutoff / sample_rate).tan();
 
         // The resonance of the filter, with the modulation of the matrix.
         let resonance = (settings.resonance + self.modulation.resonance).clamp(0.0, 1.0);
-        self.current_resonance = resonance;
         self.k = 2.0 - 1.98 * resonance;
 
         // Prepare the coefficients of the cascaded SVF stages once per
@@ -1043,16 +932,6 @@ impl Voice {
         self.filter_right.set(self.g, self.k);
         self.filter_left2.set(self.g, self.k);
         self.filter_right2.set(self.g, self.k);
-
-        if uses_ladder(settings) {
-            if uses_modern_ladder(settings) {
-                self.modern_ladder_left.set(cutoff, resonance, sample_rate);
-                self.modern_ladder_right.set(cutoff, resonance, sample_rate);
-            } else {
-                self.ladder_left.set(cutoff, resonance, sample_rate);
-                self.ladder_right.set(cutoff, resonance, sample_rate);
-            }
-        }
 
         // The phase increments of the unison voices. Unison can be changed
         // while a note is held, so the cached count is refreshed here. The
@@ -1918,10 +1797,10 @@ mod tests {
     }
 
     #[test]
-    fn the_fixed_paths_keep_their_pre_zdf_fingerprints() {
-        // These fingerprints were captured before the modern ZDF ladder was
-        // added. They pin the legacy path, the old 24 dB path and the default
-        // 12 dB path (the one `render_demo` uses).
+    fn the_fixed_paths_keep_their_fingerprints() {
+        // These fingerprints pin the legacy path and the default 12 dB path
+        // (the one `render_demo` uses). The unused ladder paths were removed,
+        // so 24 dB now always means the cascaded SVF of the legacy engine.
         fn fingerprint(hash: &mut u64, sample: f32) {
             *hash ^= sample.to_bits() as u64;
             *hash = hash.wrapping_mul(0x100_0000_01b3);
@@ -1969,10 +1848,6 @@ mod tests {
             ..VoiceSettings::default()
         };
 
-        let old = VoiceSettings {
-            filter_slope: FilterSlope::FourPole,
-            ..base
-        };
         let two_pole = VoiceSettings {
             filter_slope: FilterSlope::TwoPole,
             ..base
@@ -1983,7 +1858,6 @@ mod tests {
         };
 
         assert_eq!(render(&legacy, 9), 0x0b35_beab_2d91_6476);
-        assert_eq!(render(&old, 7), 0xd3c4_1b8b_a3ae_329c);
         assert_eq!(render(&two_pole, 11), 0x9534_eebd_dd8a_6d8e);
     }
 

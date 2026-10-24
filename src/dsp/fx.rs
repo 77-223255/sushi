@@ -19,7 +19,6 @@
 use std::f32::consts::PI;
 
 use super::adaa::AdaaTanh;
-use super::reverb::Reverb;
 use super::reverb_legacy::LegacyReverb;
 
 /// The base delay of the chorus in seconds.
@@ -248,19 +247,6 @@ pub fn stage_order_index(order: [FxStage; FX_STAGE_COUNT]) -> i32 {
     let rank = permutation_rank(order);
     let allowed_before = rank - reserved_before(rank);
     FX_LEGACY_ORDER_COUNT as i32 + allowed_before as i32
-}
-
-/// The first six stages of a chain order.
-///
-/// The editor still shows the original six-stage rack, so it uses this view
-/// until the UI grows the two new modules. For an old order it is exactly
-/// [`legacy_stage_order()`].
-#[inline]
-pub fn legacy_view_stage_order(order: i32) -> [FxStage; FX_LEGACY_STAGE_COUNT] {
-    let stages = stage_order(order);
-    [
-        stages[0], stages[1], stages[2], stages[3], stages[4], stages[5],
-    ]
 }
 
 /// `n!` for the tiny values needed by the permutation tables.
@@ -581,9 +567,6 @@ pub struct FxParams {
     /// Whether the tremolo pans between the channels instead of modulating
     /// both channels together.
     pub trem_stereo: bool,
-    /// Use the original Freeverb-style reverb and the unprocessed feedback
-    /// path. Set by the legacy flavor.
-    pub legacy: bool,
 }
 
 impl Default for FxParams {
@@ -622,7 +605,6 @@ impl Default for FxParams {
             trem_rate: 5.0,
             trem_depth: 0.0,
             trem_stereo: false,
-            legacy: false,
         }
     }
 }
@@ -681,14 +663,21 @@ impl FxParams {
         }
     }
 
-    /// Whether the chain can change the signal: the global mix is above zero
-    /// and at least one stage is active and not bypassed.
-    pub fn is_active(&self) -> bool {
-        let mask = self.clamped_bypass_mask();
-        self.clamped_global_mix() > 0.0
+    /// Whether the chain can change the signal, using an already clamped
+    /// bypass mask and global mix. `Fx::process` clamps both values once and
+    /// reuses them for the whole sample.
+    #[inline]
+    fn is_active_with(&self, mask: u32, global_mix: f32) -> bool {
+        global_mix > 0.0
             && FxStage::ALL
                 .iter()
                 .any(|&stage| mask & stage.bit() == 0 && self.stage_active(stage))
+    }
+
+    /// Whether the chain can change the signal: the global mix is above zero
+    /// and at least one stage is active and not bypassed.
+    pub fn is_active(&self) -> bool {
+        self.is_active_with(self.clamped_bypass_mask(), self.clamped_global_mix())
     }
 }
 
@@ -732,6 +721,17 @@ fn allpass_stage(input: f32, coefficient: f32, state: &mut f32) -> f32 {
     let output = coefficient * input + *state;
     *state = flush_denormal(input - coefficient * output);
     output
+}
+
+/// Crossfades between the dry and the wet signal of a stage. The operation
+/// order matches the original inline expressions, so the result is bit-exact.
+#[inline]
+fn crossfade(dry_left: f32, dry_right: f32, wet_left: f32, wet_right: f32, mix: f32) -> (f32, f32) {
+    let dry_gain = 1.0 - mix;
+    (
+        dry_left * dry_gain + wet_left * mix,
+        dry_right * dry_gain + wet_right * mix,
+    )
 }
 
 /// Splits the input into a low and a high band and applies the two gains.
@@ -808,20 +808,12 @@ pub struct Fx {
     delay_lp_right: f32,
     /// The coefficient of the lowpass in the feedback path.
     delay_coefficient: f32,
-    /// Anti-aliased saturation in the delay feedback.
-    delay_adaa_left: AdaaTanh,
-    delay_adaa_right: AdaaTanh,
-
     // The reverb.
-    reverb: Reverb,
     legacy_reverb: LegacyReverb,
     /// The low band of the reverb tone tilt.
     reverb_tone_left: f32,
     reverb_tone_right: f32,
     reverb_tone_coefficient: f32,
-    /// The flavor used by the previous sample. Switching flavors clears the
-    /// reverb that was not running, so it cannot replay stale audio.
-    last_legacy: Option<bool>,
 
     // The compressor. A single gain envelope links the two channels.
     compressor_gain: f32,
@@ -887,14 +879,10 @@ impl Fx {
             delay_lp_left: 0.0,
             delay_lp_right: 0.0,
             delay_coefficient: lowpass_coefficient(DELAY_LOWPASS, sample_rate),
-            delay_adaa_left: AdaaTanh::default(),
-            delay_adaa_right: AdaaTanh::default(),
-            reverb: Reverb::new(sample_rate),
             legacy_reverb: LegacyReverb::new(sample_rate),
             reverb_tone_left: 0.0,
             reverb_tone_right: 0.0,
             reverb_tone_coefficient: lowpass_coefficient(REVERB_TONE_FREQUENCY, sample_rate),
-            last_legacy: None,
             compressor_gain: 1.0,
             tremolo_phase: 0.0,
             last_order: 0,
@@ -909,7 +897,6 @@ impl Fx {
         for stage in FxStage::ALL {
             self.reset_stage(stage);
         }
-        self.last_legacy = None;
         self.bypassed = true;
         self.last_bypass_mask = 0;
     }
@@ -945,11 +932,8 @@ impl Fx {
                 self.delay_time_samples = None;
                 self.delay_lp_left = 0.0;
                 self.delay_lp_right = 0.0;
-                self.delay_adaa_left = AdaaTanh::default();
-                self.delay_adaa_right = AdaaTanh::default();
             }
             FxStage::Reverb => {
-                self.reverb.reset();
                 self.legacy_reverb.reset();
                 self.reverb_tone_left = 0.0;
                 self.reverb_tone_right = 0.0;
@@ -976,10 +960,15 @@ impl Fx {
             return (left, right);
         }
 
-        // `is_active` includes the per-stage mix and EQ neutral checks, the
-        // bypass mask and the global mix. With the default fully wet chain it
-        // is exactly the old full-FX bypass test.
-        if !params.is_active() {
+        // Clamp the mask and the global mix once, then reuse them for the
+        // activity test, the stage loop and the final crossfade.
+        let bypass_mask = params.clamped_bypass_mask();
+        let global_mix = params.clamped_global_mix();
+
+        // `is_active_with` includes the per-stage mix and EQ neutral checks,
+        // the bypass mask and the global mix. With the default fully wet chain
+        // it is exactly the old full-FX bypass test.
+        if !params.is_active_with(bypass_mask, global_mix) {
             if !self.bypassed {
                 // Entering bypass clears every delay line, the reverb and
                 // the new effects, so a later enable starts from silence
@@ -988,17 +977,16 @@ impl Fx {
             }
             // The whole chain is clean. Remember the mask so that a later
             // unmask still starts from a cleared stage.
-            self.last_bypass_mask = params.clamped_bypass_mask();
+            self.last_bypass_mask = bypass_mask;
             return (left, right);
         }
 
-        // The reset on entering bypass left the state clean, including
-        // `last_legacy`. The first active sample can therefore start here.
+        // The reset on entering bypass left the state clean. The first active
+        // sample can therefore start here.
         self.bypassed = false;
 
         // A stage that becomes bypassed is cleared once at the transition,
         // never on every sample.
-        let bypass_mask = params.clamped_bypass_mask();
         if bypass_mask != self.last_bypass_mask {
             for stage in FxStage::ALL {
                 if bypass_mask & stage.bit() != 0 {
@@ -1006,16 +994,6 @@ impl Fx {
                 }
             }
             self.last_bypass_mask = bypass_mask;
-        }
-
-        if self.last_legacy != Some(params.legacy) {
-            // Switching flavor resets both reverb engines and the delay
-            // saturator so no state from the other algorithm leaks in.
-            self.reverb.reset();
-            self.legacy_reverb.reset();
-            self.delay_adaa_left = AdaaTanh::default();
-            self.delay_adaa_right = AdaaTanh::default();
-            self.last_legacy = Some(params.legacy);
         }
 
         let (dry_left, dry_right) = (left, right);
@@ -1049,15 +1027,10 @@ impl Fx {
 
         // At unity the wet signal is returned directly, bit for bit. Any
         // other value is a crossfade between the chain input and output.
-        if params.clamped_global_mix() >= 1.0 {
+        if global_mix >= 1.0 {
             (wet_left, wet_right)
         } else {
-            let mix = params.clamped_global_mix();
-            let dry_gain = 1.0 - mix;
-            (
-                dry_left * dry_gain + wet_left * mix,
-                dry_right * dry_gain + wet_right * mix,
-            )
+            crossfade(dry_left, dry_right, wet_left, wet_right, global_mix)
         }
     }
 
@@ -1112,10 +1085,7 @@ impl Fx {
             (wet_left, wet_right)
         };
 
-        (
-            left * (1.0 - mix) + wet_left * mix,
-            right * (1.0 - mix) + wet_right * mix,
-        )
+        crossfade(left, right, wet_left, wet_right, mix)
     }
 
     /// A four stage first-order allpass phaser with a stereo quadrature LFO.
@@ -1176,10 +1146,7 @@ impl Fx {
             (wet_left, wet_right)
         };
 
-        (
-            left * (1.0 - mix) + wet_left * mix,
-            right * (1.0 - mix) + wet_right * mix,
-        )
+        crossfade(left, right, wet_left, wet_right, mix)
     }
 
     /// A three band EQ built from two one-pole crossovers. The bands always
@@ -1284,10 +1251,7 @@ impl Fx {
             return (left, right);
         }
 
-        (
-            left * (1.0 - mix) + wet_left * mix,
-            right * (1.0 - mix) + wet_right * mix,
-        )
+        crossfade(left, right, wet_left, wet_right, mix)
     }
 
     /// A ping-pong delay with a fractional read position.
@@ -1324,17 +1288,8 @@ impl Fx {
         // The feedback is damped and softly clipped, so that a long feedback
         // does not build up into a howl.
         let (mut feedback_left, mut feedback_right) = if feedback > 0.0 {
-            if params.legacy {
-                ((wet_right * feedback).tanh(), (wet_left * feedback).tanh())
-            } else {
-                (
-                    self.delay_adaa_left.process(wet_right * feedback),
-                    self.delay_adaa_right.process(wet_left * feedback),
-                )
-            }
+            ((wet_right * feedback).tanh(), (wet_left * feedback).tanh())
         } else {
-            self.delay_adaa_left.reset();
-            self.delay_adaa_right.reset();
             (0.0, 0.0)
         };
         // The feedback lowpass is fixed at 5 kHz when the damping is zero.
@@ -1363,10 +1318,7 @@ impl Fx {
             return (left, right);
         }
 
-        (
-            left * (1.0 - mix) + wet_left * mix,
-            right * (1.0 - mix) + wet_right * mix,
-        )
+        crossfade(left, right, wet_left, wet_right, mix)
     }
 
     /// A stereo-linked, feed-forward compressor with a soft gain envelope.
@@ -1413,10 +1365,7 @@ impl Fx {
         let wet_left = left * self.compressor_gain * makeup;
         let wet_right = right * self.compressor_gain * makeup;
 
-        (
-            left * (1.0 - mix) + wet_left * mix,
-            right * (1.0 - mix) + wet_right * mix,
-        )
+        crossfade(left, right, wet_left, wet_right, mix)
     }
 
     /// A sine tremolo, or an auto-pan when the stereo switch is on.
@@ -1448,18 +1397,14 @@ impl Fx {
         }
     }
 
-    /// A modulated feedback delay network reverb. The dry and wet signals are
-    /// crossfaded instead of simply added, so the effect does not raise the
-    /// perceived level when the mix is turned up.
+    /// The original Freeverb-style reverb. Its wet signal is added to the
+    /// dry signal, so the effect keeps the level behavior of the first release.
     fn process_reverb(&mut self, left: f32, right: f32, params: &FxParams) -> (f32, f32) {
         let mix = params.reverb_mix.clamp(0.0, 1.0);
 
-        let (mut wet_left, mut wet_right) = if params.legacy {
+        let (mut wet_left, mut wet_right) =
             self.legacy_reverb
-                .process(left, right, params.reverb_decay, mix)
-        } else {
-            self.reverb.process(left, right, params.reverb_decay, mix)
-        };
+                .process(left, right, params.reverb_decay, mix);
 
         if mix <= BYPASS_MIX {
             // The reverb keeps its lines current while bypassed, so enabling
@@ -1470,7 +1415,7 @@ impl Fx {
         }
 
         // The tone tilt colours only the wet signal. Zero skips the split, so
-        // the old reverb (including Freeverb) stays bit-exact.
+        // the Freeverb output stays bit-exact.
         let tone = params.reverb_tone.clamp(-1.0, 1.0);
         if tone.abs() > TONE_BYPASS {
             let high_gain = 10f32.powf(tone * REVERB_TONE_MAX_DB / 20.0);
@@ -1494,16 +1439,9 @@ impl Fx {
             self.reverb_tone_right = 0.0;
         }
 
-        // The old Freeverb path added its wet signal, while the FDN uses a
-        // dry/wet crossfade.
-        if params.legacy {
-            (left + wet_left * mix, right + wet_right * mix)
-        } else {
-            (
-                left * (1.0 - mix) + wet_left * mix,
-                right * (1.0 - mix) + wet_right * mix,
-            )
-        }
+        // The Freeverb path adds its wet signal instead of crossfading, so
+        // the original level behavior is kept.
+        (left + wet_left * mix, right + wet_right * mix)
     }
 }
 
@@ -1569,14 +1507,10 @@ impl Default for Fx {
             delay_lp_left: 0.0,
             delay_lp_right: 0.0,
             delay_coefficient: 0.0,
-            delay_adaa_left: AdaaTanh::default(),
-            delay_adaa_right: AdaaTanh::default(),
-            reverb: Reverb::default(),
             legacy_reverb: LegacyReverb::default(),
             reverb_tone_left: 0.0,
             reverb_tone_right: 0.0,
             reverb_tone_coefficient: 0.0,
-            last_legacy: None,
             compressor_gain: 1.0,
             tremolo_phase: 0.0,
             last_order: i32::MIN,
@@ -1614,7 +1548,6 @@ mod tests {
             delay_mix: 0.5,
             reverb_mix: 0.5,
             reverb_decay: 0.6,
-            legacy: false,
             ..FxParams::default()
         };
 
@@ -1810,34 +1743,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_two_reverb_engines_are_different() {
-        let mut modern = Fx::new(48_000.0);
-        let mut legacy = Fx::new(48_000.0);
-        let modern_params = FxParams {
-            reverb_mix: 0.5,
-            reverb_decay: 0.6,
-            ..FxParams::default()
-        };
-        let legacy_params = FxParams {
-            legacy: true,
-            ..modern_params
-        };
-
-        let mut difference = 0.0f32;
-        for sample in 0..8_000 {
-            let input = if sample == 0 { 1.0 } else { 0.0 };
-            let (modern_left, _) = modern.process(input, input, &modern_params);
-            let (legacy_left, _) = legacy.process(input, input, &legacy_params);
-            difference += (modern_left - legacy_left).abs();
-        }
-
-        assert!(
-            difference > 0.01,
-            "the legacy and modern reverbs were identical"
-        );
-    }
-
     /// A deterministic noise source for the tests.
     fn noise(state: &mut u32) -> f32 {
         *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -1881,7 +1786,6 @@ mod tests {
             trem_rate: 4.0,
             trem_depth: 0.6,
             trem_stereo: true,
-            legacy: false,
         }
     }
 
@@ -2219,9 +2123,8 @@ mod tests {
 
     #[test]
     fn the_default_order_bypass_and_mix_keep_the_old_output() {
-        // The hash was taken from the unmodified fixed-order chain. The
-        // default order 0, bypass mask 0 and global mix 1 must reproduce it
-        // bit for bit.
+        // The hash pins the fixed-order legacy chain. The default order 0,
+        // bypass mask 0 and global mix 1 must reproduce it bit for bit.
         let params = FxParams {
             drive_amount: 0.6,
             drive_mix: 0.5,
@@ -2244,7 +2147,6 @@ mod tests {
             reverb_mix: 0.35,
             reverb_decay: 0.7,
             reverb_tone: 0.0,
-            legacy: false,
             ..FxParams::default()
         };
 
@@ -2255,7 +2157,7 @@ mod tests {
         assert_eq!(params.global_mix, 1.0);
         assert_eq!(params.comp_mix, 0.0);
         assert_eq!(params.trem_depth, 0.0);
-        assert_eq!(fx_hash(&params, 96_000), 0x3d47_20ee_a889_07fe);
+        assert_eq!(fx_hash(&params, 96_000), 0x09d4_d96d_8d80_07e5);
     }
 
     #[test]
