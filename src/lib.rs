@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod dsp;
 mod editor;
+mod keyboard;
 pub mod params;
 pub mod patch;
 
@@ -26,6 +27,7 @@ use dsp::mod_feedback::{ModFeedback, ModFeedbackValues};
 use dsp::vca::apply_width_pan;
 use dsp::voice::{CONTROL_RATE, DcBlocker, OscSettings, Voice, VoiceSettings};
 use editor::{SushiEditor, WINDOW_HEIGHT, WINDOW_WIDTH};
+use keyboard::{HeldKeys, KeyboardNote};
 use params::{Character, ModDest, ModSource, NoteDiv, PolyMode};
 pub use params::{SushiParams, Waveform};
 
@@ -234,11 +236,21 @@ pub struct Sushi {
     repaint_notifier: RepaintNotifier,
     scope_tx: rtrb::Producer<f32>,
     scope_rx: Option<rtrb::Consumer<f32>>,
+    /// The notes of the keyboards of the panel: the editor produces them and
+    /// the audio thread consumes them here. The consumer never leaves the
+    /// plugin, so a note that is queued while the editor closes is still
+    /// played and released instead of staying in the ring buffer.
+    keyboard_tx: Option<rtrb::Producer<KeyboardNote>>,
+    keyboard_rx: rtrb::Consumer<KeyboardNote>,
+    /// The keys that are playing, for the lights of the panel. Every source
+    /// of notes writes into it.
+    held_keys: Arc<HeldKeys>,
 }
 
 impl Default for Sushi {
     fn default() -> Self {
         let (scope_tx, scope_rx) = rtrb::RingBuffer::new(SCOPE_CAPACITY);
+        let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(keyboard::QUEUE_CAPACITY);
 
         Self {
             params: Arc::new(SushiParams::default()),
@@ -280,16 +292,20 @@ impl Default for Sushi {
             character_dc_left: DcBlocker::default(),
             character_dc_right: DcBlocker::default(),
 
-            // Open the editor a little larger than the 960x600 design so
-            // the panel is comfortable on a normal DAW screen. The design
-            // still scales continuously from its 960x600 minimum.
+            // Open the editor a little larger than the 960x680 design so
+            // the panel is comfortable on a normal DAW screen and still fits
+            // under a 1080p window. The design scales continuously from its
+            // 960x680 minimum.
             editor_state: EguiEditorState::from_size(
-                LogicalSize::new(WINDOW_WIDTH * 4.0 / 3.0, WINDOW_HEIGHT * 4.0 / 3.0),
+                LogicalSize::new(WINDOW_WIDTH * 6.0 / 5.0, WINDOW_HEIGHT * 6.0 / 5.0),
                 1.0,
             ),
             repaint_notifier: RepaintNotifier::new(),
             scope_tx,
             scope_rx: Some(scope_rx),
+            keyboard_tx: Some(keyboard_tx),
+            keyboard_rx,
+            held_keys: Arc::new(HeldKeys::default()),
         }
     }
 }
@@ -1025,6 +1041,105 @@ impl Sushi {
         self.clear_mono_notes();
         self.arp.reset();
         self.sustain = false;
+        self.held_keys.clear();
+    }
+
+    /// Starts a note. Both the events of the host and the notes of the
+    /// keyboards of the panel go through here, so they can never behave
+    /// differently.
+    #[allow(clippy::too_many_arguments)]
+    fn note_on(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        timing: u32,
+        voice_id: VoiceID,
+        channel: Channel,
+        key: Key,
+        velocity: f32,
+        arp_on: bool,
+        arp_latch: bool,
+        settings: &VoiceSettings,
+    ) {
+        let note = key.number_or_middle_c();
+        self.held_keys.press(note);
+
+        if arp_on {
+            // The arpeggiator collects the notes, the voices are started by
+            // the arpeggiator itself.
+            self.arp.note_on(note, velocity, arp_latch);
+        } else {
+            self.retrigger_lfos_if_silent();
+            self.start_voice(context, timing, voice_id, channel, key, velocity, settings);
+        }
+    }
+
+    /// Releases a note. It is the counterpart of [`Self::note_on`].
+    #[allow(clippy::too_many_arguments)]
+    fn note_off(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        timing: u32,
+        voice_id: VoiceID,
+        channel: Channel,
+        key: Key,
+        arp_on: bool,
+        poly_mode: PolyMode,
+        settings: &VoiceSettings,
+    ) {
+        let note = key.number_or_middle_c();
+        self.held_keys.release(note);
+
+        if arp_on {
+            self.arp.note_off(note);
+        } else if poly_mode == PolyMode::Poly {
+            if self.sustain {
+                self.sustain_voices(voice_id, channel, key);
+            } else {
+                self.release_voices(voice_id, channel, key);
+            }
+        } else {
+            self.release_mono_note(context, timing, voice_id, channel, key, settings);
+        }
+    }
+
+    /// Applies the notes that the keyboards of the panel produced since the
+    /// last block. They enter the same path as the note events of the host
+    /// and are placed at the start of the block.
+    fn drain_keyboard(
+        &mut self,
+        context: &mut impl ProcessContext<Self>,
+        arp_on: bool,
+        arp_latch: bool,
+        poly_mode: PolyMode,
+        settings: &VoiceSettings,
+    ) {
+        while let Ok(note) = self.keyboard_rx.pop() {
+            let key = Key::Number(note.key.min(127));
+            if note.on {
+                self.note_on(
+                    context,
+                    0,
+                    VoiceID::Wildcard,
+                    Channel::Number(0),
+                    key,
+                    note.velocity.clamp(0.0, 1.0),
+                    arp_on,
+                    arp_latch,
+                    settings,
+                );
+            } else {
+                self.note_off(
+                    context,
+                    0,
+                    VoiceID::Wildcard,
+                    Channel::Number(0),
+                    key,
+                    arp_on,
+                    poly_mode,
+                    settings,
+                );
+            }
+        }
     }
 
     /// Puts every matching voice into its release stage.
@@ -1162,6 +1277,7 @@ impl Plugin for Sushi {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
         let scope_rx = self.scope_rx.take()?;
+        let keyboard_tx = self.keyboard_tx.take()?;
 
         create_egui_editor(
             self.editor_state.clone(),
@@ -1174,6 +1290,8 @@ impl Plugin for Sushi {
             SushiEditor::new(
                 self.params.clone(),
                 scope_rx,
+                keyboard_tx,
+                self.held_keys.clone(),
                 self.arp_led.clone(),
                 self.arp_position.clone(),
                 self.voice_count.clone(),
@@ -1243,6 +1361,7 @@ impl Plugin for Sushi {
         self.arp_led.store(0, Ordering::Relaxed);
         self.arp_position.store(0, Ordering::Relaxed);
         self.voice_count.store(0, Ordering::Relaxed);
+        self.held_keys.clear();
     }
 
     fn process(
@@ -1443,6 +1562,12 @@ impl Plugin for Sushi {
         let mut last_lfo1 = 0.0;
         let mut last_lfo2 = 0.0;
         for sample_idx in 0..num_samples {
+            // The notes of the panel are applied at the start of the block,
+            // like an event that the host sends at sample zero.
+            if sample_idx == 0 {
+                self.drain_keyboard(context, arp_on, arp_latch, poly_mode, &settings);
+            }
+
             // An event is applied at the sample it belongs to.
             while let Some(event) = next_event {
                 if event.timing() as usize > sample_idx {
@@ -1456,44 +1581,19 @@ impl Plugin for Sushi {
                         channel,
                         key,
                         velocity,
-                    } => {
-                        if arp_on {
-                            // The arpeggiator collects the notes, the voices
-                            // are started by the arpeggiator itself.
-                            self.arp
-                                .note_on(key.number_or_middle_c(), velocity, arp_latch);
-                        } else {
-                            self.retrigger_lfos_if_silent();
-                            self.start_voice(
-                                context, timing, voice_id, channel, key, velocity, &settings,
-                            );
-                        }
-                    }
+                    } => self.note_on(
+                        context, timing, voice_id, channel, key, velocity, arp_on, arp_latch,
+                        &settings,
+                    ),
                     NoteEvent::NoteOff {
+                        timing,
                         voice_id,
                         channel,
                         key,
                         ..
-                    } => {
-                        if arp_on {
-                            self.arp.note_off(key.number_or_middle_c());
-                        } else if poly_mode == PolyMode::Poly {
-                            if self.sustain {
-                                self.sustain_voices(voice_id, channel, key);
-                            } else {
-                                self.release_voices(voice_id, channel, key);
-                            }
-                        } else {
-                            self.release_mono_note(
-                                context,
-                                sample_idx as u32,
-                                voice_id,
-                                channel,
-                                key,
-                                &settings,
-                            );
-                        }
-                    }
+                    } => self.note_off(
+                        context, timing, voice_id, channel, key, arp_on, poly_mode, &settings,
+                    ),
                     NoteEvent::MidiPitchBend { value, .. } => {
                         // A standard +/- 2 semitone bend range.
                         self.pitch_bend_target = ((value - 0.5) * 4.0).clamp(-2.0, 2.0);
@@ -2685,5 +2785,154 @@ mod tests {
             .map(|voice| voice.internal_voice_id())
             .collect();
         assert_eq!(ids, [2, 3]);
+    }
+
+    /// A note request as the keyboard strip of the panel sends it.
+    fn panel_note(sushi: &mut Sushi, key: u8, velocity: f32, on: bool) {
+        sushi
+            .keyboard_tx
+            .as_mut()
+            .expect("the editor is closed")
+            .push(KeyboardNote { key, velocity, on })
+            .expect("the queue of the panel is full");
+    }
+
+    #[test]
+    fn the_notes_of_the_panel_start_and_release_a_voice() {
+        let mut sushi = Sushi::default();
+        let mut context = TestContext::new();
+        let settings = VoiceSettings::default();
+
+        panel_note(&mut sushi, 60, 0.9, true);
+        sushi.drain_keyboard(&mut context, false, false, PolyMode::Poly, &settings);
+
+        assert!(
+            sushi.held_keys.is_down(60),
+            "the key of the panel note is not lit"
+        );
+        let voice = sushi
+            .voices
+            .iter()
+            .flatten()
+            .find(|voice| voice.key() == Key::Number(60))
+            .expect("the panel note did not start a voice");
+        assert!(!voice.is_releasing(), "the new voice is already released");
+
+        panel_note(&mut sushi, 60, 0.0, false);
+        sushi.drain_keyboard(&mut context, false, false, PolyMode::Poly, &settings);
+
+        assert!(!sushi.held_keys.is_down(60), "the key stayed lit");
+        let voice = sushi
+            .voices
+            .iter()
+            .flatten()
+            .find(|voice| voice.key() == Key::Number(60))
+            .expect("the voice disappeared instead of being released");
+        assert!(voice.is_releasing(), "the voice was not released");
+    }
+
+    #[test]
+    fn a_note_of_the_host_lights_the_key_of_the_panel() {
+        let mut sushi = Sushi::default();
+        let mut context = TestContext::new();
+        let settings = VoiceSettings::default();
+        let key = Key::Number(64);
+
+        sushi.note_on(
+            &mut context,
+            0,
+            VoiceID::Wildcard,
+            Channel::Number(0),
+            key,
+            1.0,
+            false,
+            false,
+            &settings,
+        );
+        assert!(sushi.held_keys.is_down(64), "the MIDI note is not lit");
+        assert!(!sushi.held_keys.is_down(65));
+
+        sushi.note_off(
+            &mut context,
+            0,
+            VoiceID::Wildcard,
+            Channel::Number(0),
+            key,
+            false,
+            PolyMode::Poly,
+            &settings,
+        );
+        assert!(!sushi.held_keys.is_down(64), "the MIDI key stayed lit");
+    }
+
+    #[test]
+    fn the_notes_of_the_panel_reach_the_arpeggiator() {
+        let mut sushi = Sushi::default();
+        let mut context = TestContext::new();
+        let settings = VoiceSettings::default();
+
+        // The arpeggiator collects the notes instead of starting a voice, but
+        // the key of the panel lights up like any other note.
+        panel_note(&mut sushi, 72, 0.8, true);
+        sushi.drain_keyboard(&mut context, true, false, PolyMode::Poly, &settings);
+
+        assert!(sushi.held_keys.is_down(72));
+        assert!(
+            sushi.voices.iter().flatten().next().is_none(),
+            "the panel note started a voice while the arpeggiator is on"
+        );
+
+        panel_note(&mut sushi, 72, 0.0, false);
+        sushi.drain_keyboard(&mut context, true, false, PolyMode::Poly, &settings);
+        assert!(!sushi.held_keys.is_down(72));
+    }
+
+    #[test]
+    fn all_notes_off_and_a_reset_clear_the_lights_of_the_panel() {
+        let mut sushi = Sushi::default();
+        sushi.held_keys.press(60);
+        sushi.held_keys.press(64);
+
+        sushi.all_notes_off();
+        assert!(!sushi.held_keys.is_down(60));
+        assert!(!sushi.held_keys.is_down(64));
+
+        sushi.held_keys.press(67);
+        sushi.reset();
+        assert!(!sushi.held_keys.is_down(67), "the reset left a key lit");
+    }
+
+    #[test]
+    fn the_panel_and_the_host_share_one_note_path() {
+        let mut sushi = Sushi::default();
+        let mut context = TestContext::new();
+        let settings = VoiceSettings::default();
+
+        // A note of the panel and a note of the host start a voice in the
+        // same way, so the two sources cannot drift apart.
+        panel_note(&mut sushi, 55, 0.7, true);
+        sushi.drain_keyboard(&mut context, false, false, PolyMode::Poly, &settings);
+        sushi.note_on(
+            &mut context,
+            0,
+            VoiceID::Wildcard,
+            Channel::Number(0),
+            Key::Number(57),
+            0.7,
+            false,
+            false,
+            &settings,
+        );
+
+        let keys: Vec<Key> = sushi
+            .voices
+            .iter()
+            .flatten()
+            .map(|voice| voice.key())
+            .collect();
+        assert!(keys.contains(&Key::Number(55)));
+        assert!(keys.contains(&Key::Number(57)));
+        assert!(sushi.held_keys.is_down(55));
+        assert!(sushi.held_keys.is_down(57));
     }
 }

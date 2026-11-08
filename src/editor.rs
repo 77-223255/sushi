@@ -13,6 +13,7 @@
 //! program. Every size of the design is multiplied by the zoom of the panel,
 //! and so is every font.
 
+mod keyboard;
 mod presets;
 mod theme;
 mod undo;
@@ -33,8 +34,10 @@ use nice_plug_egui::NiceEguiApp;
 
 use crate::dsp::fx::{FX_STAGE_COUNT, FxStage, stage_order, stage_order_index};
 use crate::dsp::mod_feedback::ModFeedback;
+use crate::keyboard::{HeldKeys, KeyboardNote};
 use crate::params::{ModDest, ModSource, SushiParams};
 use crate::patch;
+use keyboard::VirtualKeyboard;
 use presets::{PRESETS, Rng};
 use theme::palette;
 use undo::UndoHistory;
@@ -146,7 +149,7 @@ fn bold() -> egui::FontFamily {
 // --- Layout -----------------------------------------------------------------
 
 pub const WINDOW_WIDTH: f32 = 960.0;
-pub const WINDOW_HEIGHT: f32 = 600.0;
+pub const WINDOW_HEIGHT: f32 = 680.0;
 
 /// The margin around the whole panel.
 const MARGIN: f32 = 8.0;
@@ -722,7 +725,7 @@ const FOOTER_BUTTON_HEIGHT: f32 = 14.0;
 
 /// The layout of the panel for the size of the window.
 ///
-/// The panel has a fixed design size of 960 x 600. It is scaled by a single
+/// The panel has a fixed design size of 960 x 680. It is scaled by a single
 /// zoom factor, so that it always keeps its
 /// proportions, and it is centered in the window. Every measure of the
 /// design is multiplied by the zoom, and so is every font.
@@ -871,6 +874,14 @@ impl Layout {
             egui::pos2(column.left(), top),
             egui::vec2(column.width(), height),
         )
+    }
+
+    /// The rect of the keyboard strip, between the last band and the footer.
+    fn keyboard(&self) -> Rect {
+        self.scale(Rect::from_min_size(
+            egui::pos2(MARGIN, self.base_rows[3].bottom() + BAND_GAP),
+            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, keyboard::STRIP_HEIGHT),
+        ))
     }
 
     /// The rect of one section of a row with explicit proportions.
@@ -1022,6 +1033,9 @@ struct EditorState {
     check_ids: Vec<&'static str>,
     /// The chain tile that is currently being dragged, if any.
     fx_chain_drag: Option<FxChainDrag>,
+    /// The keyboard strip under the bands: its octave and the notes that the
+    /// panel itself started.
+    keyboard: VirtualKeyboard,
     /// The tile, drag handle, arrows and power button of every stage, keyed by
     /// the original stage index. The tests click these directly, even after
     /// the chain was reordered.
@@ -1091,6 +1105,10 @@ impl EditorState {
 pub struct SushiEditor {
     params: Arc<SushiParams>,
     scope_rx: rtrb::Consumer<f32>,
+    /// The notes that the panel plays travel to the audio thread here.
+    keyboard_tx: rtrb::Producer<KeyboardNote>,
+    /// The keys that the synthesizer plays, for the lights of the strip.
+    held_keys: Arc<HeldKeys>,
     history: VecDeque<f32>,
     /// The undo and redo steps of the editor. They are GUI-only: the audio
     /// thread never touches this history.
@@ -1113,9 +1131,12 @@ pub struct SushiEditor {
 
 impl SushiEditor {
     /// Creates a new editor for the given parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         params: Arc<SushiParams>,
         scope_rx: rtrb::Consumer<f32>,
+        keyboard_tx: rtrb::Producer<KeyboardNote>,
+        held_keys: Arc<HeldKeys>,
         arp_led: Arc<AtomicUsize>,
         arp_position: Arc<AtomicUsize>,
         voice_count: Arc<AtomicUsize>,
@@ -1124,6 +1145,8 @@ impl SushiEditor {
         let mut editor = Self {
             params,
             scope_rx,
+            keyboard_tx,
+            held_keys,
             history: VecDeque::with_capacity(HISTORY_LEN),
             undo_history: UndoHistory::default(),
             gui_ctx: None,
@@ -1166,6 +1189,7 @@ impl SushiEditor {
                 popup_ids: Vec::new(),
                 #[cfg(test)]
                 check_ids: Vec::new(),
+                keyboard: VirtualKeyboard::default(),
                 fx_chain_drag: None,
                 #[cfg(test)]
                 fx_chain_tile_rects: [None; FX_STAGE_COUNT],
@@ -1521,6 +1545,21 @@ impl NiceEguiApp for SushiEditor {
     }
 }
 
+impl Drop for SushiEditor {
+    /// Releases the keys of the panel when the window closes, so a key that
+    /// was held while the editor disappeared cannot leave a stuck voice.
+    fn drop(&mut self) {
+        let keyboard_tx = &mut self.keyboard_tx;
+        self.state.keyboard.release_all(|note, velocity, on| {
+            let _ = keyboard_tx.push(KeyboardNote {
+                key: note,
+                velocity,
+                on,
+            });
+        });
+    }
+}
+
 impl SushiEditor {
     /// Draws the whole panel.
     fn draw(&mut self, ui: &mut egui::Ui) {
@@ -1636,6 +1675,28 @@ impl SushiEditor {
         // A drag may still be open, in which case its snapshot waits for the
         // next frame. Everything else is committed here, once per edit.
         self.finish_edit();
+
+        // The keyboard strip sits under the bands and above the footer. It is
+        // drawn after the pages, so its keys are never covered by a band. The
+        // patch browser covers the strip, so the held notes are released while
+        // it is open instead of turning into stuck voices.
+        let patch_open = self.state.patch_open;
+        let keyboard_rect = layout.keyboard();
+        let held_keys = self.held_keys.clone();
+        let keyboard_tx = &mut self.keyboard_tx;
+        let keyboard = &mut self.state.keyboard;
+        let send = |note: u8, velocity: f32, on: bool| {
+            let _ = keyboard_tx.push(KeyboardNote {
+                key: note,
+                velocity,
+                on,
+            });
+        };
+        if patch_open {
+            keyboard.release_all(send);
+        } else {
+            keyboard.show(ui, keyboard_rect, layout.zoom, &held_keys, send);
+        }
 
         match footer_action {
             Some(FooterAction::Undo) => {
@@ -6972,8 +7033,22 @@ mod tests {
     }
 
     fn make_editor() -> (egui::Context, SushiEditor, Arc<SushiParams>) {
+        let (ctx, editor, params, _) = make_editor_with_keyboard();
+        (ctx, editor, params)
+    }
+
+    /// An editor whose notes and held keys can be inspected, so a test can
+    /// check what the keyboard strip of the panel sends.
+    fn make_editor_with_keyboard() -> (
+        egui::Context,
+        SushiEditor,
+        Arc<SushiParams>,
+        rtrb::Consumer<KeyboardNote>,
+    ) {
         let params = Arc::new(SushiParams::default());
         let (_tx, rx) = rtrb::RingBuffer::new(1024);
+        let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(crate::keyboard::QUEUE_CAPACITY);
+        let held_keys = Arc::new(HeldKeys::default());
         let arp_led = Arc::new(AtomicUsize::new(0));
         let arp_position = Arc::new(AtomicUsize::new(0));
         let voice_count = Arc::new(AtomicUsize::new(0));
@@ -6981,6 +7056,8 @@ mod tests {
         let mut editor = SushiEditor::new(
             params.clone(),
             rx,
+            keyboard_tx,
+            held_keys,
             arp_led,
             arp_position,
             voice_count,
@@ -6992,7 +7069,16 @@ mod tests {
         install_fonts(&ctx);
         editor.gui_ctx = Some(GuiContext::new(Arc::new(Stub)));
         apply_theme(&ctx, 1.0);
-        (ctx, editor, params)
+        (ctx, editor, params, keyboard_rx)
+    }
+
+    /// The notes that the panel sent since the last call.
+    fn sent_notes(rx: &mut rtrb::Consumer<KeyboardNote>) -> Vec<(u8, bool)> {
+        let mut notes = Vec::new();
+        while let Ok(note) = rx.pop() {
+            notes.push((note.key, note.on));
+        }
+        notes
     }
 
     /// The context that the widgets of the panel use.
@@ -11307,7 +11393,7 @@ faders and the three macros; the VCA is main-page only"
 
     /// The sizes of the windows in which the panel is drawn.
     const SIZES: [(f32, f32); 5] = [
-        (960.0, 640.0),
+        (960.0, 680.0),
         (1280.0, 800.0),
         (1600.0, 900.0),
         (2000.0, 1000.0),
@@ -11345,12 +11431,30 @@ faders and the three macros; the VCA is main-page only"
         // The size of the window, the zoom of the panel and the size of the
         // panel that goes with it.
         let cases = [
-            (960.0, 640.0, 1.0, 960.0, 600.0),
-            (1280.0, 800.0, 1280.0 / 960.0, 1280.0, 800.0),
-            (1600.0, 900.0, 900.0 / 600.0, 1440.0, 900.0),
-            (2000.0, 1000.0, 1000.0 / 600.0, 1600.0, 1000.0),
-            (1024.0, 1122.0, 1024.0 / 960.0, 1024.0, 640.0),
-            (1280.0, 701.0, 701.0 / 600.0, 1121.6, 701.0),
+            (960.0, 680.0, 1.0, 960.0, 680.0),
+            (1152.0, 816.0, 6.0 / 5.0, 1152.0, 816.0),
+            (1280.0, 800.0, 800.0 / 680.0, 960.0 * 800.0 / 680.0, 800.0),
+            (
+                2000.0,
+                1000.0,
+                1000.0 / 680.0,
+                960.0 * 1000.0 / 680.0,
+                1000.0,
+            ),
+            (
+                1024.0,
+                1122.0,
+                1024.0 / 960.0,
+                1024.0,
+                680.0 * 1024.0 / 960.0,
+            ),
+            (
+                1360.0,
+                1000.0,
+                1360.0 / 960.0,
+                1360.0,
+                680.0 * 1360.0 / 960.0,
+            ),
         ];
 
         for (width, height, zoom, panel_width, panel_height) in cases {
@@ -11380,11 +11484,181 @@ faders and the three macros; the VCA is main-page only"
             assert!((ratio - WINDOW_WIDTH / WINDOW_HEIGHT).abs() < 0.001);
         }
 
-        // A taller window of the same width leaves room above and below.
-        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 1000.0));
+        // A wider window of the same height leaves room on both sides.
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1600.0, 800.0));
         let layout = Layout::for_rect(rect).expect("the window is big enough");
-        assert!((layout.panel.left() - 0.0).abs() < 0.01);
-        assert!((layout.panel.top() - 100.0).abs() < 0.01);
+        assert!((layout.panel.top() - 0.0).abs() < 0.01);
+        assert!(
+            (layout.panel.left() - (1600.0 - layout.panel.width()) * 0.5).abs() < 0.01,
+            "the panel is not centered: {:?}",
+            layout.panel
+        );
+    }
+
+    #[test]
+    fn the_keyboard_strip_sits_between_the_bands_and_the_footer() {
+        for (width, height) in SIZES {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
+            let layout = Layout::for_rect(rect).expect("the window is big enough");
+            let strip = layout.keyboard();
+            let zoom = layout.zoom;
+
+            assert!(
+                layout.panel.contains_rect(strip),
+                "the keyboard is outside of the panel: {strip:?}"
+            );
+            // It starts below the bands and ends above the footer.
+            let last_band = layout.group(3, Layout::group_count(3) - 1);
+            assert!(
+                strip.top() > last_band.bottom(),
+                "the keyboard touches the last band: {strip:?} / {last_band:?}"
+            );
+            assert!(
+                strip.bottom() <= layout.panel.bottom() - FOOTER_HEIGHT * zoom + 0.01,
+                "the keyboard runs into the footer: {strip:?}"
+            );
+            // It has the width of the bands.
+            let first_band = layout.group(0, 0);
+            assert!(
+                (strip.left() - first_band.left()).abs() < 0.01,
+                "the keyboard starts at {} instead of {} ({width} x {height})",
+                strip.left(),
+                first_band.left()
+            );
+            assert!(
+                (strip.right() - last_band.right()).abs() < 0.01,
+                "the keyboard ends at {} instead of {} ({width} x {height})",
+                strip.right(),
+                last_band.right()
+            );
+            // It stays away from the buttons of the footer.
+            let (undo, redo) = footer_button_rects(layout.panel, zoom);
+            assert!(!strip.intersects(undo), "the keyboard covers UNDO");
+            assert!(!strip.intersects(redo), "the keyboard covers REDO");
+
+            // The modulation page uses the same bands, so its workspace does
+            // not reach into the keyboard either.
+            assert!(!layout.mod_workspace().intersects(strip));
+        }
+    }
+
+    #[test]
+    fn a_click_on_the_keyboard_strip_plays_and_releases_a_note() {
+        let (ctx, mut editor, _params, mut keyboard_rx) = make_editor_with_keyboard();
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let octave = editor.state.keyboard.octave();
+        let (key, note) = keyboard::white_key(layout.keyboard(), layout.zoom, octave, 3);
+
+        run_frames(&ctx, &mut editor, click(key.center()));
+        assert_eq!(
+            sent_notes(&mut keyboard_rx),
+            vec![(note, true), (note, false)],
+            "the click did not play and release the key"
+        );
+    }
+
+    #[test]
+    fn the_typed_keys_play_notes_through_the_editor() {
+        let (ctx, mut editor, _params, mut keyboard_rx) = make_editor_with_keyboard();
+        let base = ((editor.state.keyboard.octave() + 1) * 12) as u8;
+
+        // A frame with the key down starts the note, the frame with the key
+        // up releases it again.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }])],
+        );
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(base, true)]);
+
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }])],
+        );
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(base, false)]);
+    }
+
+    #[test]
+    fn the_typed_octave_shortcut_moves_the_readout_of_the_strip() {
+        let (ctx, mut editor, _params, mut keyboard_rx) = make_editor_with_keyboard();
+        let octave = editor.state.keyboard.octave();
+
+        let output = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::Key {
+                key: egui::Key::X,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }])],
+        );
+        assert_eq!(editor.state.keyboard.octave(), octave + 1);
+        assert!(sent_notes(&mut keyboard_rx).is_empty());
+
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        let expected = keyboard::note_name(((octave + 2) * 12) as u8);
+        assert!(
+            names.contains(&expected),
+            "the strip does not show the new octave: {names:?}"
+        );
+
+        // The keys of the computer keyboard are not played while the octave
+        // shortcut is used.
+        assert!(sent_notes(&mut keyboard_rx).is_empty());
+    }
+
+    #[test]
+    fn opening_the_patch_browser_releases_the_keys_of_the_strip() {
+        let (ctx, mut editor, _params, mut keyboard_rx) = make_editor_with_keyboard();
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        let octave = editor.state.keyboard.octave();
+        let (key, note) = keyboard::white_key(layout.keyboard(), layout.zoom, octave, 2);
+
+        // Press and hold the key without releasing it.
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![
+                input(vec![egui::Event::PointerMoved(key.center())]),
+                input(vec![egui::Event::PointerButton {
+                    pos: key.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }]),
+            ],
+        );
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(note, true)]);
+
+        // The browser covers the strip, so the note is released instead of
+        // staying stuck behind the page.
+        let display = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT)).display;
+        run_frames(&ctx, &mut editor, click(display.center()));
+        assert!(editor.state.patch_open, "the browser did not open");
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(note, false)]);
     }
 
     #[test]
@@ -11466,7 +11740,13 @@ faders and the three macros; the VCA is main-page only"
             let mut previous: Option<Rect> = None;
             for index in 0..Layout::mod_module_count() {
                 let module = layout.mod_module(index);
-                assert!(right.contains_rect(module));
+                assert!(
+                    module.left() >= right.left() - 0.01
+                        && module.right() <= right.right() + 0.01
+                        && module.top() >= right.top() - 0.01
+                        && module.bottom() <= right.bottom() + 0.01,
+                    "a source module left its column: {module:?} / {right:?}"
+                );
                 assert!((module.left() - right.left()).abs() < 0.01);
                 assert!((module.right() - right.right()).abs() < 0.01);
                 if let Some(previous) = previous {
@@ -11785,7 +12065,7 @@ faders and the three macros; the VCA is main-page only"
             "the panel has no sad face: {names:?}"
         );
         assert!(
-            names.contains(&"MINIMUM 960 x 600".to_string()),
+            names.contains(&"MINIMUM 960 x 680".to_string()),
             "the panel has no hint: {names:?}"
         );
 

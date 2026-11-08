@@ -908,6 +908,65 @@ pub const PRESETS: &[Preset] = &[
             "volume": 0.6
         }"#,
     },
+    Preset {
+        name: "GRAND PIANO",
+        json: r#"{
+            "osc1_wave": "Triangle",
+            "osc1_level": 0.9,
+            "sub_level": 0.12,
+            "osc2_wave": "Saw",
+            "osc2_octave": 1,
+            "osc2_level": 0.2,
+            "osc2_fine": 4.0,
+            "noise_level": 0.02,
+            "unison": 2,
+            "detune": 4.5,
+            "spread": 0.35,
+            "poly_mode": "Poly",
+            "filter_mode": "Lowpass",
+            "filter_slope": "24 dB",
+            "cutoff": 3400.0,
+            "resonance": 0.08,
+            "filter_env_amount": 0.6,
+            "filter_keytrack": 0.55,
+            "filter_drive": 0.0,
+            "fe_attack": 1.0,
+            "fe_decay": 600.0,
+            "fe_sustain": 0.1,
+            "fe_release": 260.0,
+            "fe_curve": 0.5,
+            "ae_attack": 1.5,
+            "ae_decay": 4000.0,
+            "ae_sustain": 0.0,
+            "ae_release": 220.0,
+            "ae_curve": -0.35,
+            "character": "Silk",
+            "drift": 0.06,
+            "velocity": 0.8,
+            "tone": 0.12,
+            "hpf_cutoff": 32.0,
+            "eq_low": 0.8,
+            "eq_high": 1.2,
+            "mod1_source": "Velocity",
+            "mod1_dest": "Cutoff",
+            "mod1_amount": 0.35,
+            "mod2_source": "Key",
+            "mod2_dest": "Filter Env",
+            "mod2_amount": 0.12,
+            "chorus_mix": 0.0,
+            "delay_mix": 0.0,
+            "reverb_mix": 0.22,
+            "reverb_decay": 0.45,
+            "reverb_tone": 0.2,
+            "comp_threshold": -14.0,
+            "comp_ratio": 2.0,
+            "comp_attack": 15.0,
+            "comp_release": 150.0,
+            "comp_makeup": 2.0,
+            "comp_mix": 0.3,
+            "volume": 0.62
+        }"#,
+    },
 ];
 
 /// Writes the preset with the given index into the host.
@@ -1020,8 +1079,8 @@ mod tests {
     use crate::patch::test_support::setter;
 
     #[test]
-    fn there_are_twenty_nine_presets_with_short_names() {
-        assert_eq!(PRESETS.len(), 29);
+    fn there_are_thirty_presets_with_short_names() {
+        assert_eq!(PRESETS.len(), 30);
         for preset in PRESETS {
             assert!(!preset.name.is_empty());
             assert!(preset.name.len() <= 18, "{}", preset.name);
@@ -1031,7 +1090,10 @@ mod tests {
         // The showcase presets are appended, so the indices of the original
         // presets stay stable.
         let showcase: Vec<&str> = PRESETS[26..].iter().map(|preset| preset.name).collect();
-        assert_eq!(showcase, ["ZDF ACID", "WHEEL MOTION", "RANDOM PAD"]);
+        assert_eq!(
+            showcase,
+            ["ZDF ACID", "WHEEL MOTION", "RANDOM PAD", "GRAND PIANO"]
+        );
     }
 
     #[test]
@@ -1082,6 +1144,52 @@ mod tests {
                 preset.name
             );
         }
+    }
+
+    #[test]
+    fn the_piano_preset_dies_away_like_a_struck_string() {
+        let piano = PRESETS
+            .iter()
+            .find(|preset| preset.name == "GRAND PIANO")
+            .expect("there is no piano preset");
+        let document: Value = serde_json::from_str(piano.json).expect("the piano is broken");
+
+        let value = |name: &str| {
+            document
+                .get(name)
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("the piano has no {name}"))
+        };
+
+        // A hammer: an immediate attack, and a note that dies away while the
+        // key is held. Nothing sustains, so a chord cannot turn into an organ.
+        assert!(value("ae_attack") <= 5.0);
+        assert!(value("ae_decay") >= 3_000.0);
+        assert_eq!(value("ae_sustain"), 0.0);
+        assert!(
+            value("ae_curve") < 0.0,
+            "the decay drops too fast to be a string"
+        );
+        // The damper falls back when the key is released.
+        assert!(value("ae_release") <= 500.0);
+
+        // The brightness follows the hammer too.
+        assert!(value("fe_attack") <= 5.0);
+        assert!(value("fe_decay") <= 1_000.0);
+        assert!(value("fe_sustain") <= 0.1);
+        assert!(value("filter_env_amount") > 0.2);
+        // Harder keys are brighter, and high notes are brighter still.
+        assert_eq!(document["mod1_source"], "Velocity");
+        assert_eq!(document["mod1_dest"], "Cutoff");
+        assert!(value("filter_keytrack") >= 0.5);
+
+        // Two slightly detuned strings instead of a chorus, and only the
+        // room around the instrument.
+        assert!(value("unison") >= 2.0);
+        assert!(value("detune") <= 8.0);
+        assert_eq!(value("chorus_mix"), 0.0);
+        assert_eq!(value("delay_mix"), 0.0);
+        assert!(value("reverb_mix") > 0.0);
     }
 
     #[test]

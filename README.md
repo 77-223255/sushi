@@ -45,8 +45,8 @@ projects keep their patch behavior.
   8-bit mask and a global wet mix are included. Drive Tone, Phaser Feedback,
   Chorus Width, Delay Damping and Reverb Tone are part of the stage controls;
   the compressor is stereo-linked and the tremolo can run as auto-pan
-- 140 patch parameters and 29 factory presets; patches are JSON and parameter
-  IDs are stable
+- 140 patch parameters and 30 factory presets, including a GRAND PIANO that
+  is struck, not sustained; patches are JSON and parameter IDs are stable
 
 The LFO and arpeggiator divisions are 1/4, 1/8, 1/16 and 1/32. At 120 BPM a
 quarter note runs at 2 Hz, and a synced LFO glides briefly when the tempo or
@@ -82,11 +82,20 @@ voices are silent, so a held chord or arpeggio keeps one phase.
   returns to the main page
 - The patch browser has a folder field, search, user and factory patch lists, a
   JSON preview, and a name field with LOAD and SAVE
+- The keyboard strip under the bands is an on-screen piano in the spirit of
+  Serum: click a key to play it, drag across the keys to glide, and the
+  velocity follows how high on the key the click lands. Every key that sounds
+  lights up, including the notes of a MIDI keyboard, and the strip follows the
+  octave of the computer keyboard
+- The computer keyboard uses the layout of Ableton Live: `A S D F G H J K L ; '`
+  play the white keys, `W E T Y U O P` play the black keys, and `Z` and `X`
+  move the whole layout one octave down or up. The `OCT` buttons at the left of
+  the strip do the same with the mouse
 - UNDO and REDO sit in the footer, with Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y;
   a whole fader drag is one undo step. Right-click a control to type a value,
   scroll to change it, Shift+scroll for fine steps, and double-click to reset
-- 960 × 600 design with continuous scaling; the editor opens at 1280 × 800 and
-  shows a minimum-size hint below 960 × 600
+- 960 × 680 design with continuous scaling; the editor opens at 1152 × 816 and
+  shows a minimum-size hint below 960 × 680
 
 ## Install
 
