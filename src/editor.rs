@@ -9,9 +9,9 @@
 //! oscilloscope. Nothing on the panel has a bevel, a shadow or a rounded
 //! corner: every widget is a flat fill with a single 1 px border.
 //!
-//! The panel is drawn with the Silkscreen pixel font, which is embedded in the
-//! program. Every size of the design is multiplied by the zoom of the panel,
-//! and so is every font.
+//! The panel is drawn with the embedded Quicksand typeface, a rounded geometric
+//! sans that keeps the flat faceplate modern and smooth. Every size of the
+//! design is multiplied by the zoom of the panel, and so is every font.
 
 mod keyboard;
 mod presets;
@@ -42,11 +42,11 @@ use theme::palette;
 
 // --- The fonts ---------------------------------------------------------------
 
-/// The pixel font of the panel, in its regular weight.
-const SILKSCREEN_REGULAR: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Regular.ttf");
-/// The pixel font of the panel, in its bold weight.
-const SILKSCREEN_BOLD: &[u8] = include_bytes!("../assets/fonts/Silkscreen-Bold.ttf");
-/// The name of the font family that holds the bold pixel font.
+/// The font of the panel, in the medium weight that the labels use.
+const FACE_REGULAR: &[u8] = include_bytes!("../assets/fonts/Quicksand-Medium.ttf");
+/// The font of the panel, in the bold weight of the titles and the wordmark.
+const FACE_BOLD: &[u8] = include_bytes!("../assets/fonts/Quicksand-Bold.ttf");
+/// The name of the font family that holds the bold weight of the panel font.
 const BOLD_FAMILY: &str = "sushi-bold";
 
 /// Common system CJK fonts and the face index to use inside a collection.
@@ -66,14 +66,14 @@ const CJK_FONT_PATHS: &[(&str, u32)] = &[
     (r"C:\Windows\Fonts\simhei.ttf", 0),
     (r"C:\Windows\Fonts\simsun.ttc", 0),
 ];
-/// A normal monospace family for JSON and code previews. Silkscreen is kept
-/// for the faceplate only, because it has no true lowercase.
+/// A normal monospace family for JSON and code previews. The faceplate font
+/// is proportional, so the code panes keep the monospace font of egui.
 const CODE_FAMILY: &str = "sushi-code";
 
-/// Installs the pixel fonts of the panel. The regular weight becomes the
-/// default of the proportional and of the monospaced families; the bold
-/// weight gets its own family for the titles. The default egui fonts stay in
-/// the list as a fallback for glyphs that Silkscreen does not have.
+/// Installs the fonts of the panel. The medium weight becomes the default of
+/// the proportional family; the bold weight gets its own family for the
+/// titles. The default egui fonts stay in the list as a fallback for glyphs
+/// that Quicksand does not have.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut code_fonts = fonts
@@ -82,24 +82,22 @@ fn install_fonts(ctx: &egui::Context) {
         .cloned()
         .unwrap_or_default();
     fonts.font_data.insert(
-        "silkscreen".to_owned(),
-        Arc::new(egui::FontData::from_static(SILKSCREEN_REGULAR)),
+        "faceplate".to_owned(),
+        Arc::new(egui::FontData::from_static(FACE_REGULAR)),
     );
     fonts.font_data.insert(
-        "silkscreen-bold".to_owned(),
-        Arc::new(egui::FontData::from_static(SILKSCREEN_BOLD)),
+        "faceplate-bold".to_owned(),
+        Arc::new(egui::FontData::from_static(FACE_BOLD)),
     );
 
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, "silkscreen".to_owned());
-    }
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "faceplate".to_owned());
 
-    // Add a system CJK fallback after the pixel font. The file stays on the
-    // user's system; the plugin only reads it at runtime.
+    // Add a system CJK fallback after the faceplate font. The file stays on
+    // the user's system; the plugin only reads it at runtime.
     let mut cjk_loaded = false;
     for (path, index) in CJK_FONT_PATHS {
         let Ok(bytes) = std::fs::read(path) else {
@@ -125,7 +123,7 @@ fn install_fonts(ctx: &egui::Context) {
         .get(&egui::FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    bold_list.insert(0, "silkscreen-bold".to_owned());
+    bold_list.insert(0, "faceplate-bold".to_owned());
     fonts
         .families
         .insert(egui::FontFamily::Name(Arc::from(BOLD_FAMILY)), bold_list);
@@ -3196,8 +3194,8 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &p.drive_amount,
                     &Knob::percent(),
                 ),
-                1 => ctx.float(ui, "drive_mix", "Mix", &p.drive_mix, &Knob::percent()),
-                2 => ctx.float(ui, "drive_tone", "Tone", &p.drive_tone, &Knob::bipolar()),
+                1 => ctx.float(ui, "drive_tone", "Tone", &p.drive_tone, &Knob::bipolar()),
+                2 => ctx.float(ui, "drive_mix", "Mix", &p.drive_mix, &Knob::percent()),
                 _ => {}
             },
         ),
@@ -3222,14 +3220,14 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &p.phaser_depth,
                     &Knob::percent(),
                 ),
-                2 => ctx.float(ui, "phaser_mix", "Mix", &p.phaser_mix, &Knob::percent()),
-                3 => ctx.float(
+                2 => ctx.float(
                     ui,
                     "phaser_feedback",
                     "Feedback",
                     &p.phaser_feedback,
                     &Knob::scaled(0.0, 0.9, 0),
                 ),
+                3 => ctx.float(ui, "phaser_mix", "Mix", &p.phaser_mix, &Knob::percent()),
                 _ => {}
             },
         ),
@@ -3240,28 +3238,28 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
             WIDE_COLUMN_GAP,
             zoom,
             |index, ui| match index {
-                0 => ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent()),
-                1 => ctx.float(
+                0 => ctx.float(
                     ui,
                     "chorus_rate",
                     "Rate",
                     &p.chorus_rate,
                     &Knob::logarithmic(0.05, 8.0, 2),
                 ),
-                2 => ctx.float(
+                1 => ctx.float(
                     ui,
                     "chorus_depth",
                     "Depth",
                     &p.chorus_depth,
                     &Knob::percent(),
                 ),
-                3 => ctx.float(
+                2 => ctx.float(
                     ui,
                     "chorus_width",
                     "Width",
                     &p.chorus_width,
                     &Knob::percent(),
                 ),
+                3 => ctx.float(ui, "chorus_mix", "Mix", &p.chorus_mix, &Knob::percent()),
                 _ => {}
             },
         ),
@@ -3286,14 +3284,14 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &p.delay_feedback,
                     &Knob::percent(),
                 ),
-                2 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
-                3 => ctx.float(
+                2 => ctx.float(
                     ui,
                     "delay_damping",
                     "Damping",
                     &p.delay_damping,
                     &Knob::percent(),
                 ),
+                3 => ctx.float(ui, "delay_mix", "Mix", &p.delay_mix, &Knob::percent()),
                 _ => {}
             },
         ),
@@ -3311,8 +3309,8 @@ fn fx_module_controls(ui: &mut egui::Ui, ctx: &mut Ctx, module: usize) {
                     &p.reverb_decay,
                     &Knob::percent(),
                 ),
-                1 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
-                2 => ctx.float(ui, "reverb_tone", "Tone", &p.reverb_tone, &Knob::bipolar()),
+                1 => ctx.float(ui, "reverb_tone", "Tone", &p.reverb_tone, &Knob::bipolar()),
+                2 => ctx.float(ui, "reverb_mix", "Mix", &p.reverb_mix, &Knob::percent()),
                 _ => {}
             },
         ),
@@ -9341,7 +9339,7 @@ faders and the three macros; the VCA is main-page only"
         );
 
         run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, click(top(13)));
+        run_frames(&ctx, &mut editor, click(top(14)));
         assert!(
             params.delay_mix.value() > 0.9,
             "the delay mix fader is not connected: {}",
@@ -9380,27 +9378,28 @@ faders and the three macros; the VCA is main-page only"
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
         // The order of the faders is the order of the 2 x 4 grid, with the
-        // global wet fader of the chain column in front.
+        // global wet fader of the chain column in front. Every module keeps
+        // its mix on the far right, so the last fader of a stage is its mix.
         let expected = [
             "fx_global_mix",
             "drive_amount",
-            "drive_mix",
             "drive_tone",
+            "drive_mix",
             "phaser_rate",
             "phaser_depth",
-            "phaser_mix",
             "phaser_feedback",
-            "chorus_mix",
+            "phaser_mix",
             "chorus_rate",
             "chorus_depth",
             "chorus_width",
+            "chorus_mix",
             "delay_time",
             "delay_feedback",
-            "delay_mix",
             "delay_damping",
+            "delay_mix",
             "reverb_decay",
-            "reverb_mix",
             "reverb_tone",
+            "reverb_mix",
             "eq_low",
             "eq_mid",
             "eq_high",
@@ -9432,15 +9431,15 @@ faders and the three macros; the VCA is main-page only"
             run_frames(&ctx, editor, wait());
         };
 
-        click_top(&mut editor, 2);
+        click_top(&mut editor, 1);
         assert!(params.drive_tone.value() > 0.9);
-        click_top(&mut editor, 6);
+        click_top(&mut editor, 5);
         assert!(params.phaser_feedback.value() > 0.85);
-        click_top(&mut editor, 10);
+        click_top(&mut editor, 9);
         assert!(params.chorus_width.value() > 0.9);
-        click_top(&mut editor, 14);
+        click_top(&mut editor, 13);
         assert!(params.delay_damping.value() > 0.9);
-        click_top(&mut editor, 17);
+        click_top(&mut editor, 16);
         assert!(params.reverb_tone.value() > 0.9);
         click_top(&mut editor, 22);
         assert!(params.comp_ratio.value() > 19.0);

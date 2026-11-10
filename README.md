@@ -55,8 +55,9 @@ voices are silent, so a held chord or arpeggio keeps one phase.
 
 ## Interface
 
-- Warm Legacy faceplate with flat 1 px controls, the embedded Silkscreen pixel
-  font and vertical faders that have a coarse lane plus a separate fine lane
+- Warm Legacy faceplate with flat 1 px controls, the embedded Quicksand rounded
+  geometric sans (medium and bold) and vertical faders that have a coarse lane
+  plus a separate fine lane
 - The main page is four compact bands:
   - `VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`
   - `VCF | MOD ENV | AMP ENV`
@@ -73,9 +74,10 @@ voices are silent, so a held chord or arpeggio keeps one phase.
   report `per-voice` instead of a global value. LFO routing stays in the table
 - The FX page has a chain column on the left with the eight movable tiles
   (drag or use the arrows), per-stage power buttons, GLOBAL WET and CHAIN
-  PRESET; the fixed 2 × 4 module grid on the right holds the stage controls.
-  Named chain presets are STANDARD, EQ FIRST, DRIVE LAST, AMBIENT, WIDE ECHO and
-  GLUE; any other order is shown as CUSTOM
+  PRESET; the fixed 2 × 4 module grid on the right holds the stage controls, and
+  every stage keeps its MIX on the far right of its card. Named chain presets
+  are STANDARD, EQ FIRST, DRIVE LAST, AMBIENT, WIDE ECHO and GLUE; any other
+  order is shown as CUSTOM
 - The header contains the preset LCD (opens the full-page patch browser), the
   previous/next sound buttons, MUTATE, the MOD and FX tabs, the voice meter, the
   oscilloscope and the ACT/CLIP lights. The sound buttons step through the
@@ -150,3 +152,6 @@ pushed separately).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The bundled Quicksand font is licensed under the SIL Open Font License 1.1;
+see `assets/fonts/OFL.txt`.
