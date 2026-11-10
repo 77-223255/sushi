@@ -9,9 +9,14 @@
 //! oscilloscope. Nothing on the panel has a bevel, a shadow or a rounded
 //! corner: every widget is a flat fill with a single 1 px border.
 //!
-//! The panel is drawn with the embedded Quicksand typeface, a rounded geometric
-//! sans that keeps the flat faceplate modern and smooth. Every size of the
-//! design is multiplied by the zoom of the panel, and so is every font.
+//! The type system has two families and five weights. Quicksand, a rounded
+//! geometric sans, carries the voice of the faceplate: 500 for running text,
+//! 600 for the small labels and 700 for the titles and the wordmark.
+//! JetBrains Mono carries the data: its tabular figures make values, note
+//! names, route numbers and the preset display read like instrument readings.
+//! Small uppercase text is tracked out, which is what separates a designed
+//! type scale from squeezed text. Every size of the design is multiplied by
+//! the zoom of the panel, and so is every font.
 
 mod keyboard;
 mod presets;
@@ -42,12 +47,22 @@ use theme::palette;
 
 // --- The fonts ---------------------------------------------------------------
 
-/// The font of the panel, in the medium weight that the labels use.
-const FACE_REGULAR: &[u8] = include_bytes!("../assets/fonts/Quicksand-Medium.ttf");
-/// The font of the panel, in the bold weight of the titles and the wordmark.
-const FACE_BOLD: &[u8] = include_bytes!("../assets/fonts/Quicksand-Bold.ttf");
-/// The name of the font family that holds the bold weight of the panel font.
-const BOLD_FAMILY: &str = "sushi-bold";
+/// Quicksand 500: the running text of the panel.
+const FACE_BODY: &[u8] = include_bytes!("../assets/fonts/Quicksand-Medium.ttf");
+/// Quicksand 600: the small labels above the controls.
+const FACE_LABEL: &[u8] = include_bytes!("../assets/fonts/Quicksand-SemiBold.ttf");
+/// Quicksand 700: the titles and the wordmark.
+const FACE_DISPLAY: &[u8] = include_bytes!("../assets/fonts/Quicksand-Bold.ttf");
+/// JetBrains Mono 500: every value of the instrument.
+const MONO_VALUE: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf");
+/// JetBrains Mono 700: the preset display and the chain numbers.
+const MONO_DISPLAY: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
+/// The family of the small labels, in the semi-bold weight.
+const LABEL_FAMILY: &str = "sushi-label";
+/// The family of the titles, the wordmark and the button faces.
+const DISPLAY_FAMILY: &str = "sushi-display";
+/// The family of the display numbers of the monospace font.
+const VALUE_FAMILY: &str = "sushi-value";
 
 /// Common system CJK fonts and the face index to use inside a collection.
 /// They are loaded as a fallback so Chinese patch names and folder paths do
@@ -66,39 +81,43 @@ const CJK_FONT_PATHS: &[(&str, u32)] = &[
     (r"C:\Windows\Fonts\simhei.ttf", 0),
     (r"C:\Windows\Fonts\simsun.ttc", 0),
 ];
-/// A normal monospace family for JSON and code previews. The faceplate font
-/// is proportional, so the code panes keep the monospace font of egui.
-const CODE_FAMILY: &str = "sushi-code";
-
-/// Installs the fonts of the panel. The medium weight becomes the default of
-/// the proportional family; the bold weight gets its own family for the
-/// titles. The default egui fonts stay in the list as a fallback for glyphs
-/// that Quicksand does not have.
+/// Installs the type system of the panel.
+///
+/// The proportional family is the body weight, and the label, display and
+/// value families sit on top of it with a heavier weight in front of the
+/// same fallback chain. The monospace family is JetBrains Mono, so the JSON
+/// preview, the numeric fields and every painted value share one set of
+/// tabular figures. The default egui fonts and a system CJK font stay at the
+/// end of every chain, so no glyph of a patch name can turn into a box.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let mut code_fonts = fonts
-        .families
-        .get(&egui::FontFamily::Monospace)
-        .cloned()
-        .unwrap_or_default();
-    fonts.font_data.insert(
-        "faceplate".to_owned(),
-        Arc::new(egui::FontData::from_static(FACE_REGULAR)),
-    );
-    fonts.font_data.insert(
-        "faceplate-bold".to_owned(),
-        Arc::new(egui::FontData::from_static(FACE_BOLD)),
-    );
+
+    for (name, bytes) in [
+        ("face-body", FACE_BODY),
+        ("face-label", FACE_LABEL),
+        ("face-display", FACE_DISPLAY),
+        ("mono-value", MONO_VALUE),
+        ("mono-display", MONO_DISPLAY),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
 
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
-        .insert(0, "faceplate".to_owned());
+        .insert(0, "face-body".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "mono-value".to_owned());
 
-    // Add a system CJK fallback after the faceplate font. The file stays on
+    // Add a system CJK fallback after the bundled fonts. The file stays on
     // the user's system; the plugin only reads it at runtime.
-    let mut cjk_loaded = false;
     for (path, index) in CJK_FONT_PATHS {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
@@ -114,32 +133,93 @@ fn install_fonts(ctx: &egui::Context) {
                 .or_default()
                 .push("cjk-fallback".to_owned());
         }
-        cjk_loaded = true;
         break;
     }
 
-    let mut bold_list = fonts
+    let proportional = fonts
         .families
         .get(&egui::FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    bold_list.insert(0, "faceplate-bold".to_owned());
-    fonts
+    // The mono fallback needs the extra glyphs of a normal text font (the
+    // patch browser prints names and messages next to the code).
+    let mut value_chain = fonts
         .families
-        .insert(egui::FontFamily::Name(Arc::from(BOLD_FAMILY)), bold_list);
-    if cjk_loaded {
-        code_fonts.push("cjk-fallback".to_owned());
+        .get(&egui::FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
+    let mut label_chain = proportional.clone();
+    label_chain.insert(0, "face-label".to_owned());
+    let mut display_chain = proportional.clone();
+    display_chain.insert(0, "face-display".to_owned());
+    value_chain.insert(0, "mono-display".to_owned());
+    for (family, chain) in [
+        (LABEL_FAMILY, label_chain),
+        (DISPLAY_FAMILY, display_chain),
+        (VALUE_FAMILY, value_chain),
+    ] {
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(Arc::from(family)), chain);
     }
-    fonts
-        .families
-        .insert(egui::FontFamily::Name(Arc::from(CODE_FAMILY)), code_fonts);
 
     ctx.set_fonts(fonts);
 }
 
-/// The font family of the bold titles.
+/// The font family of the titles and the wordmark.
 fn bold() -> egui::FontFamily {
-    egui::FontFamily::Name(Arc::from(BOLD_FAMILY))
+    egui::FontFamily::Name(Arc::from(DISPLAY_FAMILY))
+}
+
+/// The font family of the small labels above the controls.
+fn label_family() -> egui::FontFamily {
+    egui::FontFamily::Name(Arc::from(LABEL_FAMILY))
+}
+
+/// The font family of the display numbers of the preset LCD.
+fn value_family() -> egui::FontFamily {
+    egui::FontFamily::Name(Arc::from(VALUE_FAMILY))
+}
+
+/// Draws a text with explicit tracking. The panel tracks its small uppercase
+/// labels and its titles, which is what makes them read as a type scale
+/// instead of as squeezed text. Returns the rect that the text covers.
+fn tracked_text(
+    painter: &egui::Painter,
+    pos: Pos2,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    tracking: f32,
+) -> Rect {
+    let galley = tracked_galley(painter, text, font, color, tracking);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, color);
+    rect
+}
+
+/// Lays a tracked text out without drawing it, so a header can measure its
+/// title before the rect of the header is known.
+fn tracked_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    tracking: f32,
+) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color,
+            extra_letter_spacing: tracking,
+            ..Default::default()
+        },
+    );
+    painter.layout_job(job)
 }
 
 // --- Layout -----------------------------------------------------------------
@@ -1624,19 +1704,23 @@ fn draw_footer(ui: &mut egui::Ui, layout: &Layout, state: &EditorState) {
         Stroke::new(1.0, palette().rule),
     );
 
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(panel.left() + 12.0 * zoom, y),
         Align2::LEFT_TOP,
         "SUSHI / MODEL 101",
-        FontId::new(font_size(8.0, zoom), bold()),
+        FontId::monospace(font_size(7.0, zoom)),
         palette().muted,
+        1.1 * zoom,
     );
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(panel.right() - 12.0 * zoom, y),
         Align2::RIGHT_TOP,
         "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
-        FontId::new(font_size(8.0, zoom), bold()),
+        FontId::monospace(font_size(6.8, zoom)),
         palette().muted,
+        0.4 * zoom,
     );
 
     // The live parameter readout: the reference's central value box.
@@ -1650,19 +1734,23 @@ fn draw_footer(ui: &mut egui::Ui, layout: &Layout, state: &EditorState) {
     );
     flat_box(&painter, box_rect, palette().paper);
     let label = truncate_name(&label, 22);
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(box_rect.left() + 7.0 * zoom, box_rect.center().y),
         Align2::LEFT_CENTER,
-        label,
-        FontId::new(font_size(8.0, zoom), bold()),
+        &label,
+        FontId::new(font_size(7.5, zoom), label_family()),
         palette().title_blue,
+        0.6 * zoom,
     );
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(box_rect.right() - 7.0 * zoom, box_rect.center().y),
         Align2::RIGHT_CENTER,
-        value,
-        FontId::new(font_size(10.0, zoom), bold()),
+        &value,
+        FontId::new(font_size(10.0, zoom), value_family()),
         palette().text,
+        0.2 * zoom,
     );
 }
 
@@ -1868,20 +1956,23 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     // The wordmark is static: the engine is Legacy-only, so there is no
     // Modern/Legacy switch and no mode in the subtitle.
     let rects = header_rects(rect, zoom);
-    let wordmark = FontId::new(font_size(20.0, zoom), bold());
-    painter.text(
-        rects.logo.left_top() + egui::vec2(2.0, 2.0) * zoom,
+    tracked_text(
+        &painter,
+        rects.logo.left_top() + egui::vec2(1.0, 1.0) * zoom,
         Align2::LEFT_TOP,
         "SUSHI",
-        wordmark,
+        FontId::new(font_size(22.0, zoom), bold()),
         palette().text,
+        0.6 * zoom,
     );
-    painter.text(
-        rects.logo.left_top() + egui::vec2(2.0, 30.0) * zoom,
+    tracked_text(
+        &painter,
+        rects.logo.left_top() + egui::vec2(2.0, 31.0) * zoom,
         Align2::LEFT_TOP,
         "POLYPHONIC SYNTHESIZER",
-        FontId::proportional(font_size(8.0, zoom)),
+        FontId::monospace(font_size(6.6, zoom)),
         palette().muted,
+        1.5 * zoom,
     );
 
     // The preset display is the patch browser button now. It keeps showing
@@ -1951,12 +2042,14 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         ctx.state.activity > 0.002,
         zoom,
     );
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(activity.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "ACT",
-        FontId::proportional(font_size(9.0, zoom)),
+        FontId::new(font_size(7.2, zoom), label_family()),
         palette().muted,
+        0.8 * zoom,
     );
 
     let clipping = egui::pos2(rect.right() - 172.0 * zoom, rect.top() + 16.0 * zoom);
@@ -1967,12 +2060,14 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         ctx.state.clipping > 0.5,
         zoom,
     );
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
         Align2::CENTER_CENTER,
         "CLIP",
-        FontId::proportional(font_size(9.0, zoom)),
+        FontId::new(font_size(7.2, zoom), label_family()),
         palette().muted,
+        0.8 * zoom,
     );
 }
 
@@ -2084,7 +2179,8 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
 
     // One header: the blue name of the table and a quiet column legend. The
     // legend is a caption, so 8 pt is its floor, not a setting of a value.
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(
             table.left() + MOD_TABLE_PADDING * zoom,
             (table.top() + header_bottom) * 0.5,
@@ -2093,16 +2189,19 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
         "MODULATION",
         FontId::new(font_size(13.0, zoom), bold()),
         palette().title_blue,
+        0.5 * zoom,
     );
-    painter.text(
+    tracked_text(
+        &painter,
         egui::pos2(
             table.right() - MOD_TABLE_PADDING * zoom,
             (table.top() + header_bottom) * 0.5,
         ),
         Align2::RIGHT_CENTER,
         "SOURCE / DEST / AMOUNT",
-        FontId::new(font_size(8.0, zoom), bold()),
+        FontId::new(font_size(7.2, zoom), label_family()),
         palette().title_blue,
+        0.8 * zoom,
     );
     painter.line_segment(
         [
@@ -2181,7 +2280,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             ),
             Align2::CENTER_CENTER,
             format!("{:02}", slot + 1),
-            FontId::new(font_size(8.0, zoom), bold()),
+            FontId::monospace(font_size(8.0, zoom)),
             palette().title_blue,
         );
 
@@ -2193,7 +2292,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 ),
                 Align2::CENTER_CENTER,
                 ">",
-                FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
+                FontId::monospace(font_size(9.0, zoom)),
                 palette().title_blue,
             );
         }
@@ -2203,7 +2302,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 egui::pos2(value_right, top + row_height * 0.5),
                 Align2::RIGHT_CENTER,
                 format_amount(amount),
-                FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
+                FontId::monospace(font_size(9.5, zoom)),
                 palette().text,
             );
         }
@@ -2231,10 +2330,8 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.spacing_mut().interact_size.y = MOD_POPUP_HEIGHT * zoom;
-                ui.style_mut().override_font_id = Some(FontId::new(
-                    font_size(10.0, zoom),
-                    egui::FontFamily::Proportional,
-                ));
+                ui.style_mut().override_font_id =
+                    Some(FontId::new(font_size(9.5, zoom), label_family()));
                 let response = ctx.popup_with_text(
                     ui,
                     source_ids[slot],
@@ -2260,10 +2357,8 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.spacing_mut().interact_size.y = MOD_POPUP_HEIGHT * zoom;
-                ui.style_mut().override_font_id = Some(FontId::new(
-                    font_size(10.0, zoom),
-                    egui::FontFamily::Proportional,
-                ));
+                ui.style_mut().override_font_id =
+                    Some(FontId::new(font_size(9.5, zoom), label_family()));
                 let response = ctx.popup_with_text(
                     ui,
                     dest_ids[slot],
@@ -2879,9 +2974,9 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
     let right = body.right() - TARGET_PADDING * zoom;
     let top = body.top() + TARGET_TOP_PADDING * zoom;
     let line = TARGET_LINE_HEIGHT * zoom;
-    let label_font = FontId::new(font_size(8.0, zoom), bold());
-    let value_font = FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional);
-    let route_font = FontId::new(font_size(10.0, zoom), bold());
+    let label_font = FontId::new(font_size(7.2, zoom), label_family());
+    let value_font = FontId::monospace(font_size(9.5, zoom));
+    let route_font = FontId::new(font_size(10.0, zoom), value_family());
 
     // An Off route has nothing to inspect. The state is quiet and explicit,
     // not a row of zeroes that looks like a real reading.
@@ -3048,7 +3143,7 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
     if let Some(dot) = live_dot {
         painter.rect_filled(dot, CornerRadius::ZERO, palette().accent);
     }
-    let low_font = FontId::new(font_size(8.0, zoom), bold());
+    let low_font = FontId::new(font_size(7.2, zoom), label_family());
     painter.text(
         egui::pos2(bar.left(), top + line * 3.1),
         Align2::LEFT_CENTER,
@@ -3584,10 +3679,10 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
         parts.number.center(),
         Align2::CENTER_CENTER,
         format!("{}", position + 1),
-        FontId::new(font_size(13.0, zoom), bold()),
+        FontId::new(font_size(13.0, zoom), value_family()),
         number_color,
     );
-    let name_font = FontId::new(font_size(10.0, zoom), bold());
+    let name_font = FontId::new(font_size(9.5, zoom), bold());
     let name = fit_text(
         &painter,
         fx_stage_name(stage),
@@ -3733,12 +3828,14 @@ fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
     let title = fx_chain_title_rect(rack, zoom);
     let painter = ui.painter_at(rack);
 
-    painter.text(
+    tracked_text(
+        &painter,
         title.left_center(),
         Align2::LEFT_CENTER,
         "CHAIN",
         FontId::new(font_size(13.0, zoom), bold()),
         palette().title_blue,
+        0.5 * zoom,
     );
 
     // A quiet vertical rule separates the chain column from the module grid.
@@ -3778,7 +3875,7 @@ fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
         label_rect.left_center(),
         Align2::LEFT_CENTER,
         "CHAIN PRESET",
-        FontId::new(font_size(9.0, zoom), bold()),
+        FontId::new(font_size(7.8, zoom), label_family()),
         palette().muted,
     );
     ui.scope_builder(
@@ -4212,19 +4309,21 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         let painter = ui.painter_at(rect);
-        painter.text(
+        tracked_text(
+            &painter,
             label_rect.left_center(),
             Align2::LEFT_CENTER,
-            label.to_ascii_uppercase(),
-            FontId::proportional(font_size(9.0, zoom)),
+            &label.to_ascii_uppercase(),
+            FontId::new(font_size(8.0, zoom), label_family()),
             palette().label,
+            0.4 * zoom,
         );
         let value = format_number(knob.display(param.value()), knob.decimals);
         painter.text(
             value_rect.center(),
             Align2::CENTER_CENTER,
             format!("{}{}", value, param.unit()),
-            FontId::proportional(font_size(9.0, zoom)),
+            FontId::monospace(font_size(9.0, zoom)),
             palette().text,
         );
 
@@ -4450,7 +4549,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 egui::TextEdit::singleline(text)
                     .font(FontId::new(
                         font_size(12.0, zoom),
-                        egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                        egui::FontFamily::Monospace,
                     ))
                     .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
             );
@@ -4527,7 +4626,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 egui::TextEdit::singleline(text)
                     .font(FontId::new(
                         font_size(12.0, zoom),
-                        egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                        egui::FontFamily::Monospace,
                     ))
                     .desired_width((VALUE_POPUP_WIDTH - 12.0) * zoom),
             );
@@ -4602,20 +4701,29 @@ impl<'a, 'b> Ctx<'a, 'b> {
             .map(str::to_owned)
             .unwrap_or_else(|| variants[T::to_index(current)].to_string());
 
-        let response = egui::ComboBox::from_id_salt(id)
-            .width(width * self.zoom)
-            .selected_text(selected_text)
-            .truncate()
-            .show_ui(ui, |ui| {
-                for (index, name) in variants.iter().enumerate() {
-                    let variant = T::from_index(index);
-                    if ui.selectable_label(current == variant, *name).clicked() {
-                        self.setter.set_parameter(param, variant);
-                        self.state.dirty = true;
-                    }
-                }
+        // The face and the entries of the popup use the label weight, so a
+        // choice reads like the caption above its fader instead of like the
+        // running text of a dialog.
+        let face = FontId::new(font_size(9.5, self.zoom), label_family());
+        let response = ui
+            .scope(|ui| {
+                ui.style_mut().override_font_id = Some(face);
+                egui::ComboBox::from_id_salt(id)
+                    .width(width * self.zoom)
+                    .selected_text(selected_text)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for (index, name) in variants.iter().enumerate() {
+                            let variant = T::from_index(index);
+                            if ui.selectable_label(current == variant, *name).clicked() {
+                                self.setter.set_parameter(param, variant);
+                                self.state.dirty = true;
+                            }
+                        }
+                    })
+                    .response
             })
-            .response;
+            .inner;
 
         #[cfg(test)]
         self.state.popup_rects.push(response.rect);
@@ -4721,14 +4829,16 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 palette().button_bg
             };
             flat_box(&painter, rect, fill);
-            painter.text(
+            tracked_text(
+                &painter,
                 rect.center(),
                 Align2::CENTER_CENTER,
                 // The name of the variant is shown in uppercase, like the
                 // other labels of the panel.
-                variant.to_ascii_uppercase(),
-                FontId::proportional(font_size(9.0, zoom)),
+                &variant.to_ascii_uppercase(),
+                FontId::new(font_size(8.5, zoom), label_family()),
                 palette().text,
+                0.3 * zoom,
             );
 
             if response.double_clicked() {
@@ -4818,6 +4928,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                     ui.add(egui::Label::new(
                         egui::RichText::new("PATCHES")
                             .font(FontId::new(font_size(16.0, zoom), bold()))
+                            .extra_letter_spacing(1.0 * zoom)
                             .color(palette().title_blue),
                     ));
                     ui.with_layout(EguiLayout::right_to_left(Align::Center), |ui| {
@@ -4979,7 +5090,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                                 )
                                                 .font(FontId::new(
                                                     font_size(10.0, zoom),
-                                                    egui::FontFamily::Name(Arc::from(CODE_FAMILY)),
+                                                    egui::FontFamily::Monospace,
                                                 ))
                                                 .desired_width(ui.available_width())
                                                 .interactive(false),
@@ -5318,9 +5429,17 @@ fn group(
     let color = title_color(title);
 
     // No vertical accent bars and no coloured rule heads: the reference uses
-    // blue section names on paper and lets the type do the grouping.
+    // blue section names on paper and lets the type do the grouping. The
+    // titles are tracked out, which is what makes a 13 pt line read as a
+    // section head instead of as a label.
     let font = FontId::new(font_size(13.0, zoom), bold());
-    let galley = painter.layout_no_wrap(title.to_ascii_uppercase(), font, color);
+    let galley = tracked_galley(
+        &painter,
+        &title.to_ascii_uppercase(),
+        font,
+        color,
+        0.5 * zoom,
+    );
     let strip = Rect::from_min_size(
         rect.left_top() + egui::vec2(GROUP_PADDING, 0.0) * zoom,
         egui::vec2(galley.size().x + 6.0 * zoom, TITLE_HEIGHT * zoom),
@@ -5477,20 +5596,21 @@ fn column_row_fill(
 fn caption(ui: &mut egui::Ui, text: &str, size: f32, zoom: f32, color: Color32) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, LABEL_HEIGHT * zoom), Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.text(
+    tracked_text(
+        &ui.painter_at(rect),
         rect.center(),
         Align2::CENTER_CENTER,
-        text.to_ascii_uppercase(),
-        FontId::proportional(font_size(size, zoom)),
+        &text.to_ascii_uppercase(),
+        FontId::new(font_size(size, zoom), label_family()),
         color,
+        0.35 * zoom,
     );
 }
 
 /// Draws a small text label that takes just as much space as it needs.
 fn text_label(ui: &mut egui::Ui, text: &str, size: f32, zoom: f32, color: Color32) {
-    let font = FontId::proportional(font_size(size, zoom));
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let font = FontId::new(font_size(size, zoom), label_family());
+    let galley = tracked_galley(ui.painter(), text, font, color, 0.4 * zoom);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(galley.size().x, galley.size().y), Sense::hover());
     ui.painter_at(rect).galley(rect.left_top(), galley, color);
@@ -6247,8 +6367,8 @@ fn format_amount(value: f32) -> String {
 /// are tiny squares, so that the whole meter fits between the presets and the
 /// lights of the activity meter.
 fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
-    let font = FontId::proportional(font_size(8.0, zoom));
-    let label = painter.layout_no_wrap("VOICES".to_string(), font.clone(), palette().muted);
+    let font = FontId::new(font_size(7.2, zoom), label_family());
+    let label = tracked_galley(painter, "VOICES", font.clone(), palette().muted, 1.0 * zoom);
     let label_width = label.size().x;
 
     let row_width =
@@ -6259,11 +6379,11 @@ fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
     let left = (rect.left() + (rect.width() - total) * 0.5).round();
     let top = rect.center().y - VOICE_LED_HEIGHT * zoom * 0.5;
 
-    painter.text(
-        egui::pos2(left, rect.center().y),
-        Align2::LEFT_CENTER,
-        "VOICES",
-        font,
+    painter.galley(
+        Align2::LEFT_CENTER
+            .anchor_size(egui::pos2(left, rect.center().y), label.size())
+            .min,
+        label,
         palette().muted,
     );
 
@@ -6358,10 +6478,10 @@ fn fit_lcd_text(
     zoom: f32,
 ) -> (String, FontId) {
     let mut size = LCD_FONT_SIZE;
-    let mut font = FontId::monospace(font_size(size, zoom));
+    let mut font = FontId::new(font_size(size, zoom), value_family());
     while size > LCD_MIN_FONT_SIZE && text_width(painter, text, &font) > max_width {
         size -= 1.0;
-        font = FontId::monospace(font_size(size, zoom));
+        font = FontId::new(font_size(size, zoom), value_family());
     }
     if text_width(painter, text, &font) <= max_width {
         return (text.to_owned(), font);
@@ -6427,19 +6547,22 @@ fn button(ui: &mut egui::Ui, rect: Rect, text: &str, zoom: f32) -> egui::Respons
         palette().button_bg
     };
     flat_box(&painter, rect, fill);
-    painter.text(
+    let arrow = matches!(text, "<" | ">");
+    tracked_text(
+        &painter,
         rect.center(),
         Align2::CENTER_CENTER,
         text,
-        FontId::new(
-            font_size(10.0, zoom),
-            if primary {
-                bold()
-            } else {
-                egui::FontFamily::Proportional
-            },
-        ),
+        if arrow {
+            FontId::new(font_size(11.0, zoom), value_family())
+        } else {
+            FontId::new(
+                font_size(10.0, zoom),
+                if primary { bold() } else { label_family() },
+            )
+        },
         palette().text,
+        if arrow { 0.0 } else { 0.4 * zoom },
     );
 
     response
@@ -6477,19 +6600,17 @@ fn tab_button(
             egui::StrokeKind::Inside,
         );
     }
-    painter.text(
+    tracked_text(
+        &painter,
         rect.center(),
         Align2::CENTER_CENTER,
         text,
         FontId::new(
             font_size(10.0, zoom),
-            if active {
-                bold()
-            } else {
-                egui::FontFamily::Proportional
-            },
+            if active { bold() } else { label_family() },
         ),
         palette().text,
+        0.5 * zoom,
     );
 
     response
@@ -6703,7 +6824,7 @@ fn apply_theme(ctx: &egui::Context, zoom: f32) {
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(font_size(11.0, zoom), egui::FontFamily::Proportional),
+            egui::FontId::new(font_size(11.0, zoom), label_family()),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
@@ -6950,6 +7071,41 @@ mod tests {
         rects
     }
 
+    /// The font and tracking of a text of the panel.
+    #[derive(Clone, Debug)]
+    struct TextStyleInfo {
+        text: String,
+        family: egui::FontFamily,
+        size: f32,
+        tracking: f32,
+    }
+
+    /// All the texts of a frame with the font that they are drawn in.
+    fn text_styles(output: &egui::FullOutput) -> Vec<TextStyleInfo> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => {
+                    let job = &text.galley.job;
+                    let format = &job.sections.first()?.format;
+                    Some(TextStyleInfo {
+                        text: job.text.clone(),
+                        family: format.font_id.family.clone(),
+                        size: format.font_id.size,
+                        tracking: format.extra_letter_spacing,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The styles of the texts that are printed exactly as `needle`.
+    fn style_of<'a>(styles: &'a [TextStyleInfo], needle: &str) -> Vec<&'a TextStyleInfo> {
+        styles.iter().filter(|style| style.text == needle).collect()
+    }
+
     /// All the texts of a frame, with their positions.
     fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
         output
@@ -7097,6 +7253,84 @@ mod tests {
     /// The index of the slider of the number of voices. It is the last slider
     /// of the voice section.
     const VOICES_SLIDER: usize = 44;
+
+    #[test]
+    fn the_panel_uses_its_type_roles() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let styles = text_styles(&output);
+        let family = |name: &str| egui::FontFamily::Name(Arc::from(name));
+        let one = |needle: &str| {
+            let found = style_of(&styles, needle);
+            assert_eq!(
+                found.len(),
+                1,
+                "the panel has {} of {needle:?}",
+                found.len()
+            );
+            found[0].clone()
+        };
+
+        // The wordmark and the section titles are the display weight, and
+        // they are tracked out.
+        for needle in ["SUSHI", "VCO 1", "MACROS"] {
+            let style = one(needle);
+            assert_eq!(
+                style.family,
+                family(DISPLAY_FAMILY),
+                "{needle:?} is not in the display weight"
+            );
+            assert!(style.tracking > 0.0, "{needle:?} is not tracked out");
+        }
+
+        // The small labels above the controls are the label weight and sit
+        // below the titles in size.
+        for needle in ["TUNE", "CUT", "SWING"] {
+            let style = one(needle);
+            assert_eq!(
+                style.family,
+                family(LABEL_FAMILY),
+                "{needle:?} is not in the label weight"
+            );
+            assert!(style.tracking > 0.0, "{needle:?} is not tracked out");
+            assert!(
+                style.size < one("VCO 1").size,
+                "{needle:?} is not smaller than a section title"
+            );
+        }
+
+        // The preset display and the values of the instrument are the
+        // monospace value weight: tabular figures in every place of the
+        // panel that reads a number.
+        for needle in ["01 INIT PAD", "C3"] {
+            for style in style_of(&styles, needle) {
+                assert_eq!(
+                    style.family,
+                    family(VALUE_FAMILY),
+                    "{needle:?} is not in the value weight"
+                );
+            }
+        }
+
+        // The serial print of the footer and the hints are the technical
+        // monospace text of the instrument.
+        for needle in ["SUSHI / MODEL 101", "Z/X"] {
+            let style = one(needle);
+            assert_eq!(
+                style.family,
+                egui::FontFamily::Monospace,
+                "{needle:?} is not in the monospace weight"
+            );
+        }
+
+        // The faces of the popups use the label weight through the button
+        // text style, so a choice reads like the caption above its fader.
+        let popup = style_of(&styles, "Saw")
+            .into_iter()
+            .next()
+            .expect("the panel has no oscillator popup");
+        assert_eq!(popup.family, family(LABEL_FAMILY));
+    }
 
     #[test]
     fn every_parameter_of_the_synthesizer_is_reachable() {

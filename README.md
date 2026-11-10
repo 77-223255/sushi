@@ -55,9 +55,12 @@ voices are silent, so a held chord or arpeggio keeps one phase.
 
 ## Interface
 
-- Warm Legacy faceplate with flat 1 px controls, the embedded Quicksand rounded
-  geometric sans (medium and bold) and vertical faders that have a coarse lane
-  plus a separate fine lane
+- Warm Legacy faceplate with flat 1 px controls and a two-family type system:
+  Quicksand (rounded geometric, 500 running text / 600 labels / 700 titles and
+  wordmark) carries the voice, embedded JetBrains Mono (500/700) carries every
+  value, note name, route number and the preset LCD, and the small uppercase
+  labels are tracked out. Vertical faders have a coarse lane plus a separate
+  fine lane
 - The main page is four compact bands:
   - `VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`
   - `VCF | MOD ENV | AMP ENV`
@@ -153,5 +156,6 @@ pushed separately).
 
 MIT. See [LICENSE](LICENSE).
 
-The bundled Quicksand font is licensed under the SIL Open Font License 1.1;
-see `assets/fonts/OFL.txt`.
+The bundled Quicksand and JetBrains Mono fonts are licensed under the SIL Open
+Font License 1.1; see `assets/fonts/OFL.txt` and
+`assets/fonts/OFL-JetBrainsMono.txt`.

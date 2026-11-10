@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
-use super::{bold, flat_box, font_size, palette};
+use super::{flat_box, font_size, label_family, palette, tracked_text, value_family};
 use crate::keyboard::HeldKeys;
 
 // --- The design of the strip ------------------------------------------------
@@ -320,26 +320,30 @@ impl VirtualKeyboard {
 
         // The octave controls and their readout.
         self.octave_buttons(ui, &chrome, zoom);
-        painter.text(
+        tracked_text(
+            &painter,
             chrome.caption.center(),
             Align2::CENTER_CENTER,
             "OCT",
-            FontId::new(font_size(8.0, zoom), bold()),
+            FontId::new(font_size(7.5, zoom), label_family()),
             palette().muted,
+            0.8 * zoom,
         );
         painter.text(
             chrome.readout.center(),
             Align2::CENTER_CENTER,
             note_name(self.base_note()),
-            FontId::new(font_size(11.0, zoom), bold()),
+            FontId::new(font_size(11.0, zoom), value_family()),
             palette().title_blue,
         );
-        painter.text(
+        tracked_text(
+            &painter,
             chrome.hint.center(),
             Align2::CENTER_CENTER,
             "Z/X",
-            FontId::new(font_size(8.0, zoom), bold()),
+            FontId::monospace(font_size(7.2, zoom)),
             palette().muted,
+            0.4 * zoom,
         );
 
         // The typed octave is shifted before the notes are read, so a frame
@@ -455,7 +459,7 @@ impl VirtualKeyboard {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 label,
-                FontId::new(font_size(9.0, zoom), bold()),
+                FontId::new(font_size(9.0, zoom), value_family()),
                 if enabled {
                     palette().text
                 } else {
@@ -512,7 +516,7 @@ impl VirtualKeyboard {
                     pos2(rect.center().x, rect.bottom() - 3.0 * zoom),
                     Align2::CENTER_BOTTOM,
                     note_name(note),
-                    FontId::new(font_size(7.0, zoom), bold()),
+                    FontId::new(font_size(6.6, zoom), value_family()),
                     color,
                 );
             }
