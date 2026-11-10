@@ -1146,6 +1146,8 @@ struct EditorState {
     patch_status_error: bool,
     /// Whether the patch browser has to ask before it overwrites a file.
     patch_confirm_overwrite: bool,
+    /// Whether the patch browser has to ask before it deletes a file.
+    patch_confirm_delete: bool,
     /// The name of the patch of the user that is loaded.
     patch_active: Option<String>,
     /// The actual file of the loaded patch. The JSON name and the file stem
@@ -1282,6 +1284,7 @@ impl SushiEditor {
                 patch_status: String::new(),
                 patch_status_error: false,
                 patch_confirm_overwrite: false,
+                patch_confirm_delete: false,
                 patch_active: None,
                 patch_active_path: None,
                 patch_preview: String::new(),
@@ -1355,6 +1358,7 @@ impl SushiEditor {
         self.state.patch_status.clear();
         self.state.patch_status_error = false;
         self.state.patch_confirm_overwrite = false;
+        self.state.patch_confirm_delete = false;
         self.state.patch_preview_title = match &self.state.patch_active {
             Some(name) => name.clone(),
             None => format!(
@@ -1405,6 +1409,7 @@ impl SushiEditor {
         self.state.preset_index = persisted.preset_index.min(PRESETS.len() - 1);
         self.state.dirty = persisted.dirty;
         self.state.patch_confirm_overwrite = false;
+        self.state.patch_confirm_delete = false;
         self.state.patch_active_path = persisted.patch_path.map(PathBuf::from);
         self.state.patch_active = persisted.patch_name.or_else(|| {
             self.state
@@ -5120,13 +5125,24 @@ impl<'a, 'b> Ctx<'a, 'b> {
                                     .desired_width(width),
                             );
                             if response.changed() {
-                                self.state.patch_confirm_overwrite = false;
+                                self.clear_patch_confirmation();
                             }
                             if ui.button("LOAD").clicked() {
                                 self.load_patch_by_name();
                             }
                             if ui.button("SAVE").clicked() {
                                 self.save_patch();
+                            }
+                            // DELETE asks for a second click. The label turns
+                            // red while the confirmation is pending, so the
+                            // second click is never blind.
+                            let delete = if self.state.patch_confirm_delete {
+                                egui::RichText::new("DELETE").color(palette().status_error)
+                            } else {
+                                egui::RichText::new("DELETE")
+                            };
+                            if ui.button(delete).clicked() {
+                                self.delete_patch();
                             }
                         });
 
@@ -5179,6 +5195,78 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.load_patch_file(&path);
     }
 
+    /// Deletes the patch whose name is in the field of the name.
+    ///
+    /// The first click only asks for the second one, so a patch is never lost
+    /// by a stray click. A loaded patch that is deleted is replaced by its
+    /// neighbour in the list (or by the factory preset when the folder is
+    /// empty), so the editor never keeps an identity that points at a file
+    /// that does not exist anymore.
+    fn delete_patch(&mut self) {
+        if !self.folder_is_applied() {
+            self.set_status(FOLDER_HINT.to_string(), true);
+            return;
+        }
+
+        let name = patch::sanitize_file_name(&self.state.patch_name);
+        if name.is_empty() {
+            self.set_status("The name must not be empty".to_string(), true);
+            return;
+        }
+        let dir = self.patch_dir();
+        let path = dir.join(format!("{name}.json"));
+
+        if !path.exists() {
+            self.clear_patch_confirmation();
+            self.set_status("Not found".to_string(), true);
+            return;
+        }
+
+        if !self.state.patch_confirm_delete {
+            // A delete always asks for a second click, no matter what the
+            // save confirmation said.
+            self.state.patch_confirm_overwrite = false;
+            self.state.patch_confirm_delete = true;
+            self.set_status(format!("Click DELETE again to remove {name}"), true);
+            return;
+        }
+
+        // The place of the file in the list, so its neighbour can take over
+        // when the deleted patch is the loaded one.
+        let position = patch::list_patches(&dir)
+            .iter()
+            .position(|file| file == &path);
+        let was_active = self.state.patch_active_path.as_deref() == Some(path.as_path());
+
+        if let Err(error) = std::fs::remove_file(&path) {
+            self.set_status(format!("{name} could not be deleted: {error}"), true);
+            return;
+        }
+
+        self.clear_patch_confirmation();
+        self.refresh_patch_list();
+        if was_active {
+            self.state.patch_active = None;
+            self.state.patch_active_path = None;
+            let neighbour = position
+                .and_then(|position| {
+                    let files = &self.state.patch_files;
+                    files
+                        .get(position)
+                        .or_else(|| files.get(position.saturating_sub(1)))
+                        .cloned()
+                })
+                .filter(|file| file != &path);
+            match neighbour {
+                Some(neighbour) => self.load_patch_file(&neighbour),
+                // The folder has no patch left, so the factory preset that
+                // the editor shows in the LCD becomes the loaded sound again.
+                None => self.load_preset(self.state.preset_index),
+            }
+        }
+        self.set_status(format!("Deleted {name}"), false);
+    }
+
     /// The folder in which the patches are stored.
     ///
     /// It is the folder that was applied with SET, not the text of the field,
@@ -5204,7 +5292,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_files = patch::list_patches(&self.patch_dir());
         // A new list means that the files may have changed, so a pending
         // confirmation does not belong to any of them anymore.
-        self.state.patch_confirm_overwrite = false;
+        self.clear_patch_confirmation();
     }
 
     /// Rebuilds the JSON preview from the selected user patch, or from the
@@ -5220,7 +5308,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             Ok(name) => {
                 // The patch that is loaded is not the one that was waiting
                 // for a confirmation anymore.
-                self.state.patch_confirm_overwrite = false;
+                self.clear_patch_confirmation();
                 self.state.patch_active = Some(name.clone());
                 self.state.patch_active_path = Some(path.to_path_buf());
                 // The save field follows the file name, not the display name
@@ -5255,13 +5343,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if path.exists() && !self.state.patch_confirm_overwrite {
             // The file is not overwritten without a second click.
             self.state.patch_confirm_overwrite = true;
+            self.state.patch_confirm_delete = false;
             self.set_status("File exists - click SAVE again".to_string(), true);
             return;
         }
 
         match patch::save_patch(&dir, &name, self.params) {
             Ok(path) => {
-                self.state.patch_confirm_overwrite = false;
+                self.clear_patch_confirmation();
                 self.state.patch_name = name.clone();
                 self.state.patch_active = Some(name);
                 self.state.patch_active_path = Some(path);
@@ -5297,7 +5386,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
         self.state.patch_config = config;
         self.state.patch_dir_text = path.to_string_lossy().into_owned();
-        self.state.patch_confirm_overwrite = false;
+        self.clear_patch_confirmation();
         self.refresh_patch_list();
         self.refresh_patch_preview();
         self.set_status("Folder set".to_string(), false);
@@ -5307,6 +5396,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
     fn set_status(&mut self, message: String, error: bool) {
         self.state.patch_status = message;
         self.state.patch_status_error = error;
+    }
+
+    /// Forgets a pending SAVE or DELETE confirmation. Both ask for a second
+    /// click, so every action that changes the target patch clears them.
+    fn clear_patch_confirmation(&mut self) {
+        self.state.patch_confirm_overwrite = false;
+        self.state.patch_confirm_delete = false;
     }
 
     /// Mutates the current sound a little bit.
@@ -7071,13 +7167,14 @@ mod tests {
         rects
     }
 
-    /// The font and tracking of a text of the panel.
+    /// The font, tracking and colour of a text of the panel.
     #[derive(Clone, Debug)]
     struct TextStyleInfo {
         text: String,
         family: egui::FontFamily,
         size: f32,
         tracking: f32,
+        color: Color32,
     }
 
     /// All the texts of a frame with the font that they are drawn in.
@@ -7094,6 +7191,7 @@ mod tests {
                         family: format.font_id.family.clone(),
                         size: format.font_id.size,
                         tracking: format.extra_letter_spacing,
+                        color: format.color,
                     })
                 }
                 _ => None,
@@ -10386,7 +10484,9 @@ faders and the three macros; the VCA is main-page only"
         let output = settle(&ctx, &mut editor);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
 
-        for expected in ["FOLDER", "SET", "REFRESH", "NAME", "SAVE", "CLOSE"] {
+        for expected in [
+            "FOLDER", "SET", "REFRESH", "NAME", "SAVE", "DELETE", "CLOSE",
+        ] {
             assert!(
                 names.contains(&expected.to_string()),
                 "the browser has no {expected}: {names:?}"
@@ -10505,6 +10605,225 @@ faders and the three macros; the VCA is main-page only"
         }
         assert_eq!(editor.state.patch_status, "Not found");
         assert!(editor.state.patch_status_error);
+    }
+
+    #[test]
+    fn a_patch_can_be_deleted_from_the_browser() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("delete-patch");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        for (name, cutoff) in [("AUDIO PATCH", 900.0), ("ZEBRA PATCH", 1_600.0)] {
+            std::fs::write(
+                dir.path.join(format!("{name}.json")),
+                format!(
+                    r#"{{"format":"sushi-patch","version":1,"name":"{name}","params":{{"cutoff":{cutoff}}}}}"#
+                ),
+            )
+            .expect("the patch was not written");
+        }
+        editor.state.patch_files = patch::list_patches(&dir.path);
+
+        // The browser is open and the first patch of the list is loaded, so
+        // the NAME field holds the file that DELETE works on.
+        editor.state.patch_open = true;
+        let output = settle(&ctx, &mut editor);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "AUDIO PATCH")
+            .expect("the browser does not list the first patch");
+        run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
+        assert_eq!(editor.state.patch_active.as_deref(), Some("AUDIO PATCH"));
+        assert_eq!(editor.state.patch_name, "AUDIO PATCH");
+
+        // The first click only asks for a second one.
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "DELETE")
+            .expect("the browser has no delete button");
+        let button = pos + egui::vec2(4.0, 4.0);
+        run_frames(&ctx, &mut editor, click(button));
+        assert!(
+            dir.path.join("AUDIO PATCH.json").exists(),
+            "the first click already deleted the patch"
+        );
+        assert!(editor.state.patch_confirm_delete);
+        assert!(
+            editor.state.patch_status.contains("Click DELETE again"),
+            "the browser does not ask for the second click: {}",
+            editor.state.patch_status
+        );
+
+        // The second click deletes the file, and the next patch of the list
+        // takes over, so the editor keeps a sound that exists.
+        run_frames(&ctx, &mut editor, click(button));
+        assert!(
+            !dir.path.join("AUDIO PATCH.json").exists(),
+            "the patch was not deleted"
+        );
+        assert_eq!(editor.state.patch_active.as_deref(), Some("ZEBRA PATCH"));
+        assert!((params.cutoff.value() - 1_600.0).abs() < 0.01);
+        assert_eq!(editor.state.patch_status, "Deleted AUDIO PATCH");
+        assert_eq!(editor.state.patch_files.len(), 1);
+        assert!(!editor.state.patch_confirm_delete);
+    }
+
+    #[test]
+    fn the_delete_button_asks_with_red_lettering() {
+        let (ctx, mut editor, _params) = make_editor();
+        let dir = TempDir::new("delete-ask");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        std::fs::write(
+            dir.path.join("EDGE CASE.json"),
+            r#"{"format":"sushi-patch","version":1,"name":"EDGE CASE","params":{"cutoff":700.0}}"#,
+        )
+        .expect("the patch was not written");
+        editor.state.patch_files = patch::list_patches(&dir.path);
+        editor.state.patch_name = "EDGE CASE".to_string();
+        editor.state.patch_open = true;
+
+        // DELETE follows SAVE in the action bar and is a normal button.
+        let output = settle(&ctx, &mut editor);
+        let styles = text_styles(&output);
+        let save = style_of(&styles, "SAVE")
+            .into_iter()
+            .next()
+            .expect("the browser has no SAVE button");
+        let delete = style_of(&styles, "DELETE")
+            .into_iter()
+            .next()
+            .expect("the browser has no DELETE button")
+            .clone();
+        let delete_pos = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "DELETE")
+            .expect("the browser has no DELETE button")
+            .1;
+        let save_pos = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == "SAVE")
+            .expect("the browser has no SAVE button")
+            .1;
+        assert!(
+            delete_pos.x > save_pos.x,
+            "DELETE does not sit after SAVE: {delete_pos:?} / {save_pos:?}"
+        );
+        assert!(delete_pos.x < WINDOW_WIDTH, "DELETE left the panel");
+        assert_eq!(delete.color, palette().text);
+        assert_eq!(save.family, delete.family);
+
+        // One click asks for the second one and turns the label red, so the
+        // second click is never blind.
+        run_frames(&ctx, &mut editor, click(delete_pos + egui::vec2(4.0, 4.0)));
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let styles = text_styles(&output);
+        let delete = style_of(&styles, "DELETE")
+            .into_iter()
+            .next()
+            .expect("the browser lost its DELETE button");
+        assert_eq!(
+            delete.color,
+            palette().status_error,
+            "the pending delete is not red"
+        );
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.iter().any(|text| text.contains("Click DELETE again")),
+            "the browser does not ask for the second click: {names:?}"
+        );
+        assert!(
+            dir.path.join("EDGE CASE.json").exists(),
+            "the first click deleted the patch"
+        );
+    }
+
+    #[test]
+    fn deleting_the_last_patch_falls_back_to_the_factory_preset() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("delete-last");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        std::fs::write(
+            dir.path.join("ONLY PATCH.json"),
+            r#"{"format":"sushi-patch","version":1,"name":"ONLY PATCH","params":{"cutoff":1234.0}}"#,
+        )
+        .expect("the patch was not written");
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        let path = dir.path.join("ONLY PATCH.json");
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&path);
+            ctx.delete_patch();
+            assert!(ctx.state.patch_confirm_delete, "the delete did not ask");
+            ctx.delete_patch();
+        }
+
+        assert!(!path.exists(), "the patch was not deleted");
+        assert!(editor.state.patch_active.is_none());
+        assert_eq!(editor.state.preset_index, 0);
+        assert_eq!(editor.state.patch_status, "Deleted ONLY PATCH");
+        assert!(
+            (params.cutoff.value() - 900.0).abs() < 0.01,
+            "the factory preset was not loaded again: {}",
+            params.cutoff.value()
+        );
+    }
+
+    #[test]
+    fn deleting_another_patch_keeps_the_loaded_sound() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("delete-other");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        for (name, cutoff) in [("AUDIO PATCH", 900.0), ("ZEBRA PATCH", 1_600.0)] {
+            std::fs::write(
+                dir.path.join(format!("{name}.json")),
+                format!(
+                    r#"{{"format":"sushi-patch","version":1,"name":"{name}","params":{{"cutoff":{cutoff}}}}}"#
+                ),
+            )
+            .expect("the patch was not written");
+        }
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&dir.path.join("ZEBRA PATCH.json"));
+            // The name field points at the other patch, which is deleted.
+            ctx.state.patch_name = "AUDIO PATCH".to_string();
+            ctx.delete_patch();
+            ctx.delete_patch();
+        }
+
+        assert!(!dir.path.join("AUDIO PATCH.json").exists());
+        assert_eq!(editor.state.patch_active.as_deref(), Some("ZEBRA PATCH"));
+        assert!((params.cutoff.value() - 1_600.0).abs() < 0.01);
+        assert_eq!(editor.state.patch_status, "Deleted AUDIO PATCH");
+    }
+
+    #[test]
+    fn deleting_a_patch_that_is_not_there_is_reported() {
+        let (_ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("delete-missing");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        editor.state.patch_name = "GHOST".to_string();
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.delete_patch();
+        }
+
+        assert_eq!(editor.state.patch_status, "Not found");
+        assert!(editor.state.patch_status_error);
+        assert!(!editor.state.patch_confirm_delete);
     }
 
     #[test]

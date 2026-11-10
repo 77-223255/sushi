@@ -88,9 +88,12 @@ voices are silent, so a held chord or arpeggio keeps one phase.
   around at both ends, so a user patch never jumps to a factory sound.
   Clicking the active MOD or FX tab returns to the main page
 - The patch browser has a folder field, search, user and factory patch lists, a
-  JSON preview, and a name field with LOAD and SAVE. It stops above the
-  keyboard strip, so every patch can be played with the mouse, the computer
-  keyboard or a MIDI keyboard while it is browsed
+  JSON preview, and a name field with LOAD, SAVE and DELETE. DELETE asks for a
+  second click and turns red while it waits; deleting the loaded patch replaces
+  it with its neighbour in the list (or with the factory preset when no user
+  patch is left). It stops above the keyboard strip, so every patch can be
+  played with the mouse, the computer keyboard or a MIDI keyboard while it is
+  browsed
 - The keyboard strip under the bands is an on-screen piano in the spirit of
   Serum: click a key to play it, drag across the keys to glide, and the
   velocity follows how high on the key the click lands. Every key that sounds
