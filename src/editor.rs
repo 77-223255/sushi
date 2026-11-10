@@ -16,7 +16,6 @@
 mod keyboard;
 mod presets;
 mod theme;
-mod undo;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -40,7 +39,6 @@ use crate::patch;
 use keyboard::VirtualKeyboard;
 use presets::{PRESETS, Rng};
 use theme::palette;
-use undo::UndoHistory;
 
 // --- The fonts ---------------------------------------------------------------
 
@@ -649,7 +647,8 @@ fn fx_chain_drop_position(source: usize, slot: usize, count: usize) -> usize {
     target.min(count - 1)
 }
 
-/// The state of a chain tile drag. It is GUI-only, like the undo history.
+/// The state of a chain tile drag. It is GUI-only and never touches the audio
+/// thread.
 #[derive(Clone, Copy, Debug, Default)]
 struct FxChainDrag {
     /// The position of the tile in the chain.
@@ -713,13 +712,6 @@ const NO_MATCHES: &str = "No matches";
 
 /// How many scope samples are kept around.
 const HISTORY_LEN: usize = 4096;
-
-// --- The footer controls ----------------------------------------------------
-
-/// The width of one UNDO or REDO button in the footer.
-const FOOTER_BUTTON_WIDTH: f32 = 40.0;
-/// The height of one UNDO or REDO button in the footer.
-const FOOTER_BUTTON_HEIGHT: f32 = 14.0;
 
 // --- The layout of the panel ------------------------------------------------
 
@@ -948,7 +940,7 @@ enum Widget {
 
 /// The part of the editor state that is stored with the plugin state by the
 /// host. Comparing it with the last value lets the open editor notice a
-/// project reload or an undo performed by the host.
+/// project reload or a state change of the host.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PersistedEditorState {
     preset_index: usize,
@@ -988,8 +980,8 @@ struct EditorState {
     /// The page that is shown in the panel.
     page: Page,
     /// The route of the modulation table that the target inspector shows.
-    /// Selecting a route is a view-only action, so it never enters the undo
-    /// history and it is kept while the route is edited.
+    /// Selecting a route is a view-only action, so it never marks the sound
+    /// dirty and it is kept while the route is edited.
     mod_selected: usize,
     /// The parameter and value under the pointer, or the last one seen.
     readout: Option<(String, String)>,
@@ -1110,9 +1102,6 @@ pub struct SushiEditor {
     /// The keys that the synthesizer plays, for the lights of the strip.
     held_keys: Arc<HeldKeys>,
     history: VecDeque<f32>,
-    /// The undo and redo steps of the editor. They are GUI-only: the audio
-    /// thread never touches this history.
-    undo_history: UndoHistory,
     gui_ctx: Option<GuiContext>,
     state: EditorState,
     /// The persisted identity that was last seen by this editor.
@@ -1148,7 +1137,6 @@ impl SushiEditor {
             keyboard_tx,
             held_keys,
             history: VecDeque::with_capacity(HISTORY_LEN),
-            undo_history: UndoHistory::default(),
             gui_ctx: None,
             last_persisted: PersistedEditorState::default(),
             zoom: 1.0,
@@ -1333,13 +1321,9 @@ impl SushiEditor {
         }
     }
 
-    /// Applies a host state change (project reload, undo, another editor) to
+    /// Applies a host state change (project reload, another editor) to
     /// the open editor without touching the patch folder or the search.
     fn apply_persisted_state(&mut self, persisted: PersistedEditorState) {
-        // The sound underneath the history changed (project reload, host
-        // undo or another editor), so the old snapshots do not belong to it
-        // anymore.
-        self.undo_history.clear();
         self.state.preset_index = persisted.preset_index.min(PRESETS.len() - 1);
         self.state.dirty = persisted.dirty;
         self.state.patch_confirm_overwrite = false;
@@ -1446,71 +1430,6 @@ impl SushiEditor {
             self.state.arp_step = self.arp_position.load(Ordering::Relaxed);
         }
     }
-
-    /// Finishes an edit after the widgets are drawn. While a gesture is open
-    /// its snapshot stays pending, so a whole drag becomes one undo step.
-    fn finish_edit(&mut self) {
-        if self.state.gestures.is_empty() {
-            self.undo_history.commit(&self.params, &self.state);
-        }
-    }
-
-    /// Restores the state before the last sound edit.
-    fn undo(&mut self, setter: &ParamSetter) -> bool {
-        self.finish_edit();
-        let changed = self
-            .undo_history
-            .undo(&self.params, setter, &mut self.state);
-        if changed {
-            self.last_persisted = self.read_persisted_state();
-        }
-        changed
-    }
-
-    /// Restores the state that was undone last.
-    fn redo(&mut self, setter: &ParamSetter) -> bool {
-        self.finish_edit();
-        let changed = self
-            .undo_history
-            .redo(&self.params, setter, &mut self.state);
-        if changed {
-            self.last_persisted = self.read_persisted_state();
-        }
-        changed
-    }
-
-    /// Handles Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y. The keys are left to
-    /// a focused text field, so that typing and the undo of a text edit keep
-    /// working there.
-    fn handle_history_shortcuts(&mut self, ui: &egui::Ui, setter: &ParamSetter) {
-        if ui.ctx().text_edit_focused() {
-            return;
-        }
-
-        let (undo, redo) = ui.input_mut(|input| {
-            // The shift variant is checked first, because a pattern without
-            // Shift also matches a press that has Shift held down. Both the
-            // command and the plain Ctrl spelling are accepted, so the
-            // shortcut works the same on every host and in the tests.
-            let shift = egui::Modifiers::SHIFT;
-            let redo = input.consume_key(egui::Modifiers::COMMAND.plus(shift), egui::Key::Z)
-                || input.consume_key(egui::Modifiers::CTRL.plus(shift), egui::Key::Z)
-                || input.consume_key(egui::Modifiers::MAC_CMD.plus(shift), egui::Key::Z)
-                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-                || input.consume_key(egui::Modifiers::MAC_CMD, egui::Key::Y);
-            let undo = input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)
-                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
-                || input.consume_key(egui::Modifiers::MAC_CMD, egui::Key::Z);
-            (undo, redo)
-        });
-
-        if redo {
-            self.redo(setter);
-        } else if undo {
-            self.undo(setter);
-        }
-    }
 }
 
 impl NiceEguiApp for SushiEditor {
@@ -1523,7 +1442,6 @@ impl NiceEguiApp for SushiEditor {
         self.gui_ctx = Some(nice_gui_ctx);
         while self.scope_rx.pop().is_ok() {}
         self.history.clear();
-        self.undo_history.clear();
         self.init_patch_state();
         self.last_persisted = self.read_persisted_state();
 
@@ -1593,7 +1511,6 @@ impl SushiEditor {
         }
         let setter = gui_ctx.param_setter();
 
-        self.handle_history_shortcuts(ui, &setter);
         self.collect_scope();
         self.update_arp_position();
         ui.ctx().request_repaint_after(Duration::from_millis(16));
@@ -1619,10 +1536,9 @@ impl SushiEditor {
             self.zoom = layout.zoom;
         }
 
-        let footer_action = {
-            // Split the borrow of the editor, so that the parameters, the
-            // state of the panel, the text buffers and the undo history can
-            // be used at the same time.
+        {
+            // Split the borrow of the editor, so that the parameters and the
+            // state of the panel can be used at the same time.
             let params = self.params.as_ref();
             let history = &self.history;
             let voice_count = &self.voice_count;
@@ -1631,7 +1547,6 @@ impl SushiEditor {
                 params,
                 setter: &setter,
                 state: &mut self.state,
-                undo: &mut self.undo_history,
                 history,
                 voice_count,
                 mod_feedback,
@@ -1640,8 +1555,18 @@ impl SushiEditor {
             };
 
             if ctx.state.patch_open {
-                ctx.patch_page(ui);
-                None
+                // The browser stops above the keyboard strip, so a patch can
+                // be played and auditioned while it is browsed. The strip is
+                // drawn after the page, so it is never covered.
+                let page =
+                    Rect::from_min_max(full.min, egui::pos2(full.right(), layout.keyboard().top()));
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt("sushi-patch-page-host")
+                        .max_rect(page)
+                        .layout(EguiLayout::top_down(Align::Min)),
+                    |ui| ctx.patch_page(ui),
+                );
             } else {
                 let header_rect = layout.header();
                 ui.scope_builder(
@@ -1662,25 +1587,15 @@ impl SushiEditor {
                     Page::Mod => mod_page(ui, &layout, &mut ctx),
                     Page::Fx => row_fx(ui, &layout, &mut ctx),
                 }
-                draw_footer(
-                    ui,
-                    &layout,
-                    ctx.state,
-                    ctx.undo.can_undo(),
-                    ctx.undo.can_redo(),
-                )
             }
-        };
 
-        // A drag may still be open, in which case its snapshot waits for the
-        // next frame. Everything else is committed here, once per edit.
-        self.finish_edit();
+            draw_footer(ui, &layout, ctx.state);
+        }
 
         // The keyboard strip sits under the bands and above the footer. It is
-        // drawn after the pages, so its keys are never covered by a band. The
-        // patch browser covers the strip, so the held notes are released while
-        // it is open instead of turning into stuck voices.
-        let patch_open = self.state.patch_open;
+        // drawn after the pages, so its keys are never covered by a band, and
+        // it stays alive while the patch browser is open, so every patch can
+        // be auditioned before it is loaded.
         let keyboard_rect = layout.keyboard();
         let held_keys = self.held_keys.clone();
         let keyboard_tx = &mut self.keyboard_tx;
@@ -1692,106 +1607,13 @@ impl SushiEditor {
                 on,
             });
         };
-        if patch_open {
-            keyboard.release_all(send);
-        } else {
-            keyboard.show(ui, keyboard_rect, layout.zoom, &held_keys, send);
-        }
-
-        match footer_action {
-            Some(FooterAction::Undo) => {
-                self.undo(&setter);
-            }
-            Some(FooterAction::Redo) => {
-                self.redo(&setter);
-            }
-            None => {}
-        }
+        keyboard.show(ui, keyboard_rect, layout.zoom, &held_keys, send);
     }
 }
 
-/// The command that a button of the footer asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FooterAction {
-    Undo,
-    Redo,
-}
-
-/// The places of the two history buttons of the footer.
-fn footer_button_rects(panel: Rect, zoom: f32) -> (Rect, Rect) {
-    let undo = Rect::from_min_size(
-        egui::pos2(
-            panel.left() + 118.0 * zoom,
-            panel.bottom() - (FOOTER_HEIGHT - 3.0) * zoom,
-        ),
-        egui::vec2(FOOTER_BUTTON_WIDTH, FOOTER_BUTTON_HEIGHT) * zoom,
-    );
-    let redo = Rect::from_min_size(
-        egui::pos2(undo.right() + 4.0 * zoom, undo.top()),
-        undo.size(),
-    );
-    (undo, redo)
-}
-
-/// A small flat button of the footer. The disabled state is a pale fill and a
-/// muted label instead of a click target that silently does nothing.
-fn footer_button(
-    ui: &mut egui::Ui,
-    rect: Rect,
-    text: &str,
-    enabled: bool,
-    zoom: f32,
-) -> egui::Response {
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with(("sushi-footer", text)),
-        Sense::click(),
-    );
-    let painter = ui.painter_at(rect);
-    let pressed = enabled && response.is_pointer_button_down_on();
-    let fill = if !enabled {
-        palette().track
-    } else if pressed {
-        palette().button_active
-    } else {
-        palette().button_bg
-    };
-    flat_box(&painter, rect, fill);
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::new(font_size(8.0, zoom), bold()),
-        if enabled {
-            palette().text
-        } else {
-            palette().muted
-        },
-    );
-
-    let hint = if enabled {
-        if text == "UNDO" {
-            "Undo (Ctrl/Cmd+Z)"
-        } else {
-            "Redo (Ctrl/Cmd+Shift+Z)"
-        }
-    } else if text == "UNDO" {
-        "Nothing to undo"
-    } else {
-        "Nothing to redo"
-    };
-    response.on_hover_text(hint)
-}
-
-/// The footer silkscreen: the model name, the two history buttons and the two
-/// shortcuts that are not visible on the faceplate.
-fn draw_footer(
-    ui: &mut egui::Ui,
-    layout: &Layout,
-    state: &EditorState,
-    can_undo: bool,
-    can_redo: bool,
-) -> Option<FooterAction> {
+/// The footer silkscreen: the model name, the readout of the last parameter
+/// and the shortcuts that are not visible on the faceplate.
+fn draw_footer(ui: &mut egui::Ui, layout: &Layout, state: &EditorState) {
     let painter = ui.painter_at(layout.panel);
     let zoom = layout.zoom;
     let panel = layout.panel;
@@ -1819,12 +1641,6 @@ fn draw_footer(
         palette().muted,
     );
 
-    // The two history buttons sit beside the model name, away from the
-    // centered readout and the shortcut hints on the right.
-    let (undo_rect, redo_rect) = footer_button_rects(panel, zoom);
-    let undo = footer_button(ui, undo_rect, "UNDO", can_undo, zoom);
-    let redo = footer_button(ui, redo_rect, "REDO", can_redo, zoom);
-
     // The live parameter readout: the reference's central value box.
     let (label, value) = state
         .readout
@@ -1850,14 +1666,6 @@ fn draw_footer(
         FontId::new(font_size(10.0, zoom), bold()),
         palette().text,
     );
-
-    if undo.clicked() && can_undo {
-        Some(FooterAction::Undo)
-    } else if redo.clicked() && can_redo {
-        Some(FooterAction::Redo)
-    } else {
-        None
-    }
 }
 
 /// Draws the sad face that tells the user that the window is too small for
@@ -1917,11 +1725,11 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 struct HeaderRects {
     /// The area of the wordmark. The subtitle has to stay inside it.
     logo: Rect,
-    /// The button of the previous factory preset.
+    /// The button of the previous sound: a patch of the user or a preset.
     previous: Rect,
     /// The display that shows the name of the sound and opens the patches.
     display: Rect,
-    /// The button of the next factory preset.
+    /// The button of the next sound: a patch of the user or a preset.
     next: Rect,
     /// The button that mutates the sound.
     mutate: Rect,
@@ -2086,7 +1894,6 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         ui.scope_id().with("sushi-lcd"),
         Sense::click(),
     );
-    let index = ctx.state.preset_index;
     lcd(&painter, rects.display, &display_text(ctx.state), zoom);
     if display_response.clicked() {
         ctx.toggle_patch_browser();
@@ -2097,10 +1904,10 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         .on_hover_text("Open the patch browser");
 
     if button(ui, rects.previous, "<", zoom).clicked() {
-        ctx.load_preset(index + PRESETS.len() - 1);
+        ctx.step_patch(-1);
     }
     if button(ui, rects.next, ">", zoom).clicked() {
-        ctx.load_preset(index + 1);
+        ctx.step_patch(1);
     }
     if button(ui, rects.mutate, "MUTATE", zoom).clicked() {
         ctx.mutate();
@@ -3849,11 +3656,8 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
     down_response.on_hover_text("Move this effect down the chain");
 
     if power_double_clicked {
-        // The first click of the double click already toggled the bit. Merge
-        // that step into the reset, so one undo returns to the state before
-        // the whole double click.
-        ctx.mark_edit();
-        ctx.undo.merge_double_click(ctx.params, ctx.state);
+        // A double click resets the stage to the active state, even though
+        // the first click of the double click already toggled the bit.
         ctx.fx_set_bypass(stage, false);
     } else if power_clicked {
         ctx.fx_toggle_bypass(stage);
@@ -3871,7 +3675,7 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
 
 /// Draws the live drop indicator of a chain drag and applies the reorder when
 /// the pointer is released. The source tile is only moved once, so a whole
-/// drag is one undo step.
+/// drag is one reorder.
 fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect]) {
     let Some(drag) = ctx.state.fx_chain_drag else {
         return;
@@ -4125,7 +3929,7 @@ impl Knob {
 }
 
 /// Rebuilds the JSON preview of the patch browser. The preview belongs to the
-/// patch identity, so undo and redo refresh it as well.
+/// patch identity, so another sound refreshes it as well.
 fn refresh_patch_preview(params: &SushiParams, state: &mut EditorState) {
     let title = if let Some(active) = &state.patch_active {
         active.clone()
@@ -4155,8 +3959,6 @@ struct Ctx<'a, 'b> {
     params: &'a SushiParams,
     setter: &'b ParamSetter<'b>,
     state: &'a mut EditorState,
-    /// The undo and redo history of the panel.
-    undo: &'a mut UndoHistory,
     /// The samples of the oscilloscope.
     history: &'a VecDeque<f32>,
     /// The number of voices that are currently playing.
@@ -4173,20 +3975,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
     /// The readout slot of the panel.
     fn readout(&mut self) -> &mut Option<(String, String)> {
         &mut self.state.readout
-    }
-
-    /// Remembers the sound before a change of this edit. A continuous drag
-    /// calls this on every frame, but only the first call takes a snapshot.
-    fn mark_edit(&mut self) {
-        self.undo.mark(self.params, self.state);
-    }
-
-    /// Finishes the edit of this frame unless a gesture is still open. A drag
-    /// is committed by its release frame, not by every frame in between.
-    fn commit_edit(&mut self) {
-        if self.state.gestures.is_empty() {
-            self.undo.commit(self.params, self.state);
-        }
     }
 
     /// Draws a continuous parameter: a caption, a vertical slider and a
@@ -4226,7 +4014,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
-            self.mark_edit();
             self.setter.set_parameter(param, value);
             self.state.dirty = true;
         }
@@ -4238,7 +4025,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_float(ui, id, label, param, knob, &response);
-        self.commit_edit();
         let value = format_number(knob.display(param.value()), knob.decimals);
         if response.hovered() || response.dragged() {
             *self.readout() = Some((
@@ -4286,7 +4072,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
-            self.mark_edit();
             self.setter.set_parameter(param, value.round() as i32);
             self.state.dirty = true;
         }
@@ -4298,7 +4083,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_int(ui, id, label, param, knob, &response);
-        self.commit_edit();
         let value = format_number(knob.display(param.value() as f32), knob.decimals);
         if response.hovered() || response.dragged() {
             *self.readout() = Some((
@@ -4318,10 +4102,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if next == mask {
             return;
         }
-        self.mark_edit();
         self.setter.set_parameter(param, next);
         self.state.dirty = true;
-        self.commit_edit();
     }
 
     /// Toggles the bypass bit of one chain stage.
@@ -4335,10 +4117,8 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if index == self.params.fx_order.value() {
             return;
         }
-        self.mark_edit();
         self.setter.set_parameter(&self.params.fx_order, index);
         self.state.dirty = true;
-        self.commit_edit();
     }
 
     /// Applies a complete chain order. The permutation index is derived from
@@ -4457,7 +4237,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
-            self.mark_edit();
             self.setter.set_parameter(param, value);
             self.state.dirty = true;
         }
@@ -4469,7 +4248,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_float(ui, id, label, param, knob, &response);
-        self.commit_edit();
         let value = format_number(knob.display(param.value()), knob.decimals);
         if response.hovered() || response.dragged() {
             *self.readout() = Some((
@@ -4617,7 +4395,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
             self.setter.begin_set_parameter(param);
         }
         if response.changed() {
-            self.mark_edit();
             self.setter.set_parameter(param, value);
             self.state.dirty = true;
         }
@@ -4629,7 +4406,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.value_popup_float(ui, id, "Amount", param, &Knob::bipolar(), &response);
-        self.commit_edit();
         let text = format_amount(param.value());
         if response.hovered() || response.dragged() {
             *self.readout() = Some((format!("MOD {} AMOUNT", slot + 1), format!("{text}%")));
@@ -4700,7 +4476,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 match text.trim().parse::<f32>() {
                     Ok(parsed) if parsed.is_finite() => {
                         let plain = knob.parse(parsed);
-                        self.mark_edit();
                         self.setter.begin_set_parameter(param);
                         self.setter.set_parameter(param, plain);
                         self.setter.end_set_parameter(param);
@@ -4778,7 +4553,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 match text.trim().parse::<f32>() {
                     Ok(parsed) if parsed.is_finite() => {
                         let plain = knob.parse(parsed).round() as i32;
-                        self.mark_edit();
                         self.setter.begin_set_parameter(param);
                         self.setter.set_parameter(param, plain);
                         self.setter.end_set_parameter(param);
@@ -4838,7 +4612,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 for (index, name) in variants.iter().enumerate() {
                     let variant = T::from_index(index);
                     if ui.selectable_label(current == variant, *name).clicked() {
-                        self.mark_edit();
                         self.setter.set_parameter(param, variant);
                         self.state.dirty = true;
                     }
@@ -4858,13 +4631,11 @@ impl<'a, 'b> Ctx<'a, 'b> {
         // A double click on the button of the popup resets the parameter to
         // its factory default.
         if response.double_clicked() {
-            self.mark_edit();
             self.setter
                 .set_parameter(param, param.default_plain_value());
             self.state.dirty = true;
         }
 
-        self.commit_edit();
         response
     }
 
@@ -4900,16 +4671,13 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if response.double_clicked() {
             // A double click resets the parameter to its factory default,
             // even though the two clicks would switch it twice.
-            self.mark_edit();
             self.setter
                 .set_parameter(param, param.default_plain_value());
             self.state.dirty = true;
         } else if response.clicked() {
-            self.mark_edit();
             self.setter.set_parameter(param, !param.value());
             self.state.dirty = true;
         }
-        self.commit_edit();
 
         text_label(ui, label, 9.0, zoom, palette().text);
     }
@@ -4967,23 +4735,19 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
             if response.double_clicked() {
                 // A double click resets the parameter to its factory default.
-                self.mark_edit();
                 self.setter
                     .set_parameter(param, param.default_plain_value());
                 self.state.dirty = true;
             } else if response.clicked() {
-                self.mark_edit();
                 self.setter.set_parameter(param, T::from_index(index));
                 self.state.dirty = true;
             }
         }
-        self.commit_edit();
     }
 
     /// Loads the factory preset with the given index.
     fn load_preset(&mut self, index: usize) {
         let index = index % PRESETS.len();
-        self.mark_edit();
         self.state.preset_index = index;
         self.state.dirty = false;
         // A factory preset replaces the patch of the user.
@@ -4992,7 +4756,48 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.patch_name = PRESETS[index].name.to_string();
         presets::apply(self.params, self.setter, index);
         self.refresh_patch_preview();
-        self.commit_edit();
+    }
+
+    /// Steps through the sounds that can be browsed: the patches of the user
+    /// folder first, then the factory presets, in the order of the lists of
+    /// the browser. A step from the last entry wraps around to the first one,
+    /// so the buttons never run out of sounds.
+    ///
+    /// The list of the folder is read again on every step, so a patch that
+    /// was saved in the meantime is reachable right away.
+    fn step_patch(&mut self, delta: isize) {
+        let files = patch::list_patches(&self.patch_dir());
+        let total = files.len() + PRESETS.len();
+        if total == 0 {
+            return;
+        }
+
+        // The position of the loaded patch in the user list. A patch whose
+        // file is gone falls back to the factory preset that was loaded
+        // before it, so the step still starts from somewhere sensible.
+        let user_position = self
+            .state
+            .patch_active_path
+            .as_ref()
+            .and_then(|path| files.iter().position(|file| file == path))
+            .or_else(|| {
+                let name = self.state.patch_active.as_ref()?;
+                files
+                    .iter()
+                    .position(|file| file.file_stem().is_some_and(|stem| stem == name.as_str()))
+            });
+        let current = match user_position {
+            Some(position) => position,
+            None => files.len() + self.state.preset_index.min(PRESETS.len() - 1),
+        };
+
+        let next = (current as isize + delta).rem_euclid(total as isize) as usize;
+        self.state.patch_files = files;
+        if let Some(path) = self.state.patch_files.get(next).cloned() {
+            self.load_patch_file(&path);
+        } else {
+            self.load_preset(next - self.state.patch_files.len());
+        }
     }
 
     /// Draws the patch browser as a full page. It replaces the synth panel
@@ -5302,7 +5107,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
     /// Loads a patch of the folder into the synthesizer.
     fn load_patch_file(&mut self, path: &Path) {
-        self.mark_edit();
         match patch::load_patch(path, self.params, self.setter) {
             Ok(name) => {
                 // The patch that is loaded is not the one that was waiting
@@ -5325,7 +5129,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 self.set_status(error, true);
             }
         }
-        self.commit_edit();
     }
 
     /// Saves the current sound as a patch of the folder.
@@ -5399,20 +5202,14 @@ impl<'a, 'b> Ctx<'a, 'b> {
 
     /// Mutates the current sound a little bit.
     fn mutate(&mut self) {
-        self.mark_edit();
         presets::mutate(self.params, self.setter, &mut self.state.rng);
         self.state.dirty = true;
-        self.commit_edit();
     }
 
     /// Puts a parameter back to its factory default. The reset is done
     /// inside of the automation gesture of the widget, so that the host
     /// records it like any other change of the parameter.
     fn reset_to_default<P: Param>(&mut self, id: &'static str, param: &P) {
-        self.mark_edit();
-        // A reset is a double click. Its first click is folded into the same
-        // undo step, so undo returns to the value before the double click.
-        self.undo.merge_double_click(self.params, self.state);
         // The sound was changed by the user, so it is marked as dirty.
         self.state.dirty = true;
 
@@ -5450,7 +5247,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.state.gestures.insert(id);
-        self.mark_edit();
         true
     }
 
@@ -5469,8 +5265,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         self.state.gestures.remove(id);
-        // The release frame commits the whole drag as one undo step.
-        self.commit_edit();
+        // The release frame applies the whole drag at once.
         true
     }
 }
@@ -6951,7 +6746,6 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
 
 #[cfg(test)]
 mod tests {
-    use super::undo::UNDO_LIMIT;
     use super::*;
     use crate::dsp::mod_feedback::ModFeedbackValues;
     use crate::patch::test_support::ENV_LOCK;
@@ -7091,7 +6885,6 @@ mod tests {
             params,
             setter,
             state: &mut editor.state,
-            undo: &mut editor.undo_history,
             history: &editor.history,
             voice_count: &editor.voice_count,
             mod_feedback: &editor.mod_feedback,
@@ -7291,31 +7084,6 @@ mod tests {
                 egui::Modifiers::default(),
             )]),
         ]
-    }
-
-    /// Presses one of the history shortcuts. On Linux the host reports the
-    /// command key as Ctrl and as Command, which is what a real event does.
-    fn shortcut(key: egui::Key, shift: bool) -> Vec<egui::RawInput> {
-        let modifiers = egui::Modifiers {
-            ctrl: true,
-            command: true,
-            shift,
-            ..Default::default()
-        };
-        vec![input(vec![egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
-        }])]
-    }
-
-    /// The panel of the default test window.
-    fn default_panel(ctx: &egui::Context) -> Rect {
-        Layout::for_rect(ctx.viewport_rect())
-            .expect("the window is big enough")
-            .panel
     }
 
     /// The index of the slider of the cutoff in the list of the sliders of a
@@ -7952,95 +7720,14 @@ mod tests {
     }
 
     #[test]
-    fn a_slider_edit_can_be_undone_and_redone() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
-        let before = params.cutoff.value();
-        assert!(!editor.undo_history.can_undo());
-
-        run_frames(&ctx, &mut editor, click(rect.center()));
-        let after = params.cutoff.value();
-        assert_ne!(after, before, "the slider did not change the sound");
-        assert!(editor.undo_history.can_undo());
-        assert!(editor.state.dirty);
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let undone = params.cutoff.value();
-        assert!(
-            (undone - before).abs() < 0.01,
-            "undo restored {undone} instead of {before}"
-        );
-        assert!(!editor.state.dirty, "undo did not restore the clean flag");
-        assert!(editor.undo_history.can_redo());
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        let redone = params.cutoff.value();
-        assert!(
-            (redone - after).abs() < 0.01,
-            "redo restored {redone} instead of {after}"
-        );
-        assert!(editor.state.dirty, "redo did not restore the edit flag");
-    }
-
-    #[test]
-    fn a_patch_load_can_be_undone_and_redone() {
-        let (_ctx, mut editor, params) = make_editor();
-        let dir = TempDir::new("undo-load");
-        editor.state.patch_config.patch_dir = dir.path.clone();
-        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
-        editor.state.patch_name = "MY PATCH".to_string();
-
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.cutoff, 1_234.0);
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.save_patch();
-        }
-
-        // A different sound with no patch loaded, then the patch is loaded.
-        setter.set_parameter(&params.cutoff, 500.0);
-        editor.state.dirty = true;
-        editor.state.patch_active = None;
-        editor.state.patch_active_path = None;
-        let path = dir.path.join("MY PATCH.json");
-        {
-            let mut ctx = make_ctx(&mut editor, &params, &setter);
-            ctx.load_patch_file(&path);
-        }
-        assert!((params.cutoff.value() - 1_234.0).abs() < 0.01);
-        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
-
-        // Undo brings back the sound and the identity that was there before.
-        assert!(editor.undo(&setter));
-        assert!((params.cutoff.value() - 500.0).abs() < 0.01);
-        assert!(editor.state.patch_active.is_none());
-        assert!(editor.state.dirty);
-
-        // Redo loads the patch again.
-        assert!(editor.redo(&setter));
-        assert!((params.cutoff.value() - 1_234.0).abs() < 0.01);
-        assert_eq!(editor.state.patch_active.as_deref(), Some("MY PATCH"));
-        assert!(!editor.state.dirty);
-    }
-
-    #[test]
-    fn a_typed_value_can_be_undone() {
+    fn a_typed_value_sets_the_parameter() {
         let (ctx, mut editor, params) = make_editor();
         edit_cutoff(&mut editor, &ctx, "1000");
         assert!((params.cutoff.value() - 1_000.0).abs() < 0.01);
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let cutoff = params.cutoff.value();
-        assert!(
-            (cutoff - 3_000.0).abs() < 0.01,
-            "the typed value was not undone: {cutoff}"
-        );
     }
 
     #[test]
-    fn a_reset_is_one_undo_step() {
+    fn a_double_click_resets_the_value() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
@@ -8054,22 +7741,18 @@ mod tests {
         let before_reset = params.cutoff.value();
         assert_ne!(before_reset, 3_000.0);
 
-        // The first click of the double click is part of the reset, so one
-        // undo brings the sound back to the value before the double click.
+        // The second click of the double click resets the parameter.
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, double_click(rect.center()));
         assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let undone = params.cutoff.value();
         assert!(
-            (undone - before_reset).abs() < 0.01,
-            "the reset was not one step: {undone} instead of {before_reset}"
+            (before_reset - 3_000.0).abs() > 0.01,
+            "the value was already the default"
         );
     }
 
     #[test]
-    fn a_mutation_can_be_undone_and_redone() {
+    fn the_mutation_changes_the_sound() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let (_, pos) = texts(&output)
@@ -8081,57 +7764,11 @@ mod tests {
         run_frames(&ctx, &mut editor, click(pos + egui::vec2(2.0, 2.0)));
         let mutated = params.cutoff.value();
         assert_ne!(mutated, before, "the mutation did not change the sound");
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let undone = params.cutoff.value();
-        assert!(
-            (undone - before).abs() < 0.01,
-            "the mutation was not undone: {undone} instead of {before}"
-        );
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        let redone = params.cutoff.value();
-        assert!(
-            (redone - mutated).abs() < 0.01,
-            "the mutation was not redone: {redone} instead of {mutated}"
-        );
+        assert!(editor.state.dirty, "the mutation did not mark the sound");
     }
 
     #[test]
-    fn a_new_edit_clears_the_redo_branch() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
-
-        // A click near the top changes the sound, and undo brings it back.
-        run_frames(
-            &ctx,
-            &mut editor,
-            click(egui::pos2(rect.center().x, rect.top() + 5.0)),
-        );
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert!(editor.undo_history.can_redo());
-
-        // A new edit must forget the redo branch.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(
-            &ctx,
-            &mut editor,
-            click(egui::pos2(rect.center().x, rect.bottom() - 5.0)),
-        );
-        let second = params.cutoff.value();
-        assert!(
-            !editor.undo_history.can_redo(),
-            "the redo branch survived a new edit"
-        );
-
-        // Redo has nothing to restore anymore.
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        assert!((params.cutoff.value() - second).abs() < 0.01);
-    }
-
-    #[test]
-    fn a_drag_is_one_undo_step() {
+    fn a_drag_changes_the_value() {
         let (ctx, mut editor, params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
@@ -8147,110 +7784,31 @@ mod tests {
 
         let after = params.cutoff.value();
         assert_ne!(after, before, "the drag did not change the sound");
-        assert_eq!(
-            editor.undo_history.len(),
-            1,
-            "the drag was recorded more than once"
-        );
-
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        let undone = params.cutoff.value();
-        assert!(
-            (undone - before).abs() < 0.01,
-            "one undo did not restore the pre-drag sound: {undone} instead of {before}"
-        );
+        assert!(editor.state.dirty, "the drag did not mark the sound");
     }
 
     #[test]
-    fn the_undo_history_is_bounded() {
-        let (_ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-
-        for step in 0..UNDO_LIMIT + 10 {
-            editor.undo_history.mark(&params, &editor.state);
-            setter.set_parameter(&params.cutoff, 1_000.0 + step as f32);
-            editor.state.dirty = true;
-            editor.undo_history.commit(&params, &editor.state);
-        }
-
-        assert_eq!(
-            editor.undo_history.len(),
-            UNDO_LIMIT,
-            "the undo history grew past its limit"
-        );
-    }
-
-    #[test]
-    fn a_focused_text_field_keeps_the_undo_shortcut() {
-        let (ctx, mut editor, params) = make_editor();
+    fn the_footer_has_no_history_buttons() {
+        let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
 
-        run_frames(&ctx, &mut editor, click(rect.center()));
-        let edited = params.cutoff.value();
-        assert!(editor.undo_history.can_undo());
-
-        // Open the patch browser and focus its search field.
-        editor.state.patch_open = true;
-        settle(&ctx, &mut editor);
-        ctx.memory_mut(|memory| {
-            memory.request_focus(egui::Id::unique("sushi-patch-search"));
-        });
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert!(
-            ctx.text_edit_focused(),
-            "the search field did not take the focus"
-        );
-
-        // The shortcut belongs to the text field, not to the sound.
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert!(
-            (params.cutoff.value() - edited).abs() < 0.01,
-            "the sound was undone while a text field had the focus"
-        );
-        assert!(editor.undo_history.can_undo());
-    }
-
-    #[test]
-    fn the_footer_undo_and_redo_buttons_work() {
-        let (ctx, mut editor, params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let panel = default_panel(&ctx);
-        let (undo_rect, redo_rect) = footer_button_rects(panel, zoom_of(&ctx));
-
-        // Both buttons are visible and disabled while the history is empty.
+        // The footer keeps the model name, the readout and the hints, but the
+        // two history buttons are gone.
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for gone in ["UNDO", "REDO"] {
+            assert!(
+                !names.contains(&gone.to_string()),
+                "the footer still shows {gone}: {names:?}"
+            );
+        }
         assert!(
-            names.contains(&"UNDO".to_string()),
-            "there is no undo button"
+            names.contains(&"SUSHI / MODEL 101".to_string()),
+            "{names:?}"
         );
         assert!(
-            names.contains(&"REDO".to_string()),
-            "there is no redo button"
+            names.contains(&"DBL-CLICK = RESET   RIGHT-CLICK = VALUE".to_string()),
+            "{names:?}"
         );
-        let fills = rect_fills(&output);
-        assert_eq!(fill_of(undo_rect, &fills), palette().track);
-        assert_eq!(fill_of(redo_rect, &fills), palette().track);
-
-        // An edit enables undo, and the button restores the sound.
-        let rect = slider_rects(&ctx, &output)[CUTOFF_SLIDER];
-        run_frames(&ctx, &mut editor, click(rect.center()));
-        let edited = params.cutoff.value();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let fills = rect_fills(&output);
-        assert_eq!(fill_of(undo_rect, &fills), palette().button_bg);
-        assert_eq!(fill_of(redo_rect, &fills), palette().track);
-
-        run_frames(&ctx, &mut editor, click(undo_rect.center()));
-        assert!((params.cutoff.value() - 3_000.0).abs() < 0.01);
-
-        // Undo enables redo, and the button restores the edit again.
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let fills = rect_fills(&output);
-        assert_eq!(fill_of(redo_rect, &fills), palette().button_bg);
-        run_frames(&ctx, &mut editor, click(redo_rect.center()));
-        assert!((params.cutoff.value() - edited).abs() < 0.01);
     }
 
     /// Right-clicks the cutoff slider, clears the editor and types `text`.
@@ -8727,7 +8285,7 @@ faders and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn clicking_a_matrix_row_selects_it_without_an_undo_step() {
+    fn clicking_a_matrix_row_selects_it() {
         let (ctx, mut editor, _params) = make_editor();
         editor.state.page = Page::Mod;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -8742,10 +8300,6 @@ faders and the three macros; the VCA is main-page only"
         assert_eq!(
             editor.state.mod_selected, 3,
             "clicking a route row did not select it"
-        );
-        assert!(
-            !editor.undo_history.can_undo(),
-            "selecting a route must not create an undo step"
         );
         assert!(
             !editor.state.dirty,
@@ -9909,7 +9463,7 @@ faders and the three macros; the VCA is main-page only"
         run_frames(&ctx, &mut editor, click(bottom(27)));
         assert!(params.trem_rate.value() < 0.2);
 
-        // The stereo switch of the tremolo is a real, undoable control.
+        // The stereo switch of the tremolo is a real control.
         run_frames(&ctx, &mut editor, wait());
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let stereo_index = editor
@@ -9921,11 +9475,6 @@ faders and the three macros; the VCA is main-page only"
         let stereo = editor.state.check_rects[stereo_index];
         assert!(!params.trem_stereo.value());
         run_frames(&ctx, &mut editor, click(stereo.center()));
-        assert!(params.trem_stereo.value());
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert!(!params.trem_stereo.value());
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
         assert!(params.trem_stereo.value());
     }
 
@@ -10218,7 +9767,7 @@ faders and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn dragging_a_chain_tile_reorders_and_is_undoable() {
+    fn dragging_a_chain_tile_reorders_the_chain() {
         let (ctx, mut editor, params) = make_editor();
         editor.state.page = Page::Fx;
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -10273,17 +9822,6 @@ faders and the three macros; the VCA is main-page only"
         );
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         assert!(names.contains(&"CUSTOM".to_string()), "{names:?}");
-
-        // The reorder is one undo step and redo puts the permutation back.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert_eq!(params.fx_order.value(), 0, "undo did not restore the order");
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        assert_eq!(
-            params.fx_order.value(),
-            expected,
-            "redo did not restore the dragged order"
-        );
     }
 
     #[test]
@@ -10403,14 +9941,6 @@ faders and the three macros; the VCA is main-page only"
         run_frames(&ctx, &mut editor, click(chorus.center()));
         assert_eq!(params.fx_bypass_mask.value(), all & !(1 << 2));
 
-        // The toggle is a normal discrete edit, so it has an undo step of its
-        // own and undo restores only the bit that was cleared.
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert_eq!(params.fx_bypass_mask.value(), all);
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        assert_eq!(params.fx_bypass_mask.value(), all & !(1 << 2));
-
         // A sparse mask with unrelated bits stays sparse except for the one
         // bit that the user clicked.
         let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
@@ -10441,27 +9971,13 @@ faders and the three macros; the VCA is main-page only"
             .expect("the chain column has no global wet fader");
         assert!(track.width() > 0.0);
 
-        // A click at a quarter of the track sets the mix to about a quarter,
-        // and the change has its own undo step.
+        // A click at a quarter of the track sets the mix to about a quarter.
         let quarter = egui::pos2(track.left() + track.width() * 0.25, track.center().y);
         run_frames(&ctx, &mut editor, click(quarter));
         let value = params.fx_global_mix.value();
         assert!(
             (0.2..0.3).contains(&value),
             "the global wet fader did not reach 25%: {value}"
-        );
-        run_frames(&ctx, &mut editor, wait());
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, false));
-        assert!(
-            (params.fx_global_mix.value() - 1.0).abs() < 0.001,
-            "undo did not restore the global wet: {}",
-            params.fx_global_mix.value()
-        );
-        run_frames(&ctx, &mut editor, shortcut(egui::Key::Z, true));
-        assert!(
-            (params.fx_global_mix.value() - value).abs() < 0.001,
-            "redo did not restore the global wet: {}",
-            params.fx_global_mix.value()
         );
 
         // A click near the right end opens it fully again.
@@ -11134,26 +10650,93 @@ faders and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn a_factory_preset_replaces_the_patch_of_the_user() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.patch_active = Some("MY PATCH".to_string());
+    fn the_step_buttons_stay_in_the_patches_of_the_user() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("step-user");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        for (name, cutoff) in [("AUDIO PATCH", 900.0), ("ZEBRA PATCH", 1_600.0)] {
+            std::fs::write(
+                dir.path.join(format!("{name}.json")),
+                format!(
+                    r#"{{"format":"sushi-patch","version":1,"name":"{name}","params":{{"cutoff":{cutoff}}}}}"#
+                ),
+            )
+            .expect("the patch was not written");
+        }
 
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let (_, pos) = texts(&output)
-            .into_iter()
-            .find(|(text, _)| text == ">")
-            .expect("the header has no next button");
-        let button = pos + egui::vec2(2.0, 2.0);
+        // The first patch of the folder is loaded, so the next step has to
+        // land on the second one instead of a factory preset.
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        let first = dir.path.join("AUDIO PATCH.json");
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&first);
+        }
+        assert_eq!(editor.state.patch_active.as_deref(), Some("AUDIO PATCH"));
 
-        run_frames(&ctx, &mut editor, click(button));
+        step_button(&ctx, &mut editor, ">");
+        assert_eq!(
+            editor.state.patch_active.as_deref(),
+            Some("ZEBRA PATCH"),
+            "the next button left the patches of the user"
+        );
+        assert!((params.cutoff.value() - 1_600.0).abs() < 0.01);
 
+        // Back again, through the same list.
+        step_button(&ctx, &mut editor, "<");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("AUDIO PATCH"));
+        assert!((params.cutoff.value() - 900.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_step_buttons_reach_the_factory_presets_after_the_patches() {
+        let (ctx, mut editor, params) = make_editor();
+        let dir = TempDir::new("step-factory");
+        editor.state.patch_config.patch_dir = dir.path.clone();
+        editor.state.patch_dir_text = dir.path.to_string_lossy().into_owned();
+        std::fs::write(
+            dir.path.join("ONLY PATCH.json"),
+            r#"{"format":"sushi-patch","version":1,"name":"ONLY PATCH","params":{"cutoff":900.0}}"#,
+        )
+        .expect("the patch was not written");
+
+        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+        let setter = gui_ctx.param_setter();
+        let path = dir.path.join("ONLY PATCH.json");
+        {
+            let mut ctx = make_ctx(&mut editor, &params, &setter);
+            ctx.load_patch_file(&path);
+        }
+
+        // The last patch of the user is followed by the first preset, so the
+        // factory sounds stay reachable.
+        step_button(&ctx, &mut editor, ">");
         assert!(editor.state.patch_active.is_none());
+        assert_eq!(editor.state.preset_index, 0);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         assert!(
-            names.contains(&"02 GLASS KEYS".to_string()),
+            names.contains(&"01 INIT PAD".to_string()),
             "the display does not show the preset: {names:?}"
         );
+
+        // A step back from the first preset wraps around to the last sound
+        // of the list, which is the last patch of the user.
+        step_button(&ctx, &mut editor, "<");
+        assert_eq!(editor.state.patch_active.as_deref(), Some("ONLY PATCH"));
+        assert!((params.cutoff.value() - 900.0).abs() < 0.01);
+    }
+
+    /// Clicks one of the two step buttons of the header.
+    fn step_button(ctx: &egui::Context, editor: &mut SushiEditor, label: &str) {
+        let output = run_frames(ctx, editor, vec![input(vec![])]);
+        let (_, pos) = texts(&output)
+            .into_iter()
+            .find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("the header has no {label} button"));
+        run_frames(ctx, editor, click(pos + egui::vec2(2.0, 2.0)));
     }
 
     #[test]
@@ -11531,11 +11114,6 @@ faders and the three macros; the VCA is main-page only"
                 strip.right(),
                 last_band.right()
             );
-            // It stays away from the buttons of the footer.
-            let (undo, redo) = footer_button_rects(layout.panel, zoom);
-            assert!(!strip.intersects(undo), "the keyboard covers UNDO");
-            assert!(!strip.intersects(redo), "the keyboard covers REDO");
-
             // The modulation page uses the same bands, so its workspace does
             // not reach into the keyboard either.
             assert!(!layout.mod_workspace().intersects(strip));
@@ -11627,7 +11205,7 @@ faders and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn opening_the_patch_browser_releases_the_keys_of_the_strip() {
+    fn the_strip_keeps_playing_while_the_patch_browser_is_open() {
         let (ctx, mut editor, _params, mut keyboard_rx) = make_editor_with_keyboard();
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -11637,28 +11215,81 @@ faders and the three macros; the VCA is main-page only"
         let octave = editor.state.keyboard.octave();
         let (key, note) = keyboard::white_key(layout.keyboard(), layout.zoom, octave, 2);
 
-        // Press and hold the key without releasing it.
-        run_frames(
-            &ctx,
-            &mut editor,
-            vec![
-                input(vec![egui::Event::PointerMoved(key.center())]),
-                input(vec![egui::Event::PointerButton {
-                    pos: key.center(),
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::default(),
-                }]),
-            ],
-        );
-        assert_eq!(sent_notes(&mut keyboard_rx), vec![(note, true)]);
-
-        // The browser covers the strip, so the note is released instead of
-        // staying stuck behind the page.
+        // Open the browser with the LCD of the header.
         let display = header_rects_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT)).display;
         run_frames(&ctx, &mut editor, click(display.center()));
         assert!(editor.state.patch_open, "the browser did not open");
-        assert_eq!(sent_notes(&mut keyboard_rx), vec![(note, false)]);
+        sent_notes(&mut keyboard_rx);
+
+        // The page stops above the strip, so a click on a key still plays
+        // the sound that is browsed.
+        run_frames(&ctx, &mut editor, click(key.center()));
+        assert_eq!(
+            sent_notes(&mut keyboard_rx),
+            vec![(note, true), (note, false)],
+            "the strip does not play while the browser is open"
+        );
+
+        // The computer keyboard plays as well, so a patch can be auditioned
+        // without closing the browser.
+        let base = ((octave + 1) * 12) as u8;
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }])],
+        );
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(base, true)]);
+        run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }])],
+        );
+        assert_eq!(sent_notes(&mut keyboard_rx), vec![(base, false)]);
+    }
+
+    #[test]
+    fn the_patch_browser_does_not_cover_the_keyboard_strip() {
+        let (ctx, mut editor, _params) = make_editor();
+        let layout = Layout::for_rect(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
+        ))
+        .expect("the window is big enough");
+        editor.state.patch_open = true;
+
+        let output = settle(&ctx, &mut editor);
+        let strip = layout.keyboard();
+        let names: Vec<(String, egui::Pos2)> = texts(&output);
+        // The captions of the browser stay above the strip, and the strip
+        // keeps its own keys and octave controls at the bottom.
+        for expected in ["CLOSE", "SEARCH", "SAVE"] {
+            let (_, pos) = names
+                .iter()
+                .find(|(text, _)| text == expected)
+                .unwrap_or_else(|| panic!("the browser has no {expected}: {names:?}"));
+            assert!(
+                pos.y < strip.top(),
+                "the browser runs into the strip at {expected}: {pos:?} / {strip:?}"
+            );
+        }
+        for expected in ["OCT", "Z/X"] {
+            assert!(
+                names.iter().any(|(text, _)| text == expected),
+                "the strip lost its {expected} caption with the browser open: {names:?}"
+            );
+        }
     }
 
     #[test]
@@ -11987,10 +11618,6 @@ faders and the three macros; the VCA is main-page only"
                 );
             }
         }
-        assert!(
-            !editor.undo_history.can_undo(),
-            "selecting a route must not create an undo step"
-        );
     }
 
     #[test]

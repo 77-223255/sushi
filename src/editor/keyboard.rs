@@ -472,6 +472,10 @@ impl VirtualKeyboard {
     /// Draws the keys and the lights of the notes that sound.
     fn paint_keys(&self, painter: &egui::Painter, bed: &KeyBed, zoom: f32, down: &HeldKeys) {
         let lit = |note: u8| self.held.contains(&note) || down.is_down(note);
+        // The note that the `A` key plays. Its name is the red mark of the
+        // strip: it shows the home of the computer keyboard without a bar
+        // that would cover the top of the key.
+        let base = self.base_note();
 
         for index in 0..KeyBed::white_count() {
             let note = bed.white_note(index);
@@ -493,9 +497,17 @@ impl VirtualKeyboard {
                 egui::StrokeKind::Inside,
             );
 
-            // The name of every C, so the player can find the octave.
+            // The name of every C, so the player can find the octave. The C
+            // of the computer keyboard is red, which is what marks the
+            // octave that the layout plays.
             if note.is_multiple_of(12) {
-                let color = if on { palette().line } else { palette().muted };
+                let color = if note == base {
+                    palette().accent
+                } else if on {
+                    palette().line
+                } else {
+                    palette().muted
+                };
                 painter.text(
                     pos2(rect.center().x, rect.bottom() - 3.0 * zoom),
                     Align2::CENTER_BOTTOM,
@@ -517,24 +529,6 @@ impl VirtualKeyboard {
                 egui::CornerRadius::ZERO,
                 if on { palette().accent } else { palette().line },
             );
-        }
-
-        // The note that the `A` key plays is marked with a small accent line,
-        // so the computer keyboard always has a visible home.
-        let base = self.base_note();
-        if base.is_multiple_of(12) {
-            let index = (base as i32 / 12 - bed.first_octave) * 7;
-            if index >= 0 && (index as usize) < KeyBed::white_count() {
-                let rect = bed.white_rect(index as usize);
-                painter.rect_filled(
-                    Rect::from_min_size(
-                        pos2(rect.left() + 1.0, rect.top() + 1.0),
-                        vec2(rect.width() - 2.0, 2.0 * zoom),
-                    ),
-                    egui::CornerRadius::ZERO,
-                    palette().accent,
-                );
-            }
         }
     }
 }
@@ -872,6 +866,48 @@ mod tests {
         harness.frame(vec![button(down, true)]);
         harness.frame(vec![button(down, false)]);
         assert_eq!(harness.keys.octave(), DEFAULT_OCTAVE);
+    }
+
+    #[test]
+    fn the_c_of_the_typed_keys_is_red_without_a_bar_over_the_key() {
+        let mut harness = Harness::new();
+        harness.frame(vec![]);
+        let base = harness.keys.base_note();
+        let bed = bed();
+
+        // The name of the C that the `A` key plays is the only red text of the
+        // keys.
+        let mut red = Vec::new();
+        for shape in &harness.shapes {
+            if let egui::Shape::Text(text) = shape {
+                let color = text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|section| section.format.color);
+                if color == Some(palette().accent) && bed.rect.contains(text.pos) {
+                    red.push(text.galley.text().to_string());
+                }
+            }
+        }
+        assert_eq!(red, vec![note_name(base)]);
+
+        // Nothing covers the top of the key, so the mark of the octave is the
+        // red lettering alone.
+        let index = (base as i32 / 12 - bed.first_octave) * 7;
+        let key = bed.white_rect(index as usize);
+        let top = Rect::from_min_size(
+            pos2(key.left() + 1.0, key.top() + 1.0),
+            vec2(key.width() - 2.0, 3.0),
+        );
+        assert!(
+            harness.shapes.iter().all(|shape| {
+                !matches!(shape, egui::Shape::Rect(rect)
+                    if rect.fill == palette().accent && rect.rect.intersects(top))
+            }),
+            "a bar still covers the top of the key"
+        );
     }
 
     #[test]

@@ -76,24 +76,28 @@ voices are silent, so a held chord or arpeggio keeps one phase.
   PRESET; the fixed 2 × 4 module grid on the right holds the stage controls.
   Named chain presets are STANDARD, EQ FIRST, DRIVE LAST, AMBIENT, WIDE ECHO and
   GLUE; any other order is shown as CUSTOM
-- The header contains the preset LCD (opens the full-page patch browser),
-  previous/next preset, MUTATE, the MOD and FX tabs, the voice meter, the
-  oscilloscope and the ACT/CLIP lights. Clicking the active MOD or FX tab
-  returns to the main page
+- The header contains the preset LCD (opens the full-page patch browser), the
+  previous/next sound buttons, MUTATE, the MOD and FX tabs, the voice meter, the
+  oscilloscope and the ACT/CLIP lights. The sound buttons step through the
+  patches of the user folder first and the factory presets after them, and wrap
+  around at both ends, so a user patch never jumps to a factory sound.
+  Clicking the active MOD or FX tab returns to the main page
 - The patch browser has a folder field, search, user and factory patch lists, a
-  JSON preview, and a name field with LOAD and SAVE
+  JSON preview, and a name field with LOAD and SAVE. It stops above the
+  keyboard strip, so every patch can be played with the mouse, the computer
+  keyboard or a MIDI keyboard while it is browsed
 - The keyboard strip under the bands is an on-screen piano in the spirit of
   Serum: click a key to play it, drag across the keys to glide, and the
   velocity follows how high on the key the click lands. Every key that sounds
   lights up, including the notes of a MIDI keyboard, and the strip follows the
-  octave of the computer keyboard
+  octave of the computer keyboard. The C of the typed octave is printed in red
+  instead of being marked with a bar across the top of its key
 - The computer keyboard uses the layout of Ableton Live: `A S D F G H J K L ; '`
   play the white keys, `W E T Y U O P` play the black keys, and `Z` and `X`
   move the whole layout one octave down or up. The `OCT` buttons at the left of
   the strip do the same with the mouse
-- UNDO and REDO sit in the footer, with Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y;
-  a whole fader drag is one undo step. Right-click a control to type a value,
-  scroll to change it, Shift+scroll for fine steps, and double-click to reset
+- Right-click a control to type a value, scroll to change it, Shift+scroll for
+  fine steps, and double-click to reset
 - 960 × 680 design with continuous scaling; the editor opens at 1152 × 816 and
   shows a minimum-size hint below 960 × 680
 
