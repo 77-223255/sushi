@@ -45,8 +45,9 @@ projects keep their patch behavior.
   8-bit mask and a global wet mix are included. Drive Tone, Phaser Feedback,
   Chorus Width, Delay Damping and Reverb Tone are part of the stage controls;
   the compressor is stereo-linked and the tremolo can run as auto-pan
-- 140 patch parameters and 30 factory presets, including a GRAND PIANO that
-  is struck, not sustained; patches are JSON and parameter IDs are stable
+- 140 patch parameters and 11 factory presets, among them String, Piano and
+  Bad, which came out of the patch folder; patches are JSON and parameter IDs
+  are stable
 
 The LFO and arpeggiator divisions are 1/4, 1/8, 1/16 and 1/32. At 120 BPM a
 quarter note runs at 2 Hz, and a synced LFO glides briefly when the tempo or

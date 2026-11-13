@@ -8398,8 +8398,8 @@ mod tests {
         run_frames(&ctx, &mut editor, click(button));
 
         assert_eq!(editor.state.preset_index, 1);
-        // The second preset is the glass keys.
-        assert_eq!(params.cutoff.value(), 4_200.0);
+        // The second preset is the wide brass.
+        assert_eq!(params.cutoff.value(), 1_200.0);
     }
 
     #[test]
@@ -10391,7 +10391,7 @@ faders and the three macros; the VCA is main-page only"
 
         // The search for a preset of the factory. It does not care about the
         // case of the letters.
-        editor.state.patch_search = "GlAsS".to_string();
+        editor.state.patch_search = "wIdE".to_string();
         let output = settle(&ctx, &mut editor);
         let names: Vec<String> = texts(&output)
             .into_iter()
@@ -10399,7 +10399,7 @@ faders and the three macros; the VCA is main-page only"
             .map(|(text, _)| text)
             .collect();
         assert!(
-            names.contains(&"GLASS KEYS".to_string()),
+            names.contains(&"WIDE BRASS".to_string()),
             "the search hid the preset: {names:?}"
         );
         assert!(
@@ -10424,7 +10424,7 @@ faders and the three macros; the VCA is main-page only"
             "the search hid the patch: {names:?}"
         );
         assert!(
-            !names.contains(&"GLASS KEYS".to_string()),
+            !names.contains(&"WIDE BRASS".to_string()),
             "the search did not hide the preset: {names:?}"
         );
 
@@ -10441,7 +10441,7 @@ faders and the three macros; the VCA is main-page only"
             "the browser has no caption: {names:?}"
         );
         assert!(
-            !names.contains(&"GLASS KEYS".to_string()),
+            !names.contains(&"WIDE BRASS".to_string()),
             "the search did not hide the preset: {names:?}"
         );
         assert!(
@@ -10459,7 +10459,7 @@ faders and the three macros; the VCA is main-page only"
         let output = settle(&ctx, &mut editor);
         let (_, pos) = texts(&output)
             .into_iter()
-            .find(|(text, _)| text == "GLASS KEYS")
+            .find(|(text, _)| text == "WIDE BRASS")
             .expect("the browser has no preset");
         let preset = pos + egui::vec2(2.0, 2.0);
 
@@ -10469,7 +10469,7 @@ faders and the three macros; the VCA is main-page only"
         assert_eq!(editor.state.preset_index, 1);
         assert!(editor.state.patch_active.is_none());
         assert!(!editor.state.dirty);
-        assert_eq!(params.cutoff.value(), 4_200.0);
+        assert_eq!(params.cutoff.value(), 1_200.0);
 
         // The browser stays open.
         assert!(editor.state.patch_open);

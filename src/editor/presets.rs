@@ -49,181 +49,8 @@ pub const PRESETS: &[Preset] = &[
             "spread": 0.6,
             "chorus_mix": 0.3,
             "reverb_mix": 0.25,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "GLASS KEYS",
-        json: r#"{
-            "osc1_wave": "Pulse",
-            "osc1_pw": 0.4,
-            "osc2_wave": "Triangle",
-            "osc2_octave": 1,
-            "osc2_level": 0.35,
-            "cutoff": 4200.0,
-            "resonance": 0.1,
-            "filter_env_amount": 0.15,
-            "fe_attack": 2.0,
-            "fe_decay": 900.0,
-            "fe_sustain": 0.1,
-            "fe_release": 900.0,
-            "ae_attack": 3.0,
-            "ae_decay": 1200.0,
-            "ae_sustain": 0.15,
-            "ae_release": 1000.0,
-            "chorus_mix": 0.3,
-            "reverb_mix": 0.3,
-            "velocity": 0.7,
-            "macro_bright": 0.65,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "JUNO PAD",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Saw",
-            "osc2_octave": -1,
-            "osc2_level": 0.5,
-            "unison": 2,
-            "detune": 10.0,
-            "spread": 0.4,
-            "cutoff": 1800.0,
-            "resonance": 0.15,
-            "filter_env_amount": 0.2,
-            "fe_attack": 200.0,
-            "fe_decay": 800.0,
-            "fe_sustain": 0.35,
-            "fe_release": 600.0,
-            "ae_attack": 250.0,
-            "ae_decay": 900.0,
-            "ae_sustain": 0.85,
-            "ae_release": 900.0,
-            "chorus_mix": 0.55,
-            "chorus_depth": 0.6,
-            "reverb_mix": 0.35,
-            "reverb_decay": 0.7,
-            "character": "Silk",
-            "drift": 0.2,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "PROPHET BRASS",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Saw",
-            "osc2_fine": 8.0,
-            "osc2_level": 0.5,
-            "unison": 2,
-            "detune": 14.0,
-            "spread": 0.35,
-            "cutoff": 1200.0,
-            "resonance": 0.25,
-            "filter_env_amount": 0.55,
-            "filter_drive": 0.35,
-            "fe_attack": 5.0,
-            "fe_decay": 400.0,
-            "fe_sustain": 0.4,
-            "fe_release": 200.0,
-            "ae_attack": 8.0,
-            "ae_decay": 400.0,
-            "ae_sustain": 0.8,
-            "ae_release": 250.0,
-            "poly_mode": "Legato",
-            "glide": 20.0,
-            "character": "Grit",
-            "tone": 0.1,
-            "reverb_mix": 0.15,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "JUPITER STRINGS",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Saw",
-            "osc2_fine": -6.0,
-            "osc2_level": 0.5,
-            "unison": 3,
-            "detune": 18.0,
-            "spread": 0.85,
-            "cutoff": 2600.0,
-            "resonance": 0.1,
-            "filter_env_amount": 0.15,
-            "fe_attack": 300.0,
-            "fe_sustain": 0.6,
-            "fe_release": 800.0,
-            "ae_attack": 400.0,
-            "ae_decay": 1200.0,
-            "ae_sustain": 0.9,
-            "ae_release": 1500.0,
-            "chorus_mix": 0.6,
-            "chorus_depth": 0.7,
-            "reverb_mix": 0.4,
-            "reverb_decay": 0.75,
-            "macro_space": 0.7,
-            "drift": 0.2,
-            "tone": -0.1,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "VANGELIS PAD",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Square",
-            "osc2_octave": -1,
-            "osc2_level": 0.35,
-            "unison": 4,
-            "detune": 25.0,
-            "spread": 0.9,
-            "cutoff": 900.0,
-            "resonance": 0.12,
-            "filter_env_amount": 0.2,
-            "fe_attack": 1200.0,
-            "fe_decay": 2000.0,
-            "fe_sustain": 0.5,
-            "fe_release": 2500.0,
-            "ae_attack": 1500.0,
-            "ae_decay": 2000.0,
-            "ae_sustain": 0.9,
-            "ae_release": 3000.0,
-            "chorus_mix": 0.5,
-            "reverb_mix": 0.7,
-            "reverb_decay": 0.85,
-            "macro_space": 0.85,
-            "drift": 0.25,
-            "tone": -0.2,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "SILK STRINGS",
-        json: r#"{
-            "osc1_wave": "Triangle",
-            "osc2_wave": "Pulse",
-            "osc2_pw": 0.45,
-            "osc2_semi": 5,
-            "osc2_level": 0.4,
-            "unison": 3,
-            "detune": 14.0,
-            "spread": 0.8,
-            "cutoff": 2400.0,
-            "resonance": 0.08,
-            "filter_env_amount": 0.12,
-            "fe_attack": 400.0,
-            "fe_sustain": 0.7,
-            "fe_release": 900.0,
-            "ae_attack": 400.0,
-            "ae_decay": 900.0,
-            "ae_sustain": 0.9,
-            "ae_release": 1200.0,
-            "chorus_mix": 0.6,
-            "reverb_mix": 0.45,
-            "tone": -0.15,
-            "character": "Silk",
-            "volume": 0.63
+            "volume": 0.63,
+            "poly_mode": "Poly"
         }"#,
     },
     Preset {
@@ -248,7 +75,7 @@ pub const PRESETS: &[Preset] = &[
             "ae_decay": 400.0,
             "ae_sustain": 0.85,
             "ae_release": 400.0,
-            "poly_mode": "Legato",
+            "poly_mode": "Poly",
             "glide": 80.0,
             "chorus_mix": 0.4,
             "chorus_depth": 0.7,
@@ -263,7 +90,7 @@ pub const PRESETS: &[Preset] = &[
             "osc2_wave": "Square",
             "osc2_octave": -1,
             "osc2_level": 0.45,
-            "poly_mode": "Mono",
+            "poly_mode": "Poly",
             "glide": 40.0,
             "cutoff": 500.0,
             "resonance": 0.45,
@@ -289,7 +116,7 @@ pub const PRESETS: &[Preset] = &[
             "osc1_wave": "Saw",
             "osc2_wave": "Saw",
             "osc2_level": 0.0,
-            "poly_mode": "Legato",
+            "poly_mode": "Poly",
             "glide": 120.0,
             "cutoff": 300.0,
             "resonance": 0.75,
@@ -309,124 +136,6 @@ pub const PRESETS: &[Preset] = &[
         }"#,
     },
     Preset {
-        name: "GRIT BASS",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Square",
-            "osc2_octave": -1,
-            "cutoff": 420.0,
-            "resonance": 0.55,
-            "filter_drive": 0.4,
-            "filter_env_amount": 0.6,
-            "fe_attack": 2.0,
-            "fe_decay": 180.0,
-            "fe_sustain": 0.15,
-            "fe_release": 200.0,
-            "ae_attack": 2.0,
-            "ae_decay": 300.0,
-            "ae_sustain": 0.6,
-            "ae_release": 200.0,
-            "poly_mode": "Mono",
-            "unison": 3,
-            "detune": 25.0,
-            "character": "Grit",
-            "tone": 0.3,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "PLUCK",
-        json: r#"{
-            "osc1_wave": "Square",
-            "osc2_wave": "Saw",
-            "osc2_octave": 1,
-            "osc2_level": 0.35,
-            "cutoff": 1800.0,
-            "resonance": 0.35,
-            "filter_env_amount": 0.7,
-            "fe_attack": 1.0,
-            "fe_decay": 220.0,
-            "fe_sustain": 0.0,
-            "fe_release": 250.0,
-            "ae_attack": 1.0,
-            "ae_decay": 260.0,
-            "ae_sustain": 0.0,
-            "ae_release": 300.0,
-            "delay_mix": 0.3,
-            "delay_feedback": 0.35,
-            "reverb_mix": 0.15,
-            "macro_bright": 0.55,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "MOTION PAD",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc2_wave": "Square",
-            "osc2_level": 0.35,
-            "cutoff": 1500.0,
-            "resonance": 0.3,
-            "filter_env_amount": 0.35,
-            "filter_mode": "Bandpass",
-            "fe_decay": 250.0,
-            "fe_sustain": 0.2,
-            "ae_attack": 300.0,
-            "ae_release": 900.0,
-            "lfo1_wave": "S&H",
-            "lfo1_rate": 0.8,
-            "lfo2_wave": "Triangle",
-            "lfo2_rate": 0.25,
-            "mod1_source": "LFO 1",
-            "mod1_dest": "Pitch",
-            "mod1_amount": 0.06,
-            "mod2_source": "LFO 2",
-            "mod2_dest": "Cutoff",
-            "mod2_amount": 0.328,
-            "chorus_mix": 0.45,
-            "reverb_mix": 0.4,
-            "drift": 0.3,
-            "macro_motion": 0.7,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
-        name: "ARP TOY",
-        json: r#"{
-            "osc1_wave": "Pulse",
-            "osc1_pw": 0.35,
-            "osc2_wave": "Square",
-            "osc2_octave": 1,
-            "osc2_level": 0.35,
-            "cutoff": 2200.0,
-            "resonance": 0.4,
-            "filter_env_amount": 0.5,
-            "fe_decay": 300.0,
-            "fe_sustain": 0.25,
-            "ae_attack": 2.0,
-            "ae_decay": 400.0,
-            "ae_sustain": 0.5,
-            "arp_on": true,
-            "arp_pattern": "UpDown",
-            "arp_rate": "1/16",
-            "arp_octaves": 2,
-            "arp_gate": 45.0,
-            "arp_length": 6,
-            "arp_ratchet": 2,
-            "arp_swing": 15.0,
-            "lfo1_wave": "Triangle",
-            "lfo1_rate": 3.0,
-            "mod1_source": "LFO 1",
-            "mod1_dest": "Pitch",
-            "mod1_amount": 0.0467,
-            "delay_mix": 0.35,
-            "reverb_mix": 0.3,
-            "drift": 0.25,
-            "macro_motion": 0.6,
-            "volume": 0.63
-        }"#,
-    },
-    Preset {
         name: "MODEL D BASS",
         json: r#"{
             "macro_space": 0.0,
@@ -436,7 +145,7 @@ pub const PRESETS: &[Preset] = &[
             "osc2_octave": -1,
             "osc2_level": 0.5,
             "sub_level": 0.2,
-            "poly_mode": "Mono",
+            "poly_mode": "Poly",
             "glide": 25.0,
             "filter_mode": "Lowpass",
             "filter_slope": "24 dB",
@@ -455,65 +164,6 @@ pub const PRESETS: &[Preset] = &[
             "character": "Grit",
             "tone": 0.18,
             "volume": 0.62
-        }"#,
-    },
-    Preset {
-        name: "SILVER ACID",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.75,
-            "osc2_level": 0.0,
-            "poly_mode": "Legato",
-            "glide": 120.0,
-            "filter_mode": "Lowpass",
-            "filter_slope": "24 dB",
-            "cutoff": 320.0,
-            "resonance": 0.78,
-            "filter_env_amount": 0.8,
-            "filter_drive": 0.35,
-            "fe_attack": 1.0,
-            "fe_decay": 180.0,
-            "fe_sustain": 0.05,
-            "fe_release": 120.0,
-            "ae_attack": 1.0,
-            "ae_decay": 400.0,
-            "ae_sustain": 0.6,
-            "ae_release": 150.0,
-            "delay_mix": 0.2,
-            "delay_feedback": 0.3,
-            "reverb_mix": 0.12,
-            "character": "Grit",
-            "tone": 0.2,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "FM ELECTRIC",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Sine",
-            "osc1_level": 0.8,
-            "osc2_wave": "Sine",
-            "osc2_octave": 1,
-            "osc2_level": 0.0,
-            "fm_amount": 0.28,
-            "cutoff": 12000.0,
-            "resonance": 0.05,
-            "filter_env_amount": 0.0,
-            "fe_attack": 1.0,
-            "fe_decay": 600.0,
-            "fe_sustain": 0.2,
-            "fe_release": 600.0,
-            "ae_attack": 1.0,
-            "ae_decay": 1200.0,
-            "ae_sustain": 0.2,
-            "ae_release": 900.0,
-            "chorus_mix": 0.25,
-            "reverb_mix": 0.25,
-            "velocity": 0.7,
-            "macro_bright": 0.6,
-            "volume": 0.6
         }"#,
     },
     Preset {
@@ -545,98 +195,8 @@ pub const PRESETS: &[Preset] = &[
             "chorus_mix": 0.25,
             "reverb_mix": 0.25,
             "character": "Silk",
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "OB PAD",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.6,
-            "osc2_wave": "Saw",
-            "osc2_octave": -1,
-            "osc2_level": 0.5,
-            "unison": 3,
-            "detune": 15.0,
-            "spread": 0.85,
-            "cutoff": 1400.0,
-            "resonance": 0.12,
-            "filter_env_amount": 0.15,
-            "fe_attack": 500.0,
-            "fe_decay": 1200.0,
-            "fe_sustain": 0.6,
-            "fe_release": 1200.0,
-            "ae_attack": 600.0,
-            "ae_decay": 1500.0,
-            "ae_sustain": 0.9,
-            "ae_release": 1500.0,
-            "chorus_mix": 0.55,
-            "reverb_mix": 0.45,
-            "drift": 0.2,
-            "tone": -0.1,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "POLY STRINGS",
-        json: r#"{
-            "osc1_wave": "Saw",
-            "osc1_level": 0.6,
-            "osc2_wave": "Saw",
-            "osc2_fine": -7.0,
-            "osc2_level": 0.5,
-            "unison": 3,
-            "detune": 18.0,
-            "spread": 0.9,
-            "cutoff": 2200.0,
-            "resonance": 0.08,
-            "filter_env_amount": 0.1,
-            "fe_attack": 400.0,
-            "fe_sustain": 0.7,
-            "fe_release": 1000.0,
-            "ae_attack": 350.0,
-            "ae_decay": 1200.0,
-            "ae_sustain": 0.9,
-            "ae_release": 1400.0,
-            "chorus_mix": 0.65,
-            "reverb_mix": 0.4,
-            "macro_space": 0.2,
-            "drift": 0.2,
-            "tone": -0.12,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "2600 LEAD",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.65,
-            "osc2_wave": "Saw",
-            "osc2_semi": 7,
-            "osc2_level": 0.35,
-            "poly_mode": "Legato",
-            "glide": 45.0,
-            "filter_mode": "Lowpass",
-            "filter_slope": "24 dB",
-            "cutoff": 900.0,
-            "resonance": 0.5,
-            "filter_env_amount": 0.6,
-            "filter_drive": 0.25,
-            "fe_attack": 5.0,
-            "fe_decay": 350.0,
-            "fe_sustain": 0.25,
-            "fe_release": 250.0,
-            "ae_attack": 5.0,
-            "ae_decay": 500.0,
-            "ae_sustain": 0.75,
-            "ae_release": 250.0,
-            "delay_mix": 0.28,
-            "reverb_mix": 0.15,
-            "character": "Grit",
-            "tone": 0.1,
-            "volume": 0.6
+            "volume": 0.6,
+            "poly_mode": "Poly"
         }"#,
     },
     Preset {
@@ -650,7 +210,7 @@ pub const PRESETS: &[Preset] = &[
             "osc2_octave": -1,
             "osc2_level": 0.25,
             "sub_level": 0.35,
-            "poly_mode": "Mono",
+            "poly_mode": "Poly",
             "glide": 15.0,
             "filter_mode": "Lowpass",
             "filter_slope": "24 dB",
@@ -674,66 +234,6 @@ pub const PRESETS: &[Preset] = &[
         }"#,
     },
     Preset {
-        name: "VP CHOIR",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Triangle",
-            "osc1_level": 0.6,
-            "osc2_wave": "Pulse",
-            "osc2_pw": 0.45,
-            "osc2_level": 0.5,
-            "unison": 3,
-            "detune": 14.0,
-            "spread": 0.8,
-            "cutoff": 1800.0,
-            "resonance": 0.1,
-            "filter_env_amount": 0.1,
-            "fe_attack": 500.0,
-            "fe_sustain": 0.7,
-            "fe_release": 1000.0,
-            "ae_attack": 700.0,
-            "ae_decay": 1500.0,
-            "ae_sustain": 0.9,
-            "ae_release": 1600.0,
-            "chorus_mix": 0.7,
-            "reverb_mix": 0.5,
-            "noise_level": 0.02,
-            "drift": 0.2,
-            "tone": -0.15,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "MELLOTRON FLUTE",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Triangle",
-            "osc1_level": 0.7,
-            "osc2_wave": "Sine",
-            "osc2_octave": 1,
-            "osc2_level": 0.25,
-            "noise_level": 0.03,
-            "unison": 2,
-            "detune": 8.0,
-            "spread": 0.4,
-            "cutoff": 2600.0,
-            "resonance": 0.05,
-            "filter_env_amount": 0.1,
-            "fe_attack": 300.0,
-            "fe_sustain": 0.6,
-            "fe_release": 800.0,
-            "ae_attack": 200.0,
-            "ae_decay": 1000.0,
-            "ae_sustain": 0.8,
-            "ae_release": 1200.0,
-            "chorus_mix": 0.3,
-            "reverb_mix": 0.55,
-            "drift": 0.25,
-            "tone": -0.2,
-            "volume": 0.58
-        }"#,
-    },
-    Preset {
         name: "JUNO BASS",
         json: r#"{
             "macro_space": 0.0,
@@ -743,7 +243,7 @@ pub const PRESETS: &[Preset] = &[
             "osc2_octave": -1,
             "osc2_level": 0.4,
             "sub_level": 0.4,
-            "poly_mode": "Mono",
+            "poly_mode": "Poly",
             "glide": 10.0,
             "filter_mode": "Lowpass",
             "filter_slope": "24 dB",
@@ -766,205 +266,432 @@ pub const PRESETS: &[Preset] = &[
         }"#,
     },
     Preset {
-        name: "PROPHET KEYS",
+        name: "String",
         json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.65,
-            "osc2_wave": "Saw",
-            "osc2_semi": 7,
-            "osc2_level": 0.4,
-            "unison": 2,
-            "detune": 10.0,
-            "spread": 0.5,
-            "filter_mode": "Lowpass",
-            "filter_slope": "24 dB",
-            "cutoff": 1800.0,
-            "resonance": 0.18,
-            "filter_env_amount": 0.35,
-            "filter_drive": 0.15,
-            "fe_attack": 3.0,
-            "fe_decay": 500.0,
-            "fe_sustain": 0.3,
-            "fe_release": 300.0,
             "ae_attack": 3.0,
-            "ae_decay": 900.0,
-            "ae_sustain": 0.5,
-            "ae_release": 500.0,
-            "chorus_mix": 0.2,
-            "reverb_mix": 0.25,
-            "velocity": 0.6,
-            "tone": 0.05,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "ZDF ACID",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.8,
-            "osc2_wave": "Pulse",
-            "osc2_pw": 0.32,
-            "osc2_level": 0.45,
-            "poly_mode": "Legato",
-            "glide": 55.0,
-            "filter_mode": "Lowpass",
-            "filter_slope": "24 dB NEW",
-            "cutoff": 260.0,
-            "resonance": 0.72,
-            "filter_env_amount": 0.72,
-            "filter_drive": 0.42,
-            "fe_attack": 1.0,
-            "fe_decay": 190.0,
-            "fe_sustain": 0.08,
-            "fe_release": 140.0,
-            "ae_attack": 1.0,
-            "ae_decay": 380.0,
-            "ae_sustain": 0.62,
-            "ae_release": 160.0,
-            "delay_time": 280.0,
-            "delay_feedback": 0.28,
-            "delay_mix": 0.18,
-            "character": "Grit",
-            "tone": 0.12,
-            "volume": 0.62
-        }"#,
-    },
-    Preset {
-        name: "WHEEL MOTION",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.7,
-            "osc2_wave": "Saw",
-            "osc2_fine": 7.0,
-            "osc2_level": 0.45,
-            "unison": 2,
-            "detune": 8.0,
-            "spread": 0.45,
-            "poly_mode": "Legato",
-            "glide": 35.0,
-            "cutoff": 900.0,
-            "resonance": 0.28,
-            "filter_env_amount": 0.3,
-            "filter_drive": 0.18,
-            "fe_attack": 8.0,
-            "fe_decay": 500.0,
-            "fe_sustain": 0.35,
-            "fe_release": 400.0,
-            "ae_attack": 20.0,
-            "ae_decay": 800.0,
-            "ae_sustain": 0.8,
-            "ae_release": 600.0,
-            "chorus_mix": 0.28,
-            "chorus_depth": 0.4,
-            "reverb_mix": 0.22,
-            "reverb_decay": 0.65,
-            "mod1_source": "Mod Wheel",
-            "mod1_dest": "Cutoff",
-            "mod1_amount": 0.65,
-            "velocity": 0.55,
-            "tone": 0.05,
-            "volume": 0.62
-        }"#,
-    },
-    Preset {
-        name: "RANDOM PAD",
-        json: r#"{
-            "macro_space": 0.0,
-            "osc1_wave": "Saw",
-            "osc1_level": 0.55,
-            "osc2_wave": "Triangle",
-            "osc2_octave": -1,
-            "osc2_level": 0.45,
-            "unison": 3,
-            "detune": 16.0,
-            "spread": 0.8,
-            "filter_mode": "Lowpass",
-            "cutoff": 1600.0,
-            "resonance": 0.18,
-            "filter_env_amount": 0.18,
-            "fe_attack": 800.0,
-            "fe_decay": 1600.0,
-            "fe_sustain": 0.45,
-            "fe_release": 1800.0,
-            "ae_attack": 1400.0,
-            "ae_decay": 1800.0,
-            "ae_sustain": 0.85,
-            "ae_release": 2400.0,
-            "chorus_mix": 0.3,
-            "chorus_depth": 0.5,
-            "reverb_mix": 0.5,
-            "reverb_decay": 0.82,
-            "mod1_source": "Random",
-            "mod1_dest": "Pan",
-            "mod1_amount": 0.55,
-            "mod2_source": "Random",
-            "mod2_dest": "Cutoff",
-            "mod2_amount": 0.22,
-            "drift": 0.22,
-            "tone": -0.08,
-            "volume": 0.6
-        }"#,
-    },
-    Preset {
-        name: "GRAND PIANO",
-        json: r#"{
-            "osc1_wave": "Triangle",
-            "osc1_level": 0.9,
-            "sub_level": 0.12,
-            "osc2_wave": "Saw",
-            "osc2_octave": 1,
-            "osc2_level": 0.2,
-            "osc2_fine": 4.0,
-            "noise_level": 0.02,
-            "unison": 2,
-            "detune": 4.5,
-            "spread": 0.35,
-            "poly_mode": "Poly",
-            "filter_mode": "Lowpass",
-            "filter_slope": "24 dB",
-            "cutoff": 3400.0,
-            "resonance": 0.08,
-            "filter_env_amount": 0.6,
-            "filter_keytrack": 0.55,
-            "filter_drive": 0.0,
-            "fe_attack": 1.0,
-            "fe_decay": 600.0,
-            "fe_sustain": 0.1,
-            "fe_release": 260.0,
-            "fe_curve": 0.5,
-            "ae_attack": 1.5,
-            "ae_decay": 4000.0,
-            "ae_sustain": 0.0,
-            "ae_release": 220.0,
-            "ae_curve": -0.35,
+            "ae_curve": 0.0,
+            "ae_decay": 1200.0,
+            "ae_release": 1580.5,
+            "ae_sustain": 0.15,
+            "arp_chord": "Off",
+            "arp_gate": 60.0,
+            "arp_latch": false,
+            "arp_length": 16,
+            "arp_octaves": 1,
+            "arp_on": false,
+            "arp_pattern": "As Played",
+            "arp_probability": 1.0,
+            "arp_ratchet": 1,
+            "arp_rate": "1/16",
+            "arp_strum": 0.0,
+            "arp_swing": 0.0,
             "character": "Silk",
-            "drift": 0.06,
-            "velocity": 0.8,
-            "tone": 0.12,
-            "hpf_cutoff": 32.0,
-            "eq_low": 0.8,
-            "eq_high": 1.2,
-            "mod1_source": "Velocity",
-            "mod1_dest": "Cutoff",
-            "mod1_amount": 0.35,
-            "mod2_source": "Key",
-            "mod2_dest": "Filter Env",
-            "mod2_amount": 0.12,
+            "chorus_depth": 0.5,
             "chorus_mix": 0.0,
+            "chorus_rate": 0.8,
+            "chorus_width": 0.0,
+            "comp_attack": 20.0,
+            "comp_makeup": 0.0,
+            "comp_mix": 0.0,
+            "comp_ratio": 1.0,
+            "comp_release": 200.0,
+            "comp_threshold": 0.0,
+            "cutoff": 494.52072,
+            "delay_damping": 0.0,
+            "delay_feedback": 0.3,
             "delay_mix": 0.0,
-            "reverb_mix": 0.22,
-            "reverb_decay": 0.45,
-            "reverb_tone": 0.2,
-            "comp_threshold": -14.0,
-            "comp_ratio": 2.0,
-            "comp_attack": 15.0,
-            "comp_release": 150.0,
-            "comp_makeup": 2.0,
-            "comp_mix": 0.3,
-            "volume": 0.62
+            "delay_time": 350.0,
+            "detune": 0.0,
+            "drift": 0.0,
+            "drive_amount": 0.0,
+            "drive_mix": 0.0,
+            "drive_tone": 0.0,
+            "eq_high": 0.0,
+            "eq_low": 0.0,
+            "eq_mid": 0.0,
+            "fe_attack": 20.5,
+            "fe_curve": 0.0,
+            "fe_decay": 900.0,
+            "fe_release": 900.0,
+            "fe_sustain": 0.1,
+            "filter_drive": 0.0,
+            "filter_env_amount": 0.52870786,
+            "filter_keytrack": 0.3,
+            "filter_mode": "Lowpass",
+            "filter_slope": "24 dB OLD",
+            "fm_amount": 0.0,
+            "fx_bypass_mask": 0,
+            "fx_global_mix": 1.0,
+            "fx_order": 0,
+            "glide": 0.0,
+            "hpf_cutoff": 20.0,
+            "lfo1_amount": 0.0,
+            "lfo1_curve": 0.0,
+            "lfo1_div": "1/4",
+            "lfo1_phase": 0.0,
+            "lfo1_rate": 5.0000005,
+            "lfo1_retrigger": false,
+            "lfo1_sync": false,
+            "lfo1_wave": "Sine",
+            "lfo2_amount": 0.0,
+            "lfo2_curve": 0.0,
+            "lfo2_div": "1/4",
+            "lfo2_phase": 0.0,
+            "lfo2_rate": 0.50000006,
+            "lfo2_retrigger": false,
+            "lfo2_sync": false,
+            "lfo2_wave": "Triangle",
+            "macro_bright": 0.5407958,
+            "macro_motion": 0.5,
+            "macro_space": 0.5,
+            "mod1_amount": 0.0,
+            "mod1_dest": "Off",
+            "mod1_source": "Off",
+            "mod2_amount": 0.0,
+            "mod2_dest": "Off",
+            "mod2_source": "Off",
+            "mod3_amount": 0.0,
+            "mod3_dest": "Off",
+            "mod3_source": "Off",
+            "mod4_amount": 0.0,
+            "mod4_dest": "Off",
+            "mod4_source": "Off",
+            "mod5_amount": 0.0,
+            "mod5_dest": "Off",
+            "mod5_source": "Off",
+            "mod6_amount": 0.0,
+            "mod6_dest": "Off",
+            "mod6_source": "Off",
+            "mod7_amount": 0.0,
+            "mod7_dest": "Off",
+            "mod7_source": "Off",
+            "mod8_amount": 0.0,
+            "mod8_dest": "Off",
+            "mod8_source": "Off",
+            "noise_level": 0.0,
+            "osc1_fine": 0.0,
+            "osc1_level": 0.6,
+            "osc1_octave": 0,
+            "osc1_pw": 0.4,
+            "osc1_semi": 0,
+            "osc1_wave": "Pulse",
+            "osc2_fine": 0.0,
+            "osc2_level": 0.35,
+            "osc2_octave": 1,
+            "osc2_pw": 0.5,
+            "osc2_semi": 0,
+            "osc2_wave": "Triangle",
+            "osc_phase_reset": false,
+            "osc_sync": false,
+            "phaser_depth": 0.5,
+            "phaser_feedback": 0.0,
+            "phaser_mix": 0.0,
+            "phaser_rate": 0.3,
+            "poly_mode": "Poly",
+            "resonance": 0.5827937,
+            "reverb_decay": 0.6,
+            "reverb_mix": 0.0,
+            "reverb_tone": 0.0,
+            "ring_mod": 0.0,
+            "spread": 0.5565834,
+            "sub_level": 0.0,
+            "tone": 0.0,
+            "trem_depth": 0.0,
+            "trem_rate": 5.0,
+            "trem_stereo": false,
+            "tune": 0.0,
+            "unison": 1,
+            "vca_pan": 0.0,
+            "vca_width": 1.0,
+            "velocity": 0.7,
+            "voices": 16,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "Piano",
+        json: r#"{
+            "ae_attack": 1.5,
+            "ae_curve": 0.0,
+            "ae_decay": 2116.7,
+            "ae_release": 154.3,
+            "ae_sustain": 0.14457083,
+            "arp_chord": "Off",
+            "arp_gate": 60.0,
+            "arp_latch": false,
+            "arp_length": 16,
+            "arp_octaves": 1,
+            "arp_on": false,
+            "arp_pattern": "As Played",
+            "arp_probability": 1.0,
+            "arp_ratchet": 1,
+            "arp_rate": "1/16",
+            "arp_strum": 0.0,
+            "arp_swing": 1.3963003,
+            "character": "Silk",
+            "chorus_depth": 0.5,
+            "chorus_mix": 0.0,
+            "chorus_rate": 1.5066168,
+            "chorus_width": 0.0,
+            "comp_attack": 20.0,
+            "comp_makeup": 0.0,
+            "comp_mix": 0.0,
+            "comp_ratio": 1.0,
+            "comp_release": 200.0,
+            "comp_threshold": 0.0,
+            "cutoff": 2223.4465,
+            "delay_damping": 0.0,
+            "delay_feedback": 0.3,
+            "delay_mix": 0.0,
+            "delay_time": 350.0,
+            "detune": 0.0,
+            "drift": 0.0,
+            "drive_amount": 0.0,
+            "drive_mix": 0.0,
+            "drive_tone": 0.0,
+            "eq_high": 1.8559418,
+            "eq_low": -0.19199371,
+            "eq_mid": 3.1094084,
+            "fe_attack": 2.0,
+            "fe_curve": 0.0,
+            "fe_decay": 900.0,
+            "fe_release": 900.0,
+            "fe_sustain": 0.1,
+            "filter_drive": 0.0,
+            "filter_env_amount": 0.14463949,
+            "filter_keytrack": 0.3,
+            "filter_mode": "Lowpass",
+            "filter_slope": "24 dB OLD",
+            "fm_amount": 0.592199,
+            "fx_bypass_mask": 0,
+            "fx_global_mix": 1.0,
+            "fx_order": 0,
+            "glide": 0.0,
+            "hpf_cutoff": 20.0,
+            "lfo1_amount": 0.006612091,
+            "lfo1_curve": 0.0,
+            "lfo1_div": "1/4",
+            "lfo1_phase": 0.0,
+            "lfo1_rate": 6.1199083,
+            "lfo1_retrigger": false,
+            "lfo1_sync": false,
+            "lfo1_wave": "Sine",
+            "lfo2_amount": 0.0,
+            "lfo2_curve": 0.0,
+            "lfo2_div": "1/4",
+            "lfo2_phase": 0.0,
+            "lfo2_rate": 0.62386817,
+            "lfo2_retrigger": false,
+            "lfo2_sync": false,
+            "lfo2_wave": "Triangle",
+            "macro_bright": 0.5,
+            "macro_motion": 0.43238991,
+            "macro_space": 0.29160964,
+            "mod1_amount": 0.0,
+            "mod1_dest": "Off",
+            "mod1_source": "Off",
+            "mod2_amount": 0.0,
+            "mod2_dest": "Off",
+            "mod2_source": "Off",
+            "mod3_amount": 0.0,
+            "mod3_dest": "Off",
+            "mod3_source": "Off",
+            "mod4_amount": 0.0,
+            "mod4_dest": "Off",
+            "mod4_source": "Off",
+            "mod5_amount": 0.0,
+            "mod5_dest": "Off",
+            "mod5_source": "Off",
+            "mod6_amount": 0.0,
+            "mod6_dest": "Off",
+            "mod6_source": "Off",
+            "mod7_amount": 0.0,
+            "mod7_dest": "Off",
+            "mod7_source": "Off",
+            "mod8_amount": 0.0,
+            "mod8_dest": "Off",
+            "mod8_source": "Off",
+            "noise_level": 0.0,
+            "osc1_fine": 0.0,
+            "osc1_level": 0.6,
+            "osc1_octave": 0,
+            "osc1_pw": 0.38305104,
+            "osc1_semi": 0,
+            "osc1_wave": "Pulse",
+            "osc2_fine": 0.0,
+            "osc2_level": 0.35,
+            "osc2_octave": 0,
+            "osc2_pw": 0.42005682,
+            "osc2_semi": 0,
+            "osc2_wave": "Triangle",
+            "osc_phase_reset": false,
+            "osc_sync": false,
+            "phaser_depth": 0.5,
+            "phaser_feedback": 0.0,
+            "phaser_mix": 0.0,
+            "phaser_rate": 0.3,
+            "poly_mode": "Poly",
+            "resonance": 0.0,
+            "reverb_decay": 0.6,
+            "reverb_mix": 0.22944435,
+            "reverb_tone": 0.0,
+            "ring_mod": 0.0,
+            "spread": 0.38380855,
+            "sub_level": 0.07670682,
+            "tone": 0.0,
+            "trem_depth": 0.0,
+            "trem_rate": 5.0,
+            "trem_stereo": false,
+            "tune": 0.0,
+            "unison": 2,
+            "vca_pan": 0.0,
+            "vca_width": 1.0,
+            "velocity": 0.7,
+            "voices": 16,
+            "volume": 0.63
+        }"#,
+    },
+    Preset {
+        name: "Bad",
+        json: r#"{
+            "ae_attack": 2.3,
+            "ae_curve": 0.0,
+            "ae_decay": 800.0,
+            "ae_release": 856.8,
+            "ae_sustain": 0.7,
+            "arp_chord": "Off",
+            "arp_gate": 60.0,
+            "arp_latch": false,
+            "arp_length": 16,
+            "arp_octaves": 1,
+            "arp_on": false,
+            "arp_pattern": "Up",
+            "arp_probability": 1.0,
+            "arp_ratchet": 1,
+            "arp_rate": "1/16",
+            "arp_strum": 0.0,
+            "arp_swing": 0.0,
+            "character": "Silk",
+            "chorus_depth": 0.5,
+            "chorus_mix": 0.43275148,
+            "chorus_rate": 0.8,
+            "chorus_width": 0.0,
+            "comp_attack": 12.8,
+            "comp_makeup": 0.0,
+            "comp_mix": 0.0,
+            "comp_ratio": 12.055644,
+            "comp_release": 393.2,
+            "comp_threshold": -20.525352,
+            "cutoff": 475.7448,
+            "delay_damping": 0.0,
+            "delay_feedback": 0.3,
+            "delay_mix": 0.0,
+            "delay_time": 350.0,
+            "detune": 12.0,
+            "drift": 0.70206654,
+            "drive_amount": 0.0,
+            "drive_mix": 0.0,
+            "drive_tone": 0.074252844,
+            "eq_high": 6.5223637,
+            "eq_low": 0.0,
+            "eq_mid": 4.849598,
+            "fe_attack": 13.400001,
+            "fe_curve": 0.0,
+            "fe_decay": 400.0,
+            "fe_release": 300.0,
+            "fe_sustain": 0.3,
+            "filter_drive": 0.0,
+            "filter_env_amount": 0.37839186,
+            "filter_keytrack": 0.60048866,
+            "filter_mode": "Lowpass",
+            "filter_slope": "24 dB OLD",
+            "fm_amount": 0.52445394,
+            "fx_bypass_mask": 0,
+            "fx_global_mix": 1.0,
+            "fx_order": 0,
+            "glide": 0.0,
+            "hpf_cutoff": 20.0,
+            "lfo1_amount": 0.0,
+            "lfo1_curve": 0.0,
+            "lfo1_div": "1/4",
+            "lfo1_phase": 0.0,
+            "lfo1_rate": 5.0,
+            "lfo1_retrigger": false,
+            "lfo1_sync": false,
+            "lfo1_wave": "Sine",
+            "lfo2_amount": 0.0,
+            "lfo2_curve": 0.0,
+            "lfo2_div": "1/4",
+            "lfo2_phase": 0.0,
+            "lfo2_rate": 0.5,
+            "lfo2_retrigger": false,
+            "lfo2_sync": false,
+            "lfo2_wave": "Triangle",
+            "macro_bright": 0.5375224,
+            "macro_motion": 0.5,
+            "macro_space": 0.0,
+            "mod1_amount": 0.0,
+            "mod1_dest": "Off",
+            "mod1_source": "Off",
+            "mod2_amount": 0.0,
+            "mod2_dest": "Off",
+            "mod2_source": "Off",
+            "mod3_amount": 0.0,
+            "mod3_dest": "Off",
+            "mod3_source": "Off",
+            "mod4_amount": 0.0,
+            "mod4_dest": "Off",
+            "mod4_source": "Off",
+            "mod5_amount": 0.0,
+            "mod5_dest": "Off",
+            "mod5_source": "Off",
+            "mod6_amount": 0.0,
+            "mod6_dest": "Off",
+            "mod6_source": "Off",
+            "mod7_amount": 0.0,
+            "mod7_dest": "Off",
+            "mod7_source": "Off",
+            "mod8_amount": 0.0,
+            "mod8_dest": "Off",
+            "mod8_source": "Off",
+            "noise_level": 0.0,
+            "osc1_fine": 0.0,
+            "osc1_level": 0.6,
+            "osc1_octave": 0,
+            "osc1_pw": 0.5,
+            "osc1_semi": 0,
+            "osc1_wave": "Saw",
+            "osc2_fine": 0.0,
+            "osc2_level": 0.4,
+            "osc2_octave": 0,
+            "osc2_pw": 0.5,
+            "osc2_semi": 0,
+            "osc2_wave": "Sine",
+            "osc_phase_reset": false,
+            "osc_sync": true,
+            "phaser_depth": 0.49910903,
+            "phaser_feedback": 0.6544921,
+            "phaser_mix": 0.49910903,
+            "phaser_rate": 0.3,
+            "poly_mode": "Poly",
+            "resonance": 0.771567,
+            "reverb_decay": 0.6,
+            "reverb_mix": 0.0,
+            "reverb_tone": 0.0,
+            "ring_mod": 0.0,
+            "spread": 0.5,
+            "sub_level": 0.2583321,
+            "tone": 0.0,
+            "trem_depth": 0.0,
+            "trem_rate": 1.6332253,
+            "trem_stereo": false,
+            "tune": 0.0,
+            "unison": 1,
+            "vca_pan": 0.0,
+            "vca_width": 1.0,
+            "velocity": 0.5,
+            "voices": 16,
+            "volume": 0.5011872
         }"#,
     },
 ];
@@ -1073,27 +800,54 @@ pub fn mutate(params: &SushiParams, setter: &ParamSetter, rng: &mut Rng) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{
-        ArpPattern, FilterSlope, LfoTarget, ModDest, ModSource, NoteDiv, Waveform,
-    };
+    use crate::params::{FilterSlope, LfoTarget, ModDest, ModSource, PolyMode, Waveform};
     use crate::patch::test_support::setter;
 
     #[test]
-    fn there_are_thirty_presets_with_short_names() {
-        assert_eq!(PRESETS.len(), 30);
+    fn there_are_eleven_presets_with_short_names() {
+        assert_eq!(PRESETS.len(), 11);
         for preset in PRESETS {
             assert!(!preset.name.is_empty());
             assert!(preset.name.len() <= 18, "{}", preset.name);
             assert!(preset.name.is_ascii(), "{}", preset.name);
         }
 
-        // The showcase presets are appended, so the indices of the original
-        // presets stay stable.
-        let showcase: Vec<&str> = PRESETS[26..].iter().map(|preset| preset.name).collect();
+        // The three sounds that came out of the patch folder are appended,
+        // so the indices of the older presets stay in the order of the list
+        // that shipped before them.
+        let names: Vec<&str> = PRESETS.iter().map(|preset| preset.name).collect();
         assert_eq!(
-            showcase,
-            ["ZDF ACID", "WHEEL MOTION", "RANDOM PAD", "GRAND PIANO"]
+            names,
+            [
+                "INIT PAD",
+                "WIDE BRASS",
+                "MOOG BASS",
+                "ACID LINE",
+                "MODEL D BASS",
+                "CS BRASS",
+                "MONO 101",
+                "JUNO BASS",
+                "String",
+                "Piano",
+                "Bad",
+            ]
         );
+    }
+
+    #[test]
+    fn every_preset_is_polyphonic() {
+        let params = SushiParams::default();
+        let setter = setter();
+
+        for (index, preset) in PRESETS.iter().enumerate() {
+            apply(&params, &setter, index);
+            assert_eq!(
+                params.poly_mode.value(),
+                PolyMode::Poly,
+                "the preset {} is not polyphonic",
+                preset.name
+            );
+        }
     }
 
     #[test]
@@ -1147,70 +901,26 @@ mod tests {
     }
 
     #[test]
-    fn the_piano_preset_dies_away_like_a_struck_string() {
-        let piano = PRESETS
-            .iter()
-            .find(|preset| preset.name == "GRAND PIANO")
-            .expect("there is no piano preset");
-        let document: Value = serde_json::from_str(piano.json).expect("the piano is broken");
-
-        let value = |name: &str| {
-            document
-                .get(name)
-                .and_then(Value::as_f64)
-                .unwrap_or_else(|| panic!("the piano has no {name}"))
-        };
-
-        // A hammer: an immediate attack, and a note that dies away while the
-        // key is held. Nothing sustains, so a chord cannot turn into an organ.
-        assert!(value("ae_attack") <= 5.0);
-        assert!(value("ae_decay") >= 3_000.0);
-        assert_eq!(value("ae_sustain"), 0.0);
-        assert!(
-            value("ae_curve") < 0.0,
-            "the decay drops too fast to be a string"
-        );
-        // The damper falls back when the key is released.
-        assert!(value("ae_release") <= 500.0);
-
-        // The brightness follows the hammer too.
-        assert!(value("fe_attack") <= 5.0);
-        assert!(value("fe_decay") <= 1_000.0);
-        assert!(value("fe_sustain") <= 0.1);
-        assert!(value("filter_env_amount") > 0.2);
-        // Harder keys are brighter, and high notes are brighter still.
-        assert_eq!(document["mod1_source"], "Velocity");
-        assert_eq!(document["mod1_dest"], "Cutoff");
-        assert!(value("filter_keytrack") >= 0.5);
-
-        // Two slightly detuned strings instead of a chorus, and only the
-        // room around the instrument.
-        assert!(value("unison") >= 2.0);
-        assert!(value("detune") <= 8.0);
-        assert_eq!(value("chorus_mix"), 0.0);
-        assert_eq!(value("delay_mix"), 0.0);
-        assert!(value("reverb_mix") > 0.0);
-    }
-
-    #[test]
-    fn the_original_presets_keep_the_old_slope_value() {
+    fn the_presets_keep_the_old_slope_value() {
         let params = SushiParams::default();
         let setter = setter();
         let mut checked = 0;
 
-        // The first 26 presets existed before the second 24 dB alias was
-        // added. None of them may silently move to that alias.
-        for (index, preset) in PRESETS[..26].iter().enumerate() {
+        // Both the "24 dB" and the "24 dB OLD" spelling of a patch are the
+        // first 24 dB alias. No preset may silently move to the second one.
+        for (index, preset) in PRESETS.iter().enumerate() {
             let document: Value = serde_json::from_str(preset.json)
                 .unwrap_or_else(|error| panic!("the preset {} is broken: {error}", preset.name));
-            let uses_old_four_pole =
-                document.get("filter_slope").and_then(Value::as_str) == Some("24 dB");
+            let uses_old_four_pole = matches!(
+                document.get("filter_slope").and_then(Value::as_str),
+                Some("24 dB") | Some("24 dB OLD")
+            );
 
             apply(&params, &setter, index);
             assert_ne!(
                 params.filter_slope.value(),
                 FilterSlope::FourPoleModern,
-                "the original preset {} uses the second 24 dB alias",
+                "the preset {} uses the second 24 dB alias",
                 preset.name
             );
             if uses_old_four_pole {
@@ -1224,26 +934,7 @@ mod tests {
             }
         }
 
-        assert_eq!(checked, 7, "the number of old four-pole presets changed");
-    }
-
-    #[test]
-    fn the_zdf_acid_preset_uses_the_second_24_db_alias() {
-        let params = SushiParams::default();
-        let setter = setter();
-        let index = PRESETS
-            .iter()
-            .position(|preset| preset.name == "ZDF ACID")
-            .expect("the preset is missing");
-
-        apply(&params, &setter, index);
-
-        assert_eq!(params.filter_slope.value(), FilterSlope::FourPoleModern);
-        assert!(params.cutoff.value() <= 500.0);
-        assert!(params.resonance.value() >= 0.5);
-
-        let document: Value = serde_json::from_str(PRESETS[index].json).unwrap();
-        assert_eq!(document["filter_slope"], "24 dB NEW");
+        assert_eq!(checked, 7, "the number of four-pole presets changed");
     }
 
     #[test]
@@ -1263,11 +954,7 @@ mod tests {
             );
         }
 
-        let expected = [
-            ("INIT PAD", ModDest::Cutoff, None),
-            ("MOTION PAD", ModDest::Pitch, Some(ModDest::Cutoff)),
-            ("ARP TOY", ModDest::Pitch, None),
-        ];
+        let expected = [("INIT PAD", ModDest::Cutoff, None)];
         for (name, first_dest, second_dest) in expected {
             let index = PRESETS
                 .iter()
@@ -1299,78 +986,17 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_motion_preset_routes_the_mod_wheel_to_cutoff() {
-        let params = SushiParams::default();
-        let setter = setter();
-        let index = PRESETS
-            .iter()
-            .position(|preset| preset.name == "WHEEL MOTION")
-            .expect("the preset is missing");
-
-        apply(&params, &setter, index);
-
-        assert_eq!(params.mod1_source.value(), ModSource::ModWheel);
-        assert_eq!(params.mod1_dest.value(), ModDest::Cutoff);
-        assert!(params.mod1_amount.value() > 0.0);
-
-        // The matrix owns the wheel, so the built-in wheel-to-vibrato path
-        // stays out of the way.
-        assert_eq!(params.lfo1_target.value(), LfoTarget::Off);
-        assert_eq!(params.lfo1_amount.value(), 0.0);
-    }
-
-    #[test]
-    fn the_random_pad_preset_uses_the_random_source() {
-        let params = SushiParams::default();
-        let setter = setter();
-        let index = PRESETS
-            .iter()
-            .position(|preset| preset.name == "RANDOM PAD")
-            .expect("the preset is missing");
-
-        apply(&params, &setter, index);
-
-        assert_eq!(params.mod1_source.value(), ModSource::Random);
-        assert_eq!(params.mod1_dest.value(), ModDest::Pan);
-        assert!(params.mod1_amount.value() != 0.0);
-
-        assert_eq!(params.mod2_source.value(), ModSource::Random);
-        assert_eq!(params.mod2_dest.value(), ModDest::Cutoff);
-        assert!(params.mod2_amount.value() != 0.0);
-
-        assert!(params.ae_attack.value() >= 500.0);
-        assert!(params.reverb_mix.value() > 0.0);
-    }
-
-    #[test]
-    fn an_index_that_does_not_exist_is_ignored() {
-        let params = SushiParams::default();
-        let setter = setter();
-
-        apply(&params, &setter, PRESETS.len());
-        assert_eq!(params.cutoff.value(), 3_000.0);
-    }
-
-    #[test]
-    fn the_newer_presets_keep_their_modern_space_mix() {
+    fn the_presets_keep_their_space_mix() {
         let params = SushiParams::default();
         let setter = setter();
         let expected = [
             ("MODEL D BASS", 0.0),
-            ("SILVER ACID", 0.0),
-            ("FM ELECTRIC", 0.0),
             ("CS BRASS", 0.0),
-            ("OB PAD", 0.0),
-            ("POLY STRINGS", 0.2),
-            ("2600 LEAD", 0.0),
             ("MONO 101", 0.0),
-            ("VP CHOIR", 0.0),
-            ("MELLOTRON FLUTE", 0.0),
             ("JUNO BASS", 0.0),
-            ("PROPHET KEYS", 0.0),
-            ("ZDF ACID", 0.0),
-            ("WHEEL MOTION", 0.0),
-            ("RANDOM PAD", 0.0),
+            ("String", 0.5),
+            ("Piano", 0.291_609_64),
+            ("Bad", 0.0),
         ];
 
         for (name, space) in expected {
@@ -1392,15 +1018,14 @@ mod tests {
         let params = SushiParams::default();
         let setter = setter();
 
-        let arp_toy = PRESETS
+        let bass = PRESETS
             .iter()
-            .position(|preset| preset.name == "ARP TOY")
+            .position(|preset| preset.name == "MOOG BASS")
             .expect("the preset is missing");
-        apply(&params, &setter, arp_toy);
-        assert!(params.arp_on.value());
-        assert_eq!(params.arp_pattern.value(), ArpPattern::UpDown);
-        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
-        assert_eq!(params.arp_octaves.value(), 2);
+        apply(&params, &setter, bass);
+        assert!((params.cutoff.value() - 500.0).abs() < 1.0);
+        assert!(params.resonance.value() > 0.3);
+        assert_eq!(params.poly_mode.value(), PolyMode::Poly);
 
         let init = PRESETS
             .iter()
