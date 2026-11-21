@@ -2085,7 +2085,7 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
     voice_leds(
         &painter,
         Rect::from_min_max(
-            egui::pos2(inner.left() + label_width + 8.0 * zoom, footer - 7.0 * zoom),
+            egui::pos2(inner.left() + label_width + 8.0 * zoom, footer - 10.0 * zoom),
             egui::pos2(inner.right(), footer),
         ),
         voice_count.load(Ordering::Relaxed),
@@ -2096,11 +2096,11 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
 /// The light bar of the voice count: one square per voice that the panel can
 /// play, lit for every voice that is sounding right now.
 fn voice_leds(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
+    // The cells share the whole width of the row, so the bar reads as one
+    // line of light instead of a short strip in the corner.
     let gap = 3.0 * zoom;
-    let cell = ((rect.width() - gap * (VOICE_LEDS as f32 - 1.0)) / VOICE_LEDS as f32)
-        .min(7.0 * zoom)
-        .max(1.0);
-    let height = rect.height().min(cell * 1.6);
+    let cell = ((rect.width() - gap * (VOICE_LEDS as f32 - 1.0)) / VOICE_LEDS as f32).max(1.0);
+    let height = rect.height();
     let lit = voices.min(VOICE_LEDS);
     for index in 0..VOICE_LEDS {
         let x = rect.left() + index as f32 * (cell + gap);
