@@ -1,72 +1,83 @@
 # SUSHI
 
-复音软件合成器。**CLAP / Linux**。
+A polyphonic software synthesizer. **CLAP / Linux**.
 
-## 装
+## Install
 
 ```bash
 cargo build --release
 install -m 755 target/release/libsushi.so ~/.clap/sushi.clap
 ```
 
-或者 `cargo nice-plug bundle sushi --release`，产物在 `target/bundled/`。
-REAPER 里 `Options → Preferences → Plug-ins → CLAP → Re-scan`。
+Or `cargo nice-plug bundle sushi --release`, which writes `target/bundled/`.
+Then `Options → Preferences → Plug-ins → CLAP → Re-scan` in REAPER.
 
-## 界面
+## Interface
 
-黑底、单一橙色强调、绿色读数，全部平角 1 px 描边，120 fps。
+A black plate, one orange accent and green for anything that reads as data:
+flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 
-- **顶栏**：预设 LCD（点开就是 patch 浏览器）、`<` `>`、`MUTATE`、`MOD` / `FX` 标签、
-  声部表、示波器、`ACT` / `CLIP`
-- **主页面**四条：`VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`、
-  `VCF | MOD ENV | AMP ENV`、`ARP | VOICE`、`MACROS | VCA`
-- **MOD 页**：左边路由表 + Target 检查器（当前值、调制范围、实时贡献），
-  右边 LFO 1 / LFO 2 / MOD ENV / AMP ENV / MACROS 一列
-- **FX 页**：左边八个可拖动的链块（八级任意排序）+ `GLOBAL WET` + `CHAIN PRESET`，
-  右边 2×4 模块网格
-- **底部键盘**：点/拖滑音，力度看点击高度；`A S D F G H J K L ; '` 白键、
-  `W E T Y U O P` 黑键、`Z` / `X` 换八度
+- **Header**: preset LCD (click it for the patch browser), `<` `>`, `MUTATE`,
+  the `MOD` / `FX` tabs, the voice meter, the oscilloscope, `ACT` / `CLIP`
+- **Main page**, four bands: `VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`,
+  `VCF | MOD ENV | AMP ENV`, `ARP | VOICE`, `MACROS | VCA`
+- **MOD page**: routing table and target inspector on the left (current value,
+  modulation range, live contribution), LFO 1 / LFO 2 / MOD ENV / AMP ENV /
+  MACROS down the right
+- **FX page**: eight draggable chain tiles (any of the 8! orders) plus
+  `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
+  right
+- **Keyboard strip**: click or drag to play, velocity follows how high on the
+  key you click; `A S D F G H J K L ; '` white keys, `W E T Y U O P` black keys,
+  `Z` / `X` shift the octave
 
-操作：
-
-| 操作 | 效果 |
+| Input | Effect |
 |---|---|
-| 拖控件 | 改值 |
-| 滚轮 / Shift+滚轮 | 改值 / 微调 |
-| 右键控件 | 输入数值 |
-| 双击控件 | 复位 |
-| **空白处右键** | **界面缩放 50–300%**（档位是上限，窗口更大也不拉伸） |
+| Drag | change a value |
+| Wheel / Shift+wheel | change / fine-tune |
+| Right-click a control | type a value |
+| Double-click | reset |
+| **Right-click the background** | **UI zoom 50–300%** (a level is a cap: a bigger window does not stretch the panel) |
 
-## 声音（Legacy 引擎）
+## Sound
 
-- 两个 PolyBLEP 带限振荡器（正弦 / 三角 / 锯齿 / 方波 / 脉冲）、低八度方波 sub、
-  hard sync、phase FM、ring mod、最多 4 声 unison
-- 16 声部；poly / mono / legato，glide、velocity、drift、每声部元件容差
-- 12 / 24 dB 梯形状态变量滤波器（LP / HP / BP / Notch）+ 全局 12 dB HPF，
-  cutoff / res / env / keytrack / drive
-- 两个 ADSR（带曲线）、两个 LFO（自由或同步）、8 槽调制矩阵（双极性）
-- 琶音器：Up / Down / Up-Down / Random / As Played，1/4–1/32、1–3 八度、
-  swing、gate、ratchet、length、latch、chord、strum、probability
-- 八级立体声效果链，**任意顺序**（Drive、Phaser、Chorus、Delay、Reverb、EQ、
-  Compressor、Tremolo），六个链预设 + 全局 wet
-- 140 个参数、11 个出厂预设；patch 是 JSON，参数 ID 稳定
+The Legacy engine, and only that one.
 
-## 补丁
+- Two PolyBLEP band-limited oscillators (sine, triangle, saw, square, pulse), a
+  square sub one octave down, hard sync, phase FM, ring modulation and up to
+  four unison voices
+- 16 voices, poly / mono / legato, with glide, velocity, drift and deterministic
+  per-voice component tolerances
+- 12 / 24 dB cascaded state-variable filter (lowpass, highpass, bandpass,
+  notch) with cutoff, resonance, envelope amount, keytrack and drive, plus a
+  global 12 dB highpass on the voice sum
+- Two ADSR envelopes with curve shaping, two LFOs (free or host-synced) and an
+  8-slot bipolar modulation matrix
+- Arpeggiator: Up, Down, Up-Down, Random, As Played; 1/4–1/32, 1–3 octaves,
+  swing, gate, ratchet, length, latch, chord, strum and probability
+- Eight-stage stereo FX chain in **any order** (Drive, Phaser, Chorus, Delay,
+  Reverb, EQ, Compressor, Tremolo), six chain presets and a global wet mix
+- 140 parameters, 11 factory presets; patches are JSON and parameter IDs are
+  stable
 
-用户 patch 不在这个仓库，放在 REAPER 工程仓：
+## Patches
+
+User patches do not live in this repository. They live in the REAPER project
+repository:
 
     ~/Music/all_my_reaper/presets/Sushi/patches
 
-或者在 `~/.config/sushi/config.json` 里指定 `patch_dir`。
-只有必须随插件发布的内容放 `factory/`。
+Point the patch browser at that folder, or set `patch_dir` in
+`~/.config/sushi/config.json`. Only content that has to ship with the plugin
+belongs in `factory/`.
 
-## 开发
+## Develop
 
 ```bash
-cargo test          # 327 个测试：DSP、几何、文本不重叠
+cargo test          # 327 tests: DSP, geometry, no overlapping text
 cargo build --release
 ```
 
 ## License
 
-MIT。内置 Quicksand / JetBrains Mono 字体为 SIL OFL 1.1。
+MIT. The bundled Quicksand and JetBrains Mono fonts are SIL OFL 1.1.
