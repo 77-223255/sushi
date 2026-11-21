@@ -29,7 +29,9 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
   right now (`568 Hz – 15.8 kHz`), both in the same units — the curve carries a
   dot at its live end, so the instant is a moving dot and the numbers to read
   are the ones that hold still — while LFO 1 / LFO 2 / MOD ENV / AMP ENV /
-  MACROS sit down the right
+  MACROS sit down the right, each with a live strip at its foot: the recorded
+  history of that source (a green curve with a dot on its current sample) and,
+  for the macros, one level bar per macro
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right

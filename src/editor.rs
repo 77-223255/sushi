@@ -315,10 +315,14 @@ const MOD_WORKSPACE_GAP: f32 = 12.0;
 const MOD_LEFT_SHARE: f32 = 2.0 / 3.0;
 /// The gap between two modules of the right-hand source column.
 const MOD_MODULE_GAP: f32 = 6.0;
+/// The height of the live strip at the bottom of a source module.
+const MOD_STRIP_HEIGHT: f32 = 12.0;
+/// The gap between the faders of a source module and its live strip.
+const MOD_STRIP_GAP: f32 = 3.0;
 /// The relative heights of the five modules of the right-hand column. They sum
 /// to the height of the four bands minus the four module gaps, so the column
 /// fills the whole workspace.
-const MOD_MODULE_WEIGHTS: [f32; 5] = [110.0, 110.0, 94.0, 94.0, 84.0];
+const MOD_MODULE_WEIGHTS: [f32; 5] = [112.0, 112.0, 96.0, 96.0, 92.0];
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
@@ -3100,7 +3104,8 @@ impl<'a> EnvelopeSpec<'a> {
 /// both use it, so the faders return to the page with the exact height and
 /// pitch that they have on the panel.
 fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec: &EnvelopeSpec) {
-    group(ui, rect, spec.title, zoom, |ui, part| match part {
+    let (faders, strip) = source_module_split(rect, zoom, ctx.state.page == Page::Mod);
+    group(ui, faders, spec.title, zoom, |ui, part| match part {
         Part::Header => {}
         Part::Body => {
             column_row_fixed(ui, spec.column, 5, COLUMN_GAP, 50.0, zoom, |index, ui| {
@@ -3121,6 +3126,116 @@ fn envelope_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, spec:
             });
         }
     });
+    if let Some(band) = strip {
+        let feed = if spec.column == "fe" {
+            FeedSource::ModEnv
+        } else {
+            FeedSource::AmpEnv
+        };
+        draw_source_strip(ui, band, feed, false, ctx, zoom);
+    }
+}
+
+/// The faders of a source module and the strip under them, on the modulation
+/// page. On any other page the strip has no height and the faders keep theirs.
+fn source_module_split(rect: Rect, zoom: f32, live: bool) -> (Rect, Option<Rect>) {
+    if !live {
+        return (rect, None);
+    }
+    let height = MOD_STRIP_HEIGHT * zoom;
+    let faders = Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.bottom() - height - MOD_STRIP_GAP * zoom),
+    );
+    let band = Rect::from_min_max(
+        egui::pos2(rect.left() + GROUP_PADDING * zoom, rect.bottom() - height),
+        egui::pos2(rect.right() - GROUP_PADDING * zoom, rect.bottom()),
+    );
+    (faders, Some(band))
+}
+
+/// The live strip of a source module: the recorded history of that source, in
+/// the green of the readouts. The dot at the right end is the current sample.
+fn draw_source_strip(
+    ui: &mut egui::Ui,
+    band: Rect,
+    feed: FeedSource,
+    bipolar: bool,
+    ctx: &mut Ctx,
+    zoom: f32,
+) {
+    let painter = ui.painter_at(band);
+    ctx.mod_feedback.history(feed, &mut ctx.wave_history);
+    let floor_y = if bipolar {
+        band.center().y
+    } else {
+        band.bottom() - zoom
+    };
+    let span = if bipolar {
+        band.height() * 0.5 - zoom
+    } else {
+        band.height() - 2.0 * zoom
+    };
+    painter.line_segment(
+        [
+            egui::pos2(band.left(), floor_y),
+            egui::pos2(band.right(), floor_y),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
+    let last = ctx.wave_history.len().saturating_sub(1).max(1) as f32;
+    let points: Vec<egui::Pos2> = ctx
+        .wave_history
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            egui::pos2(
+                band.left() + band.width() * index as f32 / last,
+                floor_y - value.clamp(-1.0, 1.0) * span,
+            )
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points.clone(),
+        Stroke::new(1.0, palette().led_on),
+    ));
+    if let Some(tip) = points.last() {
+        painter.circle_filled(*tip, 2.0 * zoom, palette().led_on);
+    }
+}
+
+/// The live strip of the macro module: one bar per macro, filled to the level
+/// the macro is sending right now.
+fn draw_macro_strip(ui: &mut egui::Ui, band: Rect, ctx: &mut Ctx, zoom: f32) {
+    let painter = ui.painter_at(band);
+    let values = [
+        ctx.mod_feedback.macro1(),
+        ctx.mod_feedback.macro2(),
+        ctx.mod_feedback.macro3(),
+    ];
+    let gap = 4.0 * zoom;
+    let cell = (band.width() - gap * 2.0) / 3.0;
+    for (index, value) in values.iter().enumerate() {
+        let bar = Rect::from_min_size(
+            egui::pos2(band.left() + index as f32 * (cell + gap), band.top()),
+            egui::vec2(cell, band.height()),
+        );
+        painter.rect_filled(bar, CornerRadius::ZERO, palette().field_bg);
+        painter.rect_stroke(
+            bar,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, palette().line),
+            egui::StrokeKind::Inside,
+        );
+        let fill = Rect::from_min_max(
+            egui::pos2(bar.left() + zoom, bar.bottom() - zoom),
+            egui::pos2(
+                bar.left() + zoom + (bar.width() - 2.0 * zoom) * value.clamp(0.0, 1.0),
+                bar.bottom() - zoom,
+            ),
+        );
+        painter.rect_filled(fill, CornerRadius::ZERO, palette().led_on);
+    }
 }
 
 /// One of the two LFO editors of the modulation page.
@@ -3173,7 +3288,8 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
         )
     };
 
-    group(ui, rect, title, zoom, |ui, part| match part {
+    let (faders, strip) = source_module_split(rect, zoom, ctx.state.page == Page::Mod);
+    group(ui, faders, title, zoom, |ui, part| match part {
         Part::Header => {
             ctx.popup(ui, ids.0, wave, 54.0);
             ctx.check(ui, ids.1, sync, "SYNC");
@@ -3201,6 +3317,14 @@ fn lfo_group(ui: &mut egui::Ui, rect: Rect, zoom: f32, ctx: &mut Ctx, index: usi
             );
         }
     });
+    if let Some(band) = strip {
+        let feed = if index == 0 {
+            FeedSource::Lfo1
+        } else {
+            FeedSource::Lfo2
+        };
+        draw_source_strip(ui, band, feed, true, ctx, zoom);
+    }
 }
 
 /// The third row of the normal page: the arpeggiator and the voice.
@@ -3367,7 +3491,8 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 /// by the right-hand source column of the modulation page.
 fn macros_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
-    group(ui, rect, "MACROS", zoom, |ui, part| match part {
+    let (faders, strip) = source_module_split(rect, zoom, ctx.state.page == Page::Mod);
+    group(ui, faders, "MACROS", zoom, |ui, part| match part {
         Part::Header => {}
         Part::Body => {
             column_row_fill(ui, "macros", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
@@ -3381,6 +3506,9 @@ fn macros_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
             });
         }
     });
+    if let Some(band) = strip {
+        draw_macro_strip(ui, band, ctx, zoom);
+    }
 }
 
 /// Draws the read-only inspector for the selected route.
@@ -7884,7 +8012,7 @@ mod tests {
                 let rect = clipped.clip_rect;
                 let width = rect.width();
                 let is_slider = (width - SLIDER_WIDTH * zoom).abs() < 0.5;
-                if is_slider && rect.height() > 40.0 {
+                if is_slider && rect.height() > 20.0 * zoom {
                     rects.push(rect);
                 }
             }
