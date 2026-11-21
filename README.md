@@ -90,3 +90,15 @@ cargo build --release
 ## License
 
 MIT. The bundled Quicksand and JetBrains Mono fonts are SIL OFL 1.1.
+
+## Looking at the panel without a host
+
+The look of the panel can be checked offline: the tests can rasterize one frame
+of the real `egui` output — including the glyphs of the font atlas — into a PNG.
+
+```sh
+SUSHI_PREVIEW=/tmp/sushi.png cargo test --release render_preview
+SUSHI_PAGE=mod SUSHI_PREVIEW=/tmp/mod.png cargo test --release render_preview
+SUSHI_MENU=zoom SUSHI_PREVIEW=/tmp/menu.png cargo test --release render_preview
+SUSHI_HOVER=40,150 SUSHI_PREVIEW=/tmp/hover.png cargo test --release render_preview
+```

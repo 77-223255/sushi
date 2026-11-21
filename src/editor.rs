@@ -41,7 +41,15 @@ use nice_plug_egui::NiceEguiApp;
 use crate::dsp::fx::{FX_STAGE_COUNT, FxStage, stage_order, stage_order_index};
 use crate::dsp::mod_feedback::ModFeedback;
 use crate::keyboard::{HeldKeys, KeyboardNote};
-use crate::params::{ModDest, ModSource, SushiParams};
+use crate::params::{LfoWaveform, ModDest, ModSource, SushiParams};
+use std::cell::RefCell;
+
+thread_local! {
+    /// The module that is being drawn. A group stamps it here, so the info
+    /// block can name the module of a reading without every widget knowing
+    /// where it lives.
+    static CURRENT_MODULE: RefCell<String> = RefCell::new(String::from("SUSHI"));
+}
 use crate::patch;
 use keyboard::VirtualKeyboard;
 use presets::{PRESETS, Rng};
@@ -300,7 +308,6 @@ const TARGET_UNIT_RANGE: f32 = 1.0;
 const TARGET_NOISE_RANGE: f32 = 0.5;
 const TARGET_FINE_RANGE: f32 = 100.0;
 const TARGET_DETUNE_RANGE: f32 = 50.0;
-const TARGET_FILTER_ENV_RANGE: f32 = 5.0;
 
 /// The gap between the routing/target workspace and the source column of the
 /// modulation page.
@@ -739,6 +746,12 @@ const VOICE_LEDS: usize = 16;
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
 /// The width of the `NOW` caption of a modulation row.
 const MOD_NOW_LABEL_WIDTH: f32 = 30.0;
+/// The column of the centre value of a destination, the green one.
+const MOD_NOW_BASE_WIDTH: f32 = 54.0;
+/// The column of the live value of a destination, the orange one.
+const MOD_NOW_LIVE_WIDTH: f32 = 56.0;
+/// The width of the little window that shows the shape of the source.
+const MOD_WAVE_WIDTH: f32 = 64.0;
 /// The width of the `TRAVEL` caption of a modulation row.
 const MOD_TRAVEL_LABEL_WIDTH: f32 = 44.0;
 /// The width of the oscilloscope at the right end of the header.
@@ -1092,7 +1105,7 @@ struct EditorState {
     /// dirty and it is kept while the route is edited.
     mod_selected: usize,
     /// The parameter and value under the pointer, or the last one seen.
-    readout: Option<(String, String)>,
+    readout: Option<(String, String, String)>,
     /// The peak level of the samples of the last frame.
     activity: f32,
     /// Whether the samples of the last frame were clipping.
@@ -1998,14 +2011,26 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
     flat_box(&painter, rect, palette().paper);
     let inner = rect.shrink(10.0 * zoom);
 
-    let (label, value) = state
+    let (module, label, value) = state
         .readout
         .clone()
-        .unwrap_or_else(|| ("PATCH".to_string(), display_text(state)));
+        .unwrap_or_else(|| ("PATCH".to_string(), "PRESET".to_string(), display_text(state)));
+
+    // The module that the reading comes from, in the green of the readouts, so
+    // a bare control name never has to be guessed.
+    tracked_text(
+        &painter,
+        egui::pos2(inner.left(), inner.top() + 9.0 * zoom),
+        Align2::LEFT_BOTTOM,
+        &truncate_name(&module, 18),
+        FontId::new(font_size(8.5, zoom), label_family()),
+        palette().led_on,
+        0.9 * zoom,
+    );
 
     // The label and the value share one baseline: the label on the left, the
     // value flush right, so the block reads like one line of an instrument.
-    let baseline = inner.top() + 20.0 * zoom;
+    let baseline = inner.top() + 26.0 * zoom;
     tracked_text(
         &painter,
         egui::pos2(inner.left(), baseline),
@@ -2388,6 +2413,7 @@ fn mod_page(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 /// are no per-slot frames and no repeated captions, so a full page of routes
 /// reads as a list instead of eight small forms.
 fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
+    CURRENT_MODULE.with(|module| *module.borrow_mut() = String::from("MODULATION"));
     let zoom = ctx.zoom;
 
     let sources = [
@@ -2663,19 +2689,22 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             },
         );
 
-        // The readings of the route, under its controls: what the source is
-        // doing to the destination right now and how far the amount lets it
-        // travel. Nothing is repeated anywhere else on the page.
+        // The readings of the route, under its controls: the centre value of
+        // the destination in green, the value it reads right now in orange,
+        // the shape of the source that moves it, and the travel of the amount.
+        // Nothing is repeated anywhere else on the page.
         if active {
-            let now = match live_source_value(source, ctx.mod_feedback) {
-                Some(value) => target_offset_text(dest, value * amount),
-                None => "per-voice".to_string(),
+            let time = ui.input(|input| input.time) as f32;
+            let live = live_source_value(source, ctx.mod_feedback);
+            let rate = match source {
+                ModSource::Lfo1 => ctx.params.lfo1_rate.value(),
+                ModSource::Lfo2 => ctx.params.lfo2_rate.value(),
+                _ => 1.0,
             };
-            let now_color = if now == "per-voice" {
-                palette().muted
-            } else {
-                palette().accent
-            };
+            // The phase of the source at the wall clock of the panel: the
+            // preview moves with the modulation, so a stopped oscillator
+            // stands still.
+            let phase = (time * rate).rem_euclid(1.0);
             let label = FontId::new(font_size(7.0, zoom), label_family());
             tracked_text(
                 &painter,
@@ -2686,12 +2715,32 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 palette().muted,
                 0.8 * zoom,
             );
+            // The centre of the modulation: the value the destination holds
+            // without this route.
             painter.text(
                 egui::pos2(source_x + MOD_NOW_LABEL_WIDTH * zoom, read_y),
                 Align2::LEFT_CENTER,
-                now,
+                target_current_text(dest, ctx.params),
                 FontId::monospace(font_size(8.5, zoom)),
-                now_color,
+                palette().led_on,
+            );
+            // The value of the destination right now, in its own units.
+            let (live_text, live_color) = match live {
+                Some(value) => (
+                    target_live_text(dest, ctx.params, value * amount),
+                    palette().accent,
+                ),
+                None => ("per-voice".to_string(), palette().muted),
+            };
+            painter.text(
+                egui::pos2(
+                    source_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH) * zoom,
+                    read_y,
+                ),
+                Align2::LEFT_CENTER,
+                live_text,
+                FontId::monospace(font_size(8.5, zoom)),
+                live_color,
             );
             tracked_text(
                 &painter,
@@ -2709,6 +2758,66 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 FontId::monospace(font_size(8.5, zoom)),
                 palette().muted,
             );
+
+            // The window of the shape, between the live value and the travel
+            // of the amount: the curve of the source in orange over the block
+            // of the cycle it has already played.
+            let wave_x =
+                source_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH + MOD_NOW_LIVE_WIDTH) * zoom;
+            let wave_width = (MOD_WAVE_WIDTH * zoom).min(bar_x - wave_x - 8.0 * zoom);
+            if wave_width >= 24.0 * zoom {
+                let wave_h = (control_h * 0.52).max(10.0 * zoom);
+                let wave = Rect::from_min_size(
+                    egui::pos2(wave_x, read_y - wave_h * 0.5),
+                    egui::vec2(wave_width, wave_h),
+                );
+                painter.rect_filled(wave, CornerRadius::ZERO, palette().field_bg);
+                // The LFOs swing around zero, the envelopes and the hand
+                // controls only rise above it, so each shape is drawn on its
+                // own floor.
+                let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
+                let floor_y = if unipolar {
+                    wave.bottom() - 2.0 * zoom
+                } else {
+                    wave.center().y
+                };
+                let span = if unipolar {
+                    wave.height() - 4.0 * zoom
+                } else {
+                    wave.height() * 0.5 - 2.0 * zoom
+                };
+                let value_to_y = |value: f32| floor_y - value.clamp(-1.0, 1.0) * span;
+                if !unipolar {
+                    let played = Rect::from_min_max(
+                        wave.min,
+                        egui::pos2(wave.left() + wave.width() * phase, wave.bottom()),
+                    );
+                    painter.rect_filled(played, CornerRadius::ZERO, palette().button_active);
+                }
+                painter.line_segment(
+                    [egui::pos2(wave.left(), floor_y), egui::pos2(wave.right(), floor_y)],
+                    Stroke::new(1.0, palette().rule),
+                );
+                let steps = (wave.width() / (2.0 * zoom)).max(8.0) as usize;
+                let points: Vec<egui::Pos2> = (0..=steps)
+                    .map(|step| {
+                        let t = step as f32 / steps as f32;
+                        let value = source_shape(source, ctx, t + phase).unwrap_or_else(|| {
+                            // A hand control has no shape of its own: its line
+                            // sits at the value it is sending.
+                            live.unwrap_or(0.0)
+                        });
+                        egui::pos2(wave.left() + wave.width() * t, value_to_y(value))
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+                painter.rect_stroke(
+                    wave,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, palette().line),
+                    egui::StrokeKind::Inside,
+                );
+            }
         }
 
         painter.line_segment(
@@ -3746,16 +3855,16 @@ fn fx_chain_tile(ui: &mut egui::Ui, ctx: &mut Ctx, position: usize, stage: FxSta
     );
 
     if drag_response.hovered() {
-        ctx.state.readout = Some((
+        ctx.set_readout(
             "FX CHAIN".to_string(),
             format!("{} / {}", position + 1, fx_stage_name(stage)),
-        ));
+        );
     }
     if power_response.hovered() {
-        ctx.state.readout = Some((
+        ctx.set_readout(
             fx_stage_name(stage).to_string(),
             if bypassed { "BYPASSED" } else { "ACTIVE" }.to_string(),
-        ));
+        );
     }
     let power_double_clicked = power_response.double_clicked();
     let power_clicked = power_response.clicked();
@@ -3846,6 +3955,7 @@ fn fx_chain_drag_feedback(ui: &mut egui::Ui, ctx: &mut Ctx, tiles: &[Rect]) {
 /// Draws the left chain column: the title, the eight movable tiles, the
 /// compact global wet fader and the chain preset popup.
 fn fx_chain_column(ui: &mut egui::Ui, rack: Rect, ctx: &mut Ctx) {
+    CURRENT_MODULE.with(|module| *module.borrow_mut() = String::from("FX CHAIN"));
     let zoom = ctx.zoom;
     let p = ctx.params;
     let stages = stage_order(p.fx_order.value());
@@ -4091,8 +4201,13 @@ struct Ctx<'a, 'b> {
 
 impl<'a, 'b> Ctx<'a, 'b> {
     /// The readout slot of the panel.
-    fn readout(&mut self) -> &mut Option<(String, String)> {
-        &mut self.state.readout
+
+    /// Fills the info block with one reading: the module it belongs to, the
+    /// control, and the value. The module is the section that is being drawn,
+    /// so a widget never has to know where it lives.
+    fn set_readout(&mut self, label: String, value: String) {
+        let module = CURRENT_MODULE.with(|module| module.borrow().clone());
+        self.state.readout = Some((module, label, value));
     }
 
     /// Draws a continuous parameter: a caption, a vertical slider and a
@@ -4145,10 +4260,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.value_popup_float(ui, id, label, param, knob, &response);
         let value = format_number(knob.display(param.value()), knob.decimals);
         if response.hovered() || response.dragged() {
-            *self.readout() = Some((
+            self.set_readout(
                 label.to_ascii_uppercase(),
                 format!("{}{}", value, param.unit()),
-            ));
+            );
         }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
@@ -4203,10 +4318,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.value_popup_int(ui, id, label, param, knob, &response);
         let value = format_number(knob.display(param.value() as f32), knob.decimals);
         if response.hovered() || response.dragged() {
-            *self.readout() = Some((
+            self.set_readout(
                 label.to_ascii_uppercase(),
                 format!("{}{}", value, param.unit()),
-            ));
+            );
         }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
@@ -4293,7 +4408,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.state.popup_rects.push(response.rect);
 
         if response.hovered() {
-            self.state.readout = Some(("CHAIN PRESET".to_string(), current.to_string()));
+            self.set_readout("CHAIN PRESET".to_string(), current.to_string());
         }
     }
 
@@ -4370,10 +4485,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.value_popup_float(ui, id, label, param, knob, &response);
         let value = format_number(knob.display(param.value()), knob.decimals);
         if response.hovered() || response.dragged() {
-            *self.readout() = Some((
+            self.set_readout(
                 label.to_ascii_uppercase(),
                 format!("{}{}", value, param.unit()),
-            ));
+            );
         }
         response.on_hover_text(format!("{}{}\nRight-click to type", value, param.unit()));
     }
@@ -4427,7 +4542,20 @@ impl<'a, 'b> Ctx<'a, 'b> {
             egui::pos2(centre.min(handle_x), track.top() + zoom),
             egui::pos2(centre.max(handle_x), track.bottom() - zoom),
         );
+        // The amount is the quiet band; the live part of the modulation is the
+        // orange block inside it, which stretches and shrinks with the source.
         painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
+        if let Some(value) = live_source_value(source, self.mod_feedback) {
+            let live_x = centre + (handle_x - centre) * value.clamp(-1.0, 1.0);
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(centre.min(live_x), track.top() + zoom),
+                    egui::pos2(centre.max(live_x), track.bottom() - zoom),
+                ),
+                CornerRadius::ZERO,
+                palette().accent,
+            );
+        }
         painter.line_segment(
             [
                 egui::pos2(centre, track.top() + zoom),
@@ -4528,7 +4656,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         self.value_popup_float(ui, id, "Amount", param, &Knob::bipolar(), &response);
         let text = format_amount(param.value());
         if response.hovered() || response.dragged() {
-            *self.readout() = Some((format!("MOD {} AMOUNT", slot + 1), format!("{text}%")));
+            self.set_readout(format!("MOD {} AMOUNT", slot + 1), format!("{text}%"));
         }
         response = response.on_hover_text(format!(
             "{text}%\nDrag; Shift for fine\nRight-click to type\nDouble-click to reset"
@@ -4754,7 +4882,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         if response.hovered() {
             let label = id.replace('_', " ").to_ascii_uppercase();
             let value = variants[T::to_index(param.value())].to_ascii_uppercase();
-            self.state.readout = Some((label, value));
+            self.set_readout(label, value);
         }
 
         // A double click on the button of the popup resets the parameter to
@@ -4791,10 +4919,10 @@ impl<'a, 'b> Ctx<'a, 'b> {
         draw_check_box(&painter, rect, param.value(), zoom);
 
         if response.hovered() {
-            self.state.readout = Some((
+            self.set_readout(
                 label.to_ascii_uppercase(),
                 if param.value() { "ON" } else { "OFF" }.to_string(),
-            ));
+            );
         }
 
         if response.double_clicked() {
@@ -4841,7 +4969,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
                 Sense::click(),
             );
             if response.hovered() {
-                self.state.readout = Some((id.to_ascii_uppercase(), variant.to_ascii_uppercase()));
+                self.set_readout(id.to_ascii_uppercase(), variant.to_ascii_uppercase());
             }
             let painter = ui.painter_at(rect);
 
@@ -5539,6 +5667,7 @@ fn group(
     zoom: f32,
     mut add: impl FnMut(&mut egui::Ui, Part),
 ) {
+    CURRENT_MODULE.with(|module| *module.borrow_mut() = title.to_ascii_uppercase());
     let painter = ui.painter_at(rect);
     let color = title_color(title);
 
@@ -5962,6 +6091,244 @@ fn format_octave_range(octaves: f32) -> String {
 /// once. It therefore gets a description instead of the tune value, which
 /// would look like a real target that the route does not actually move.
 
+/// A whole percentage, used by the unit destinations of the matrix.
+fn format_whole_percent(value: f32) -> String {
+    let percent = (value * 100.0).round();
+    if percent == 0.0 {
+        "0%".to_string()
+    } else {
+        format!("{percent:.0}%")
+    }
+}
+
+/// A frequency in the compact units of the panel: hertz below one kilohertz
+/// and kilohertz above it.
+fn format_frequency(hz: f32) -> String {
+    if hz >= 1_000.0 {
+        format!("{} kHz", format_number(hz / 1_000.0, 1))
+    } else {
+        format!("{} Hz", format_number(hz, 0))
+    }
+}
+
+/// A gain in decibels, with the scale of the volume fader.
+fn format_gain_db(gain: f32) -> String {
+    format!("{} dB", format_signed_number(util::gain_to_db(gain), 1))
+}
+
+/// The value that a destination reads right now, in its own units. This is the
+/// centre that the modulation of a route moves around, and it is drawn in green
+/// next to the live orange value.
+///
+/// `Pitch` has no single scalar parameter: it offsets every oscillator at once,
+/// so it gets a description instead of a tune value.
+fn target_current_text(dest: ModDest, params: &SushiParams) -> String {
+    match dest {
+        ModDest::Off => "off".to_string(),
+        ModDest::Pitch => "all osc".to_string(),
+        ModDest::Pulse1 => format_whole_percent(params.osc1_pw.value()),
+        ModDest::Pulse2 => format_whole_percent(params.osc2_pw.value()),
+        ModDest::Cutoff => format_frequency(params.cutoff.value()),
+        ModDest::Resonance => format_whole_percent(params.resonance.value()),
+        ModDest::Drive => format_whole_percent(params.filter_drive.value()),
+        ModDest::Pan => format_signed_percent(params.vca_pan.value()),
+        ModDest::Volume => format_gain_db(params.volume.value()),
+        ModDest::Osc2Pitch => format_semitones(
+            params.osc2_octave.value() as f32 * 12.0 + params.osc2_semi.value() as f32,
+        ),
+        ModDest::Osc2Fine => format_cents(params.osc2_fine.value()),
+        ModDest::SubLevel => format_whole_percent(params.sub_level.value()),
+        ModDest::NoiseLevel => format_whole_percent(params.noise_level.value()),
+        ModDest::Detune => format_cents(params.detune.value()),
+        ModDest::FilterEnv => format_signed_percent(params.filter_env_amount.value()),
+        ModDest::Osc1Pitch => format_semitones(
+            params.osc1_octave.value() as f32 * 12.0 + params.osc1_semi.value() as f32,
+        ),
+        ModDest::Osc1Fine => format_cents(params.osc1_fine.value()),
+        ModDest::FilterDrive => format_whole_percent(params.filter_drive.value()),
+        ModDest::FilterKeytrack => format_whole_percent(params.filter_keytrack.value()),
+        ModDest::RingMod => format_whole_percent(params.ring_mod.value()),
+    }
+}
+
+/// The value that a destination reads right now, in the same units as the
+/// centre value of [`target_current_text`]. A route moves the centre by a
+/// normalized amount, so the live line converts the contribution back into the
+/// unit of the destination instead of printing a delta of another kind.
+fn target_live_text(dest: ModDest, params: &SushiParams, contribution: f32) -> String {
+    let percent = |base: f32, offset: f32| format_whole_percent((base + offset).clamp(0.0, 1.0));
+    match dest {
+        ModDest::Off => "off".to_string(),
+        // Pitch has no scalar centre, so its live line stays in semitones.
+        ModDest::Pitch => format_semitones(contribution * TARGET_PITCH_RANGE),
+        ModDest::Osc1Pitch => format_semitones(
+            params.osc1_octave.value() as f32 * 12.0
+                + params.osc1_semi.value() as f32
+                + contribution * TARGET_PITCH_RANGE,
+        ),
+        ModDest::Osc2Pitch => format_semitones(
+            params.osc2_octave.value() as f32 * 12.0
+                + params.osc2_semi.value() as f32
+                + contribution * TARGET_PITCH_RANGE,
+        ),
+        ModDest::Pulse1 => percent(
+            params.osc1_pw.value(),
+            contribution * TARGET_PULSE_WIDTH_RANGE,
+        ),
+        ModDest::Pulse2 => percent(
+            params.osc2_pw.value(),
+            contribution * TARGET_PULSE_WIDTH_RANGE,
+        ),
+        ModDest::Cutoff => format_frequency(
+            params.cutoff.value() * (contribution * TARGET_CUTOFF_RANGE * std::f32::consts::LN_2).exp(),
+        ),
+        ModDest::FilterEnv => {
+            format_signed_percent((params.filter_env_amount.value() + contribution).clamp(-1.0, 1.0))
+        }
+        ModDest::Resonance => percent(params.resonance.value(), contribution),
+        ModDest::Drive => percent(params.filter_drive.value(), contribution),
+        ModDest::FilterDrive => percent(params.filter_drive.value(), contribution),
+        ModDest::FilterKeytrack => percent(params.filter_keytrack.value(), contribution),
+        ModDest::RingMod => percent(params.ring_mod.value(), contribution),
+        ModDest::SubLevel => percent(params.sub_level.value(), contribution),
+        ModDest::NoiseLevel => percent(
+            params.noise_level.value(),
+            contribution * TARGET_NOISE_RANGE,
+        ),
+        ModDest::Pan => {
+            format_signed_percent((params.vca_pan.value() + contribution).clamp(-1.0, 1.0))
+        }
+        // The volume of a voice is a gain multiplier, so the live line is a
+        // level in decibels like its centre.
+        ModDest::Volume => format!(
+            "{} dB",
+            format_signed_number(
+                util::gain_to_db(params.volume.value())
+                    + 20.0 * (1.0 + contribution).max(0.001).log10(),
+                1
+            )
+        ),
+        ModDest::Osc1Fine => format_cents(params.osc1_fine.value() + contribution * TARGET_FINE_RANGE),
+        ModDest::Osc2Fine => format_cents(params.osc2_fine.value() + contribution * TARGET_FINE_RANGE),
+        ModDest::Detune => format_cents(params.detune.value() + contribution * TARGET_DETUNE_RANGE),
+    }
+}
+
+/// The shape of one LFO waveform at a phase in `0..1`, with the curve of the
+/// oscillator applied. It is the same shape the DSP renders, so the preview of
+/// the route is not a drawing of a different oscillator.
+fn lfo_shape(waveform: LfoWaveform, phase: f32, curve: f32) -> f32 {
+    let phase = phase.rem_euclid(1.0);
+    let value = match waveform {
+        LfoWaveform::Sine => (phase * std::f32::consts::TAU).sin(),
+        LfoWaveform::Triangle => {
+            if phase < 0.5 {
+                4.0 * phase - 1.0
+            } else {
+                3.0 - 4.0 * phase
+            }
+        }
+        LfoWaveform::Saw => 2.0 * phase - 1.0,
+        LfoWaveform::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        // A sample & hold is one value per cycle, so the preview shows a step
+        // instead of a slope.
+        LfoWaveform::SampleHold => {
+            if phase < 0.5 {
+                0.6
+            } else {
+                -0.4
+            }
+        }
+    };
+    if curve == 0.0 {
+        value
+    } else {
+        value.signum() * value.abs().powf(2f32.powf(curve.clamp(-1.0, 1.0)))
+    }
+}
+
+/// The contour of an envelope over one note, in `0..1`: the attack, the decay,
+/// the plateau of the sustain and the release, scaled to the window of the
+/// preview. The times of the envelope are not in the window of a cycle, so they
+/// are normalized to the whole contour.
+fn envelope_shape(
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    curve: f32,
+    position: f32,
+) -> f32 {
+    let hold = (attack + decay + release) * 0.4 + 1.0;
+    let total = (attack + decay + hold + release).max(1.0);
+    let (attack_end, decay_end, hold_end) = (
+        attack / total,
+        (attack + decay) / total,
+        (attack + decay + hold) / total,
+    );
+    let position = position.rem_euclid(1.0);
+    let value = if position < attack_end {
+        position / attack_end.max(1e-6)
+    } else if position < decay_end {
+        let t = (position - attack_end) / (decay_end - attack_end).max(1e-6);
+        1.0 - (1.0 - sustain) * t
+    } else if position < hold_end {
+        sustain
+    } else {
+        let t = (position - hold_end) / (1.0 - hold_end).max(1e-6);
+        sustain * (1.0 - t)
+    };
+    // The curve of the envelope bends the contour, like the DSP does.
+    if curve == 0.0 {
+        value
+    } else {
+        value.powf(2f32.powf(-curve.clamp(-1.0, 1.0)))
+    }
+}
+
+/// One sample of the shape that a source applies to its route, in `-1..1`, and
+/// the phase of its cycle. The two LFOs are the only sources with a travelling
+/// shape; the envelopes are drawn as their own contour and the hand controls as
+/// a flat line.
+fn source_shape(source: ModSource, ctx: &Ctx, phase: f32) -> Option<f32> {
+    let params = ctx.params;
+    match source {
+        ModSource::ModEnv => Some(envelope_shape(
+            params.fe_attack.value(),
+            params.fe_decay.value(),
+            params.fe_sustain.value(),
+            params.fe_release.value(),
+            params.fe_curve.value(),
+            phase,
+        )),
+        ModSource::AmpEnv => Some(envelope_shape(
+            params.ae_attack.value(),
+            params.ae_decay.value(),
+            params.ae_sustain.value(),
+            params.ae_release.value(),
+            params.ae_curve.value(),
+            phase,
+        )),
+        ModSource::Lfo1 => Some(lfo_shape(
+            params.lfo1_wave.value(),
+            phase + params.lfo1_phase.value(),
+            params.lfo1_curve.value(),
+        )),
+        ModSource::Lfo2 => Some(lfo_shape(
+            params.lfo2_wave.value(),
+            phase + params.lfo2_phase.value(),
+            params.lfo2_curve.value(),
+        )),
+        _ => None,
+    }
+}
+
 /// The range that a route can add to its target. The amount scales the full
 /// range of the destination, and the sign of the amount does not change the
 /// width of the range.
@@ -5993,36 +6360,6 @@ fn target_range_text(dest: ModDest, amount: f32) -> String {
 /// The modulation that one route currently adds to its target, in the units
 /// of that target. The value is the normalized matrix value multiplied by the
 /// range of the destination.
-fn target_offset_text(dest: ModDest, value: f32) -> String {
-    match dest {
-        ModDest::Off => "0".to_string(),
-        ModDest::Pitch | ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
-            format_semitones(value * TARGET_PITCH_RANGE)
-        }
-        ModDest::Pulse1 | ModDest::Pulse2 => {
-            format_signed_percent(value * TARGET_PULSE_WIDTH_RANGE)
-        }
-        ModDest::Cutoff => format!(
-            "{} oct",
-            format_signed_number(value * TARGET_CUTOFF_RANGE, 2)
-        ),
-        ModDest::FilterEnv => format!(
-            "{} oct",
-            format_signed_number(value * TARGET_FILTER_ENV_RANGE, 2)
-        ),
-        ModDest::Resonance
-        | ModDest::Drive
-        | ModDest::Pan
-        | ModDest::Volume
-        | ModDest::SubLevel
-        | ModDest::FilterDrive
-        | ModDest::FilterKeytrack
-        | ModDest::RingMod => format_signed_percent(value * TARGET_UNIT_RANGE),
-        ModDest::NoiseLevel => format_signed_percent(value * TARGET_NOISE_RANGE),
-        ModDest::Osc2Fine | ModDest::Osc1Fine => format_cents(value * TARGET_FINE_RANGE),
-        ModDest::Detune => format_cents(value * TARGET_DETUNE_RANGE),
-    }
-}
 
 /// The live line of the inspector. A global source has one value that the
 /// editor can read and one contribution that the route makes. A per-voice
@@ -6897,6 +7234,533 @@ mod tests {
         fn request_restart(&self) {}
     }
 
+
+    // --- An offline preview of the panel -------------------------------------
+    //
+    // The panel is normally only visible inside a host, so these helpers
+    // rasterize one frame of `egui` output — rectangles, lines, paths, circles,
+    // meshes and the real glyph meshes of the font atlas — into a PNG. The look
+    // of the panel can then be checked without a DAW:
+    //
+    // ```sh
+    // SUSHI_PREVIEW=/tmp/sushi.png cargo test --release render_preview
+    // ```
+
+    /// A flat RGBA canvas, in straight (not premultiplied) alpha.
+    struct Canvas {
+        width: usize,
+        height: usize,
+        pixels: Vec<[f32; 4]>,
+    }
+
+    impl Canvas {
+        fn new(width: usize, height: usize) -> Self {
+            Self {
+                width,
+                height,
+                pixels: vec![[0.0, 0.0, 0.0, 1.0]; width * height],
+            }
+        }
+
+        fn blend(&mut self, x: i32, y: i32, color: [f32; 4]) {
+            if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
+                return;
+            }
+            let alpha = color[3].clamp(0.0, 1.0);
+            if alpha <= 0.0 {
+                return;
+            }
+            let pixel = &mut self.pixels[y as usize * self.width + x as usize];
+            for channel in 0..3 {
+                pixel[channel] = pixel[channel] * (1.0 - alpha) + color[channel] * alpha;
+            }
+        }
+
+        fn fill_rect(&mut self, rect: egui::Rect, color: [f32; 4]) {
+            let left = rect.left().floor() as i32;
+            let right = rect.right().ceil() as i32;
+            let top = rect.top().floor() as i32;
+            let bottom = rect.bottom().ceil() as i32;
+            for y in top..bottom {
+                for x in left..right {
+                    self.blend(x, y, color);
+                }
+            }
+        }
+
+        fn stroke_rect(&mut self, rect: egui::Rect, width: f32, color: [f32; 4]) {
+            let width = width.max(1.0);
+            for offset in 0..width.round() as i32 {
+                let r = rect.shrink(offset as f32);
+                let one = 1.0;
+                self.fill_rect(
+                    egui::Rect::from_min_max(r.left_top(), egui::pos2(r.right(), r.top() + one)),
+                    color,
+                );
+                self.fill_rect(
+                    egui::Rect::from_min_max(
+                        egui::pos2(r.left(), r.bottom() - one),
+                        r.right_bottom(),
+                    ),
+                    color,
+                );
+                self.fill_rect(
+                    egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + one, r.bottom())),
+                    color,
+                );
+                self.fill_rect(
+                    egui::Rect::from_min_max(
+                        egui::pos2(r.right() - one, r.top()),
+                        r.right_bottom(),
+                    ),
+                    color,
+                );
+            }
+        }
+
+        /// A thick line, drawn with a little overdraw so it stays connected.
+        fn line(&mut self, from: egui::Pos2, to: egui::Pos2, width: f32, color: [f32; 4]) {
+            let steps = ((to - from).length() * 2.0).ceil().max(1.0) as i32;
+            let spread = (width.max(1.0) * 0.5).ceil() as i32;
+            for step in 0..=steps {
+                let t = step as f32 / steps as f32;
+                let point = from + (to - from) * t;
+                for dy in 1 - spread..spread {
+                    for dx in 1 - spread..spread {
+                        self.blend(point.x as i32 + dx, point.y as i32 + dy, color);
+                    }
+                }
+            }
+        }
+
+        fn circle(&mut self, centre: egui::Pos2, radius: f32, color: [f32; 4]) {
+            let r = radius.ceil() as i32;
+            for y in -r..=r {
+                for x in -r..=r {
+                    if (((x as f32) * (x as f32) + (y as f32) * (y as f32)).sqrt()) <= radius {
+                        self.blend(centre.x as i32 + x, centre.y as i32 + y, color);
+                    }
+                }
+            }
+        }
+
+        /// Fills a polygon with the even-odd rule, which is enough for the flat
+        /// shapes of the panel.
+        fn fill_polygon(&mut self, points: &[egui::Pos2], color: [f32; 4]) {
+            if points.len() < 3 {
+                return;
+            }
+            let top = points
+                .iter()
+                .fold(f32::INFINITY, |low, p| low.min(p.y))
+                .floor() as i32;
+            let bottom = points
+                .iter()
+                .fold(f32::NEG_INFINITY, |high, p| high.max(p.y))
+                .ceil() as i32;
+            for y in top..bottom {
+                let scan = y as f32 + 0.5;
+                let mut crossings = Vec::new();
+                for index in 0..points.len() {
+                    let a = points[index];
+                    let b = points[(index + 1) % points.len()];
+                    if (a.y <= scan && b.y > scan) || (b.y <= scan && a.y > scan) {
+                        let t = (scan - a.y) / (b.y - a.y);
+                        crossings.push(a.x + (b.x - a.x) * t);
+                    }
+                }
+                crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                for pair in crossings.chunks(2) {
+                    if let [left, right] = pair {
+                        for x in (left.floor() as i32)..(right.ceil() as i32) {
+                            self.blend(x, y, color);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Writes the canvas as an uncompressed RGBA PNG.
+        fn save(&self, path: &str) -> std::io::Result<()> {
+            fn crc32(data: &[u8]) -> u32 {
+                let mut crc = 0xFFFF_FFFFu32;
+                for byte in data {
+                    crc ^= *byte as u32;
+                    for _ in 0..8 {
+                        crc = if crc & 1 == 1 {
+                            0xEDB8_8320 ^ (crc >> 1)
+                        } else {
+                            crc >> 1
+                        };
+                    }
+                }
+                crc ^ 0xFFFF_FFFF
+            }
+
+            fn chunk(kind: &[u8], body: &[u8]) -> Vec<u8> {
+                let mut out = Vec::new();
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                let mut kinded = kind.to_vec();
+                kinded.extend_from_slice(body);
+                out.extend_from_slice(&kinded);
+                out.extend_from_slice(&crc32(&kinded).to_be_bytes());
+                out
+            }
+
+            let mut raw = Vec::with_capacity(self.height * (self.width * 4 + 1));
+            for row in 0..self.height {
+                raw.push(0);
+                for column in 0..self.width {
+                    for channel in self.pixels[row * self.width + column] {
+                        raw.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+                    }
+                }
+            }
+            let mut zlib = vec![0x78, 0x01];
+            for (index, block) in raw.chunks(65_535).enumerate() {
+                let last = (index + 1) * 65_535 >= raw.len();
+                zlib.push(if last { 1 } else { 0 });
+                zlib.extend_from_slice(&(block.len() as u16).to_le_bytes());
+                zlib.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
+                zlib.extend_from_slice(block);
+            }
+            let (mut a, mut b) = (1u32, 0u32);
+            for byte in &raw {
+                a = (a + *byte as u32) % 65_521;
+                b = (b + a) % 65_521;
+            }
+            zlib.extend_from_slice(&((b << 16) | a).to_be_bytes());
+
+            let mut header = Vec::new();
+            header.extend_from_slice(&(self.width as u32).to_be_bytes());
+            header.extend_from_slice(&(self.height as u32).to_be_bytes());
+            header.extend_from_slice(&[8, 6, 0, 0, 0]);
+
+            let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            png.extend_from_slice(&chunk(b"IHDR", &header));
+            png.extend_from_slice(&chunk(b"IDAT", &zlib));
+            png.extend_from_slice(&chunk(b"IEND", &[]));
+            std::fs::write(path, png)
+        }
+    }
+
+    fn color_of(color: egui::Color32) -> [f32; 4] {
+        [
+            color.r() as f32 / 255.0,
+            color.g() as f32 / 255.0,
+            color.b() as f32 / 255.0,
+            color.a() as f32 / 255.0,
+        ]
+    }
+
+    /// The font atlas of one frame, in texels.
+    struct Atlas {
+        width: usize,
+        height: usize,
+        pixels: Vec<egui::Color32>,
+    }
+
+    impl Atlas {
+        fn take(&mut self, output: &egui::FullOutput) {
+            for (_, deltas) in &output.textures_delta.set {
+                for delta in deltas {
+                    let egui::epaint::ImageData::Color(image) = &delta.image;
+                    let [width, height] = image.size;
+                    let [ox, oy] = delta.pos.unwrap_or([0, 0]);
+                    let (wide, tall) = ((ox + width).max(self.width), (oy + height).max(self.height));
+                    if wide != self.width || tall != self.height {
+                        let mut next = vec![egui::Color32::TRANSPARENT; wide * tall];
+                        for row in 0..self.height {
+                            for column in 0..self.width {
+                                next[row * wide + column] = self.pixels[row * self.width + column];
+                            }
+                        }
+                        self.pixels = next;
+                        self.width = wide;
+                        self.height = tall;
+                    }
+                    for row in 0..height {
+                        for column in 0..width {
+                            let target = (oy + row) * self.width + ox + column;
+                            if target < self.pixels.len() {
+                                self.pixels[target] = image.pixels[row * width + column];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        fn sample(&self, x: f32, y: f32) -> egui::Color32 {
+            if self.width == 0 || self.height == 0 {
+                return egui::Color32::TRANSPARENT;
+            }
+            let column = (x.round() as isize).clamp(0, self.width as isize - 1) as usize;
+            let row = (y.round() as isize).clamp(0, self.height as isize - 1) as usize;
+            self.pixels[row * self.width + column]
+        }
+    }
+
+    /// Rasterizes one triangle mesh with the font atlas.
+    fn paint_mesh(canvas: &mut Canvas, atlas: &Atlas, mesh: &egui::epaint::Mesh) {
+        for triangle in mesh.indices.chunks(3) {
+            if triangle.len() < 3 {
+                continue;
+            }
+            let vertices: Vec<&egui::epaint::Vertex> = triangle
+                .iter()
+                .map(|index| &mesh.vertices[*index as usize])
+                .collect();
+            let points: Vec<egui::Pos2> = vertices.iter().map(|vertex| vertex.pos).collect();
+            let top = points
+                .iter()
+                .fold(f32::INFINITY, |low, p| low.min(p.y))
+                .floor() as i32;
+            let bottom = points
+                .iter()
+                .fold(f32::NEG_INFINITY, |high, p| high.max(p.y))
+                .ceil() as i32;
+            let left = points
+                .iter()
+                .fold(f32::INFINITY, |low, p| low.min(p.x))
+                .floor() as i32;
+            let right = points
+                .iter()
+                .fold(f32::NEG_INFINITY, |high, p| high.max(p.x))
+                .ceil() as i32;
+            let (a, b, c) = (points[0], points[1], points[2]);
+            let area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            for y in top..bottom {
+                for x in left..right {
+                    let p = egui::pos2(x as f32 + 0.5, y as f32 + 0.5);
+                    let w0 = ((b.x - p.x) * (c.y - p.y) - (c.x - p.x) * (b.y - p.y)) / area;
+                    let w1 = ((c.x - p.x) * (a.y - p.y) - (a.x - p.x) * (c.y - p.y)) / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < -0.02 || w1 < -0.02 || w2 < -0.02 {
+                        continue;
+                    }
+                    let uv = vertices[0].uv.to_vec2() * w0
+                        + vertices[1].uv.to_vec2() * w1
+                        + vertices[2].uv.to_vec2() * w2;
+                    let texel = atlas.sample(uv.x, uv.y);
+                    let ink = [
+                        (vertices[0].color.r() as f32 * w0
+                            + vertices[1].color.r() as f32 * w1
+                            + vertices[2].color.r() as f32 * w2)
+                            / 255.0,
+                        (vertices[0].color.g() as f32 * w0
+                            + vertices[1].color.g() as f32 * w1
+                            + vertices[2].color.g() as f32 * w2)
+                            / 255.0,
+                        (vertices[0].color.b() as f32 * w0
+                            + vertices[1].color.b() as f32 * w1
+                            + vertices[2].color.b() as f32 * w2)
+                            / 255.0,
+                        (vertices[0].color.a() as f32 * w0
+                            + vertices[1].color.a() as f32 * w1
+                            + vertices[2].color.a() as f32 * w2)
+                            / 255.0,
+                    ];
+                    // A font atlas texel is white with the coverage in alpha; a
+                    // color atlas already carries the ink.
+                    let coverage = if texel == egui::Color32::TRANSPARENT {
+                        if uv.x <= 0.0 && uv.y <= 0.0 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else if texel.r() == texel.g() && texel.g() == texel.b() {
+                        texel.a() as f32 / 255.0
+                    } else {
+                        1.0
+                    };
+                    canvas.blend(
+                        x,
+                        y,
+                        [ink[0], ink[1], ink[2], ink[3] * coverage],
+                    );
+                }
+            }
+        }
+    }
+
+    /// Triangles of a tessellated mesh, with the atlas as their texture.
+    fn paint_primitive(canvas: &mut Canvas, atlas: &Atlas, primitive: &egui::ClippedPrimitive) {
+        let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive else {
+            return;
+        };
+        let clip = primitive.clip_rect;
+        for triangle in mesh.indices.chunks(3) {
+            if triangle.len() < 3 {
+                continue;
+            }
+            let vertices: Vec<&egui::epaint::Vertex> = triangle
+                .iter()
+                .map(|index| &mesh.vertices[*index as usize])
+                .collect();
+            let points: Vec<egui::Pos2> = vertices.iter().map(|vertex| vertex.pos).collect();
+            let top = points.iter().fold(f32::INFINITY, |low, p| low.min(p.y)).floor() as i32;
+            let bottom = points
+                .iter()
+                .fold(f32::NEG_INFINITY, |high, p| high.max(p.y))
+                .ceil() as i32;
+            let left = points.iter().fold(f32::INFINITY, |low, p| low.min(p.x)).floor() as i32;
+            let right = points
+                .iter()
+                .fold(f32::NEG_INFINITY, |high, p| high.max(p.x))
+                .ceil() as i32;
+            let (a, b, c) = (points[0], points[1], points[2]);
+            let area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            let top = top.max(clip.top().floor() as i32);
+            let bottom = bottom.min(clip.bottom().ceil() as i32);
+            let left = left.max(clip.left().floor() as i32);
+            let right = right.min(clip.right().ceil() as i32);
+            for y in top..bottom {
+                for x in left..right {
+                    let p = egui::pos2(x as f32 + 0.5, y as f32 + 0.5);
+                    let w0 = ((b.x - p.x) * (c.y - p.y) - (c.x - p.x) * (b.y - p.y)) / area;
+                    let w1 = ((c.x - p.x) * (a.y - p.y) - (a.x - p.x) * (c.y - p.y)) / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < -0.02 || w1 < -0.02 || w2 < -0.02 {
+                        continue;
+                    }
+                    let uv = vertices[0].uv.to_vec2() * w0
+                        + vertices[1].uv.to_vec2() * w1
+                        + vertices[2].uv.to_vec2() * w2;
+                    let texel = atlas.sample(uv.x * atlas.width as f32, uv.y * atlas.height as f32);
+                    let mut ink = [0.0f32; 4];
+                    for channel in 0..4 {
+                        let values = [
+                            vertices[0].color.to_array()[channel] as f32,
+                            vertices[1].color.to_array()[channel] as f32,
+                            vertices[2].color.to_array()[channel] as f32,
+                        ];
+                        ink[channel] = (values[0] * w0 + values[1] * w1 + values[2] * w2) / 255.0;
+                    }
+                    // The glyph atlas is white with the coverage in its alpha;
+                    // a coloured texel already carries its own ink.
+                    let coverage = if texel.r() == 0 && texel.g() == 0 && texel.b() == 0 {
+                        0.0
+                    } else {
+                        texel.a() as f32 / 255.0
+                    };
+                    // Vertex colours are premultiplied.
+                    canvas.blend(
+                        x,
+                        y,
+                        [ink[0] * coverage, ink[1] * coverage, ink[2] * coverage, ink[3] * coverage],
+                    );
+                }
+            }
+        }
+    }
+
+    /// Renders one frame of the panel into a PNG. Only runs when
+    /// `SUSHI_PREVIEW` names the file to write:
+    ///
+    /// - `SUSHI_PAGE=mod` draws the modulation page with a live feedback.
+    /// - `SUSHI_MENU=zoom` opens the menu with its zoom panel.
+    /// - `SUSHI_HOVER=<y>` moves the pointer to the middle of the panel at that
+    ///   height first, so the info block shows a readout.
+    #[test]
+    fn render_preview() {
+        let Ok(path) = std::env::var("SUSHI_PREVIEW") else {
+            return;
+        };
+        let (ctx, mut editor, _params) = make_editor();
+        editor.snap_zoom = true;
+        if std::env::var("SUSHI_PAGE").as_deref() == Ok("mod") {
+            editor.state.page = Page::Mod;
+            editor.state.mod_selected = 2;
+            editor.mod_feedback.store(ModFeedbackValues {
+                lfo1: 0.6,
+                lfo2: -0.3,
+                macro1: 0.4,
+                mod_wheel: 0.5,
+                ..Default::default()
+            });
+            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
+            let setter = gui_ctx.param_setter();
+            for (slot, source, dest, amount) in [
+                (0usize, ModSource::Lfo1, ModDest::Cutoff, 0.6),
+                (1, ModSource::Lfo2, ModDest::Pitch, 0.35),
+                (2, ModSource::ModEnv, ModDest::Resonance, -0.5),
+                (3, ModSource::Macro1, ModDest::Volume, 0.25),
+                (4, ModSource::Velocity, ModDest::Pulse1, 0.8),
+                (5, ModSource::ModWheel, ModDest::Detune, -0.2),
+            ] {
+                let sources = [
+                    &_params.mod1_source, &_params.mod2_source, &_params.mod3_source,
+                    &_params.mod4_source, &_params.mod5_source, &_params.mod6_source,
+                    &_params.mod7_source, &_params.mod8_source,
+                ];
+                let dests = [
+                    &_params.mod1_dest, &_params.mod2_dest, &_params.mod3_dest,
+                    &_params.mod4_dest, &_params.mod5_dest, &_params.mod6_dest,
+                    &_params.mod7_dest, &_params.mod8_dest,
+                ];
+                let amounts = [
+                    &_params.mod1_amount, &_params.mod2_amount, &_params.mod3_amount,
+                    &_params.mod4_amount, &_params.mod5_amount, &_params.mod6_amount,
+                    &_params.mod7_amount, &_params.mod8_amount,
+                ];
+                setter.set_parameter(sources[slot], source);
+                setter.set_parameter(dests[slot], dest);
+                setter.set_parameter(amounts[slot], amount);
+            }
+        }
+        let mut atlas = Atlas {
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        };
+        let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
+        if let Some(pos) = std::env::var("SUSHI_HOVER").ok().and_then(|value| {
+            let mut parts = value.split(',');
+            let x = parts.next()?.trim().parse::<f32>().ok()?;
+            let y = parts.next()?.trim().parse::<f32>().ok()?;
+            Some(egui::pos2(x, y))
+        }) {
+            let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(moved(pos))], &mut atlas);
+            let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
+        }
+        if std::env::var("SUSHI_MENU").is_ok() {
+            let pos = egui::pos2(MARGIN + 6.0, 590.0);
+            for frame in [
+                input(moved(pos)),
+                input(button(pos, egui::PointerButton::Secondary, true)),
+                input(button(pos, egui::PointerButton::Secondary, false)),
+            ] {
+                let _ = run_frames_with_atlas(&ctx, &mut editor, vec![frame], &mut atlas);
+            }
+            if std::env::var("SUSHI_MENU").as_deref() == Ok("zoom") {
+                // A click on the first row opens the panel of the zoom levels.
+                let row = egui::pos2(pos.x + 40.0, pos.y + 15.0);
+                for frame in [
+                    input(moved(row)),
+                    input(button(row, egui::PointerButton::Primary, true)),
+                    input(button(row, egui::PointerButton::Primary, false)),
+                ] {
+                    let _ = run_frames_with_atlas(&ctx, &mut editor, vec![frame], &mut atlas);
+                }
+            }
+        }
+        let output =
+            run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
+        let mut canvas = Canvas::new(WINDOW_WIDTH as usize, WINDOW_HEIGHT as usize);
+        for primitive in ctx.tessellate(output.shapes.clone(), 1.0) {
+            paint_primitive(&mut canvas, &atlas, &primitive);
+        }
+        canvas.save(&path).expect("the preview is written");
+        eprintln!("wrote {path}");
+    }
+
     fn make_editor() -> (egui::Context, SushiEditor, Arc<SushiParams>) {
         let (ctx, editor, params, _) = make_editor_with_keyboard();
         (ctx, editor, params)
@@ -6994,6 +7858,27 @@ mod tests {
             events,
             ..Default::default()
         }
+    }
+
+    /// Like [`run_frames`], but keeps the font atlas that the frames upload, so
+    /// the preview can draw the glyphs themselves.
+    fn run_frames_with_atlas(
+        ctx: &egui::Context,
+        editor: &mut SushiEditor,
+        frames: Vec<egui::RawInput>,
+        atlas: &mut Atlas,
+    ) -> egui::FullOutput {
+        let mut last = None;
+        for mut input in frames {
+            input.time = Some(next_time(1.0 / 60.0));
+            let mut output = ctx.run_ui(input, |ui| {
+                editor.draw(ui);
+            });
+            atlas.take(&output);
+            output.textures_delta.clear();
+            last = Some(output);
+        }
+        last.unwrap()
     }
 
     fn run_frames(
@@ -7816,7 +8701,7 @@ mod tests {
             vec![input(vec![egui::Event::PointerMoved(pos)])],
         );
 
-        let (label, value) = editor
+        let (module, label, value) = editor
             .state
             .readout
             .clone()
@@ -8597,15 +9482,17 @@ faders and the three macros; the VCA is main-page only"
             mod_wheel: 1.0,
         });
 
-        // The live part of the reading is the contribution of the source in
-        // the units of the destination, and a per-voice source reports that
-        // instead of inventing a global value.
+        // The live part of the reading is the value that the destination
+        // reads right now, in the units of the centre value next to it, and a
+        // per-voice source reports that instead of inventing a global value.
         assert_eq!(
-            target_offset_text(ModDest::Cutoff, 0.8 * 0.5),
-            "+2 oct"
+            target_live_text(ModDest::Cutoff, &SushiParams::default(), 0.8 * 0.5),
+            "12 kHz"
         );
-        assert_eq!(target_offset_text(ModDest::Pitch, 0.25 * 0.5), "+1.5 st");
-        assert_eq!(target_offset_text(ModDest::Volume, 1.0 * 0.5), "+50%");
+        assert_eq!(
+            target_live_text(ModDest::Pitch, &SushiParams::default(), 0.25 * 0.5),
+            "+1.5 st"
+        );
         for source in [
             ModSource::ModEnv,
             ModSource::AmpEnv,
@@ -8642,7 +9529,14 @@ faders and the three macros; the VCA is main-page only"
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.iter().any(|text| text == "+2 oct"));
+        // The centre value of the cutoff and the value the route takes it to,
+        // both in hertz.
+        let cutoff = SushiParams::default().cutoff.value();
+        let centre = target_current_text(ModDest::Cutoff, &SushiParams::default());
+        let live = target_live_text(ModDest::Cutoff, &SushiParams::default(), 0.8 * 0.5);
+        assert!(names.iter().any(|text| text == &centre), "{names:?}");
+        assert!(names.iter().any(|text| text == &live), "{names:?}");
+        assert!(cutoff > 0.0);
         assert!(names.iter().any(|text| text == "±2.5 octaves"));
 
         let rows = editor.state.mod_row_rects.clone();
@@ -8803,7 +9697,7 @@ faders and the three macros; the VCA is main-page only"
             "the amount was not set while dragging"
         );
         assert!(editor.state.dirty, "the drag did not mark the sound dirty");
-        let (label, value) = editor
+        let (_module, label, value) = editor
             .state
             .readout
             .clone()
