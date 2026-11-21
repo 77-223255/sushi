@@ -259,8 +259,6 @@ const WIDE_COLUMN_GAP: f32 = 8.0;
 /// The height of the single header of the modulation table, in the design
 /// size of the panel.
 const MOD_HEADER_HEIGHT: f32 = 22.0;
-/// The height of one routing row of the modulation table.
-const MOD_ROW_HEIGHT: f32 = 28.0;
 /// The height of the source and destination fields. It is the click target of
 /// the popups as well.
 const MOD_POPUP_HEIGHT: f32 = 24.0;
@@ -291,18 +289,6 @@ const MOD_SELECTED_LINE_WIDTH: f32 = 2.0;
 
 // --- The target inspector ---------------------------------------------------
 
-/// The height of one line of the target inspector.
-const TARGET_LINE_HEIGHT: f32 = 18.0;
-/// The inset around the text of the target inspector.
-const TARGET_PADDING: f32 = 4.0;
-/// The top inset of the text of the target inspector.
-const TARGET_TOP_PADDING: f32 = 5.0;
-/// The width of the small label column of the target inspector.
-const TARGET_LABEL_WIDTH: f32 = 58.0;
-/// The width of the route-number column of the target inspector.
-const TARGET_ROUTE_WIDTH: f32 = 26.0;
-/// The gap between the summary and its right-aligned amount.
-const TARGET_AMOUNT_GAP: f32 = 8.0;
 
 /// The ranges that the matrix destinations reach at full amount. They mirror
 /// the constants of `dsp::mod_matrix`; the inspector is read-only and must not
@@ -315,16 +301,6 @@ const TARGET_NOISE_RANGE: f32 = 0.5;
 const TARGET_FINE_RANGE: f32 = 100.0;
 const TARGET_DETUNE_RANGE: f32 = 50.0;
 const TARGET_FILTER_ENV_RANGE: f32 = 5.0;
-/// The width of the text block on the left of the target inspector.
-const TARGET_INFO_WIDTH: f32 = 336.0;
-/// The gap between the route facts and the range bar of the target inspector.
-const TARGET_BLOCK_GAP: f32 = 16.0;
-/// The height of the range bar of the target inspector.
-const TARGET_RANGE_BAR_HEIGHT: f32 = 14.0;
-/// The width of the current-position marker of the range bar.
-const TARGET_CURRENT_MARKER_WIDTH: f32 = 2.0;
-/// The size of the live modulation dot of the range bar.
-const TARGET_LIVE_DOT_SIZE: f32 = 6.0;
 
 /// The gap between the routing/target workspace and the source column of the
 /// modulation page.
@@ -332,8 +308,6 @@ const MOD_WORKSPACE_GAP: f32 = 12.0;
 /// The share of the modulation workspace that the routing table and the target
 /// inspector use. The five source modules get the remaining third.
 const MOD_LEFT_SHARE: f32 = 2.0 / 3.0;
-/// The gap between the routing table and the target inspector.
-const MOD_STACK_GAP: f32 = 8.0;
 /// The gap between two modules of the right-hand source column.
 const MOD_MODULE_GAP: f32 = 6.0;
 /// The relative heights of the five modules of the right-hand column. They sum
@@ -763,6 +737,10 @@ const ARP_LED_SIZE: f32 = 10.0;
 const VOICE_LEDS: usize = 16;
 /// The width of a page button (MOD / FX) in the header.
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
+/// The width of the `NOW` caption of a modulation row.
+const MOD_NOW_LABEL_WIDTH: f32 = 30.0;
+/// The width of the `TRAVEL` caption of a modulation row.
+const MOD_TRAVEL_LABEL_WIDTH: f32 = 44.0;
 /// The width of the oscilloscope at the right end of the header.
 const SCOPE_WIDTH: f32 = 190.0;
 /// The number of cells of the level meter of the header.
@@ -919,20 +897,9 @@ impl Layout {
 
     /// The routing table of the modulation page.
     fn mod_table(&self) -> Rect {
-        let left = self.mod_left();
-        let height =
-            (MOD_HEADER_HEIGHT + MOD_ROW_HEIGHT * crate::params::MOD_SLOTS as f32) * self.zoom;
-        Rect::from_min_size(left.min, egui::vec2(left.width(), height))
-    }
-
-    /// The target inspector, directly below the routing table.
-    fn mod_target(&self) -> Rect {
-        let left = self.mod_left();
-        let table = self.mod_table();
-        Rect::from_min_max(
-            egui::pos2(left.left(), table.bottom() + MOD_STACK_GAP * self.zoom),
-            left.max,
-        )
+        // The table fills the whole left column: the readings of every route
+        // live in its own row now, so there is no inspector under it.
+        self.mod_left()
     }
 
     /// The rect of one of the five modules of the right-hand column.
@@ -1152,11 +1119,8 @@ struct EditorState {
     /// The range bar, its current marker and its live dot in the target
     /// inspector.
     #[cfg(test)]
-    target_bar_rect: Option<egui::Rect>,
     #[cfg(test)]
-    target_current_marker_rect: Option<egui::Rect>,
     #[cfg(test)]
-    target_live_dot_rect: Option<egui::Rect>,
     /// The identifiers of the faders, popups and switches of the last frame.
     #[cfg(test)]
     slider_ids: Vec<&'static str>,
@@ -1331,11 +1295,8 @@ impl SushiEditor {
                 #[cfg(test)]
                 mod_row_rects: Vec::new(),
                 #[cfg(test)]
-                target_bar_rect: None,
                 #[cfg(test)]
-                target_current_marker_rect: None,
                 #[cfg(test)]
-                target_live_dot_rect: None,
                 #[cfg(test)]
                 slider_ids: Vec::new(),
                 #[cfg(test)]
@@ -1656,9 +1617,6 @@ impl SushiEditor {
             self.state.popup_rects.clear();
             self.state.amount_rects.clear();
             self.state.mod_row_rects.clear();
-            self.state.target_bar_rect = None;
-            self.state.target_current_marker_rect = None;
-            self.state.target_live_dot_rect = None;
             self.state.check_rects.clear();
             self.state.radio_rects.clear();
             self.state.slider_ids.clear();
@@ -2412,13 +2370,6 @@ fn mod_page(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 
     mod_routing_table(ui, layout.mod_table(), ctx);
 
-    let target = layout.mod_target();
-    group(ui, target, "TARGET", zoom, |ui, part| {
-        if let Part::Body = part {
-            target_inspector(ui, ctx);
-        }
-    });
-
     for index in 0..Layout::mod_module_count() {
         let rect = layout.mod_module(index);
         match index {
@@ -2554,9 +2505,15 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
     // negative rectangle.
     let bar_width = (value_right - MOD_VALUE_WIDTH * zoom - bar_x).max(0.0);
 
+    let row_height =
+        ((table.bottom() - rows_top) / crate::params::MOD_SLOTS as f32).max(1.0);
     for slot in 0..crate::params::MOD_SLOTS {
-        let top = rows_top + slot as f32 * MOD_ROW_HEIGHT * zoom;
-        let row_height = MOD_ROW_HEIGHT * zoom;
+        let top = rows_top + slot as f32 * row_height;
+        // The controls sit on the upper line; the readings of the route get
+        // the lower one.
+        let control_h = (row_height * 0.62).min(MOD_POPUP_HEIGHT * zoom * 1.7);
+        let control_y = top + control_h * 0.5;
+        let read_y = top + control_h + (row_height - control_h) * 0.62;
         let source = sources[slot].value();
         let dest = dests[slot].value();
         let amount = amounts[slot].value();
@@ -2601,10 +2558,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
         }
 
         painter.text(
-            egui::pos2(
-                index_x + MOD_INDEX_WIDTH * 0.5 * zoom,
-                top + row_height * 0.5,
-            ),
+            egui::pos2(index_x + MOD_INDEX_WIDTH * 0.5 * zoom, control_y),
             Align2::CENTER_CENTER,
             format!("{:02}", slot + 1),
             FontId::monospace(font_size(8.0, zoom)),
@@ -2613,10 +2567,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
 
         if active {
             painter.text(
-                egui::pos2(
-                    arrow_x + MOD_ARROW_WIDTH * 0.5 * zoom,
-                    top + row_height * 0.5,
-                ),
+                egui::pos2(arrow_x + MOD_ARROW_WIDTH * 0.5 * zoom, control_y),
                 Align2::CENTER_CENTER,
                 ">",
                 FontId::monospace(font_size(9.0, zoom)),
@@ -2626,7 +2577,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
 
         if !silent {
             painter.text(
-                egui::pos2(value_right, top + row_height * 0.5),
+                egui::pos2(value_right, control_y),
                 Align2::RIGHT_CENTER,
                 format_amount(amount),
                 FontId::monospace(font_size(9.5, zoom)),
@@ -2647,7 +2598,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
 
         let source_cell = Rect::from_min_size(
             egui::pos2(source_x, top),
-            egui::vec2(MOD_SOURCE_WIDTH * zoom, row_height),
+            egui::vec2(MOD_SOURCE_WIDTH * zoom, control_h),
         );
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -2674,7 +2625,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
 
         let dest_cell = Rect::from_min_size(
             egui::pos2(dest_x, top),
-            egui::vec2(MOD_DEST_WIDTH * zoom, row_height),
+            egui::vec2(MOD_DEST_WIDTH * zoom, control_h),
         );
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -2700,7 +2651,7 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
         );
 
         let bar_cell =
-            Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(bar_width, row_height));
+            Rect::from_min_size(egui::pos2(bar_x, top), egui::vec2(bar_width, control_h));
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id_salt(("sushi-mod-amount", slot))
@@ -2711,6 +2662,54 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 ctx.amount_bar(ui, amount_ids[slot], slot, amounts[slot], source);
             },
         );
+
+        // The readings of the route, under its controls: what the source is
+        // doing to the destination right now and how far the amount lets it
+        // travel. Nothing is repeated anywhere else on the page.
+        if active {
+            let now = match live_source_value(source, ctx.mod_feedback) {
+                Some(value) => target_offset_text(dest, value * amount),
+                None => "per-voice".to_string(),
+            };
+            let now_color = if now == "per-voice" {
+                palette().muted
+            } else {
+                palette().accent
+            };
+            let label = FontId::new(font_size(7.0, zoom), label_family());
+            tracked_text(
+                &painter,
+                egui::pos2(source_x, read_y),
+                Align2::LEFT_CENTER,
+                "NOW",
+                label.clone(),
+                palette().muted,
+                0.8 * zoom,
+            );
+            painter.text(
+                egui::pos2(source_x + MOD_NOW_LABEL_WIDTH * zoom, read_y),
+                Align2::LEFT_CENTER,
+                now,
+                FontId::monospace(font_size(8.5, zoom)),
+                now_color,
+            );
+            tracked_text(
+                &painter,
+                egui::pos2(bar_x, read_y),
+                Align2::LEFT_CENTER,
+                "TRAVEL",
+                label,
+                palette().muted,
+                0.8 * zoom,
+            );
+            painter.text(
+                egui::pos2(bar_x + MOD_TRAVEL_LABEL_WIDTH * zoom, read_y),
+                Align2::LEFT_CENTER,
+                target_range_text(dest, amount),
+                FontId::monospace(font_size(8.5, zoom)),
+                palette().muted,
+            );
+        }
 
         painter.line_segment(
             [
@@ -3285,313 +3284,11 @@ fn macros_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 /// route move and where does it stand now, how far can the amount push it and
 /// what is the source doing at this instant. Per-voice sources say so instead
 /// of inventing a global value. The band has no fader bank, so the inspection
-/// never competes with a control for the same space.
-fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
-    let zoom = ctx.zoom;
-    let body = ui.max_rect();
-    let painter = ui.painter_at(body);
-    // The regular section helper prints the two faint lines of a fader bank.
-    // This band holds text and instruments instead, so the body is cleared
-    // before the inspector draws on it.
-    painter.rect_filled(body, CornerRadius::ZERO, palette().bg);
 
-    let slot = ctx.state.mod_selected.min(crate::params::MOD_SLOTS - 1);
-    let (source, dest, amount) = mod_route_values(ctx.params, slot);
-    let left = body.left() + TARGET_PADDING * zoom;
-    let right = body.right() - TARGET_PADDING * zoom;
-    let top = body.top() + TARGET_TOP_PADDING * zoom;
-    let line = TARGET_LINE_HEIGHT * zoom;
-    let label_font = FontId::new(font_size(7.2, zoom), label_family());
-    let value_font = FontId::monospace(font_size(9.5, zoom));
-    let route_font = FontId::new(font_size(10.0, zoom), value_family());
-
-    // An Off route has nothing to inspect. The state is quiet and explicit,
-    // not a row of zeroes that looks like a real reading.
-    if source == ModSource::Off || dest == ModDest::Off {
-        painter.text(
-            egui::pos2(left, top + line * 0.5),
-            Align2::LEFT_CENTER,
-            format!("{:02}", slot + 1),
-            route_font,
-            palette().title_blue,
-        );
-        painter.text(
-            egui::pos2(left + TARGET_ROUTE_WIDTH * zoom, top + line * 0.5),
-            Align2::LEFT_CENTER,
-            "Select a route",
-            value_font,
-            palette().muted,
-        );
-        painter.text(
-            egui::pos2(left, top + line * 1.5),
-            Align2::LEFT_CENTER,
-            "No modulation",
-            FontId::new(font_size(9.0, zoom), egui::FontFamily::Proportional),
-            palette().muted,
-        );
-        return;
-    }
-
-    // Two blocks share the full band: the route facts on the left and the
-    // target range bar on the right. The info block is wide enough for the
-    // longest source and destination names at every zoom.
-    let info_right = left + TARGET_INFO_WIDTH * zoom;
-    let range_left = info_right + TARGET_BLOCK_GAP * zoom;
-    let range_right = right;
-
-    let source_name = ModSource::variants()[ModSource::to_index(source)];
-    let dest_name = ModDest::variants()[ModDest::to_index(dest)];
-    let amount_text = format!("{}%", format_amount(amount));
-    let amount_width = text_width(&painter, &amount_text, &value_font);
-    let summary = format!("{source_name} > {dest_name}");
-    let summary_left = left + TARGET_ROUTE_WIDTH * zoom;
-    let summary_width =
-        (info_right - summary_left - amount_width - TARGET_AMOUNT_GAP * zoom).max(1.0);
-    let summary = fit_text(&painter, &summary, summary_width, &route_font);
-
-    painter.text(
-        egui::pos2(left, top + line * 0.5),
-        Align2::LEFT_CENTER,
-        format!("{:02}", slot + 1),
-        route_font,
-        palette().title_blue,
-    );
-    painter.text(
-        egui::pos2(summary_left, top + line * 0.5),
-        Align2::LEFT_CENTER,
-        summary,
-        FontId::new(font_size(10.0, zoom), egui::FontFamily::Proportional),
-        palette().text,
-    );
-    painter.text(
-        egui::pos2(info_right, top + line * 0.5),
-        Align2::RIGHT_CENTER,
-        amount_text,
-        value_font.clone(),
-        palette().text,
-    );
-
-    // Two readings, not three: what the target reads right now (with the live
-    // contribution of the source next to it, in the same units) and how far
-    // the amount lets it travel. The trip of the source lives in the bar
-    // below, so a number that copied it would only be a second animation.
-    let current = target_current_text(dest, ctx.params);
-    let travel = target_range_text(dest, amount);
-    let source_live = live_source_value(source, ctx.mod_feedback);
-    let live_offset = source_live.map(|value| target_offset_text(dest, value * amount));
-
-    let y = top + line * 1.5;
-    painter.text(
-        egui::pos2(left, y),
-        Align2::LEFT_CENTER,
-        "NOW",
-        label_font.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y),
-        Align2::LEFT_CENTER,
-        current.clone(),
-        value_font.clone(),
-        palette().text,
-    );
-    let current_width = text_width(&painter, &current, &value_font);
-    let (offset_text, offset_color) = match &live_offset {
-        Some(offset) => (offset.clone(), palette().accent),
-        None => ("per-voice".to_string(), palette().muted),
-    };
-    painter.text(
-        egui::pos2(
-            left + TARGET_LABEL_WIDTH * zoom + current_width + TARGET_AMOUNT_GAP * zoom,
-            y,
-        ),
-        Align2::LEFT_CENTER,
-        offset_text,
-        value_font.clone(),
-        offset_color,
-    );
-
-    painter.text(
-        egui::pos2(left, y + line),
-        Align2::LEFT_CENTER,
-        "TRAVEL",
-        label_font.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y + line),
-        Align2::LEFT_CENTER,
-        travel,
-        value_font.clone(),
-        palette().text,
-    );
-
-    // The target axis: the current parameter position, the travel that the
-    // amount allows and the live contribution of the source.
-    let bar = Rect::from_min_size(
-        egui::pos2(range_left, top + line * 1.8),
-        egui::vec2(
-            (range_right - range_left).max(1.0),
-            TARGET_RANGE_BAR_HEIGHT * zoom,
-        ),
-    );
-    let axis = target_axis(dest, ctx.params, amount, source_live);
-    let axis = axis.unwrap_or(TargetAxis {
-        center: 0.5,
-        half: 0.0,
-        live: 0.0,
-    });
-    painter.rect_filled(bar, CornerRadius::ZERO, palette().track);
-    painter.rect_stroke(
-        bar,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, palette().line),
-        egui::StrokeKind::Inside,
-    );
-    let centre = bar.left() + bar.width() * axis.center.clamp(0.0, 1.0);
-    let half = bar.width() * axis.half.clamp(0.0, 1.0);
-    let band = Rect::from_min_max(
-        egui::pos2(
-            (centre - half).clamp(bar.left(), bar.right()),
-            bar.top() + zoom,
-        ),
-        egui::pos2(
-            (centre + half).clamp(bar.left(), bar.right()),
-            bar.bottom() - zoom,
-        ),
-    );
-    painter.rect_filled(band, CornerRadius::ZERO, palette().button_active);
-    let current_marker = Rect::from_center_size(
-        egui::pos2(centre, bar.center().y),
-        egui::vec2(TARGET_CURRENT_MARKER_WIDTH * zoom, bar.height()),
-    );
-    painter.rect_filled(current_marker, CornerRadius::ZERO, palette().title_blue);
-    let live_dot = source_live.map(|_| {
-        let x = bar.left() + bar.width() * (axis.center + axis.live).clamp(0.0, 1.0);
-        Rect::from_center_size(
-            egui::pos2(x, bar.center().y),
-            egui::vec2(TARGET_LIVE_DOT_SIZE, TARGET_LIVE_DOT_SIZE) * zoom,
-        )
-    });
-    if let Some(dot) = live_dot {
-        painter.rect_filled(dot, CornerRadius::ZERO, palette().accent);
-    }
-    let low_font = FontId::new(font_size(7.2, zoom), label_family());
-    painter.text(
-        egui::pos2(bar.left(), top + line * 3.1),
-        Align2::LEFT_CENTER,
-        "LOW",
-        low_font.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(bar.right(), top + line * 3.1),
-        Align2::RIGHT_CENTER,
-        "HIGH",
-        low_font,
-        palette().muted,
-    );
-
-    #[cfg(test)]
-    {
-        ctx.state.target_bar_rect = Some(bar);
-        ctx.state.target_current_marker_rect = Some(current_marker);
-        ctx.state.target_live_dot_rect = live_dot;
-    }
-}
-
-/// The normalized geometry of the target range bar. `center` is the current
-/// position of the target on its own axis, `half` is the travel that the
-/// amount allows and `live` is the current contribution of the source.
-#[derive(Clone, Copy, Debug)]
-struct TargetAxis {
-    center: f32,
-    half: f32,
-    live: f32,
-}
 
 /// Maps the current target value and the modulation range onto a normalized
 /// axis. The axis follows the destination parameter, so a cutoff bar moves
-/// logarithmically while a resonance or pan bar moves linearly.
-fn target_axis(
-    dest: ModDest,
-    params: &SushiParams,
-    amount: f32,
-    source_value: Option<f32>,
-) -> Option<TargetAxis> {
-    let source = source_value.unwrap_or(0.0);
-    let amount_abs = amount.abs();
-    let (center, span, live_scale) = match dest {
-        ModDest::Off => return None,
-        ModDest::Pitch => (0.5, 0.5, 0.5),
-        ModDest::Pulse1 | ModDest::Pulse2 => {
-            let value = if dest == ModDest::Pulse1 {
-                params.osc1_pw.value()
-            } else {
-                params.osc2_pw.value()
-            };
-            (unit_position(value, 0.05, 0.95), 0.5, 0.5)
-        }
-        ModDest::Cutoff => {
-            let octaves = (20_000.0f32 / 20.0).log2();
-            (
-                log_position(params.cutoff.value(), 20.0, 20_000.0),
-                TARGET_CUTOFF_RANGE / octaves,
-                TARGET_CUTOFF_RANGE / octaves,
-            )
-        }
-        ModDest::Resonance => (params.resonance.value().clamp(0.0, 1.0), 1.0, 1.0),
-        ModDest::Drive | ModDest::FilterDrive => {
-            (params.filter_drive.value().clamp(0.0, 1.0), 1.0, 1.0)
-        }
-        ModDest::Pan => ((params.vca_pan.value() + 1.0) * 0.5, 0.5, 0.5),
-        ModDest::Volume => (
-            unit_position(util::gain_to_db(params.volume.value()), -60.0, 6.0),
-            0.5,
-            0.5,
-        ),
-        ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
-            let (octave, semi) = if dest == ModDest::Osc2Pitch {
-                (params.osc2_octave.value(), params.osc2_semi.value())
-            } else {
-                (params.osc1_octave.value(), params.osc1_semi.value())
-            };
-            let semitones = octave as f32 * 12.0 + semi as f32;
-            (unit_position(semitones, -36.0, 36.0), 1.0 / 6.0, 1.0 / 6.0)
-        }
-        ModDest::Osc2Fine | ModDest::Osc1Fine => {
-            let value = if dest == ModDest::Osc2Fine {
-                params.osc2_fine.value()
-            } else {
-                params.osc1_fine.value()
-            };
-            (unit_position(value, -100.0, 100.0), 0.5, 0.5)
-        }
-        ModDest::SubLevel => (params.sub_level.value().clamp(0.0, 1.0), 1.0, 1.0),
-        ModDest::NoiseLevel => (params.noise_level.value().clamp(0.0, 1.0), 0.5, 0.5),
-        ModDest::Detune => (
-            unit_position(params.detune.value(), 0.0, TARGET_DETUNE_RANGE),
-            1.0,
-            1.0,
-        ),
-        ModDest::FilterEnv => ((params.filter_env_amount.value() + 1.0) * 0.5, 0.5, 0.5),
-        ModDest::FilterKeytrack => (params.filter_keytrack.value().clamp(0.0, 1.0), 1.0, 1.0),
-        ModDest::RingMod => (params.ring_mod.value().clamp(0.0, 1.0), 1.0, 1.0),
-    };
-    Some(TargetAxis {
-        center: center.clamp(0.0, 1.0),
-        half: span * amount_abs,
-        live: live_scale * source * amount,
-    })
-}
 
-/// A linear parameter position on its normalized axis.
-fn unit_position(value: f32, min: f32, max: f32) -> f32 {
-    if max <= min {
-        return 0.5;
-    }
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
-}
 
 /// A logarithmic parameter position on its normalized axis.
 fn log_position(value: f32, min: f32, max: f32) -> f32 {
@@ -8090,10 +7787,6 @@ mod tests {
                 "the modulation page still shows the old LFO {hidden}: {names:?}"
             );
         }
-        assert!(
-            names.iter().any(|text| text == "TARGET"),
-            "the modulation page has no target inspector: {names:?}"
-        );
         // The division is always visible, so the clock is readable even
         // before sync is switched on.
         assert!(names.iter().any(|text| text == "1/4"));
@@ -8963,70 +8656,24 @@ faders and the three macros; the VCA is main-page only"
         );
 
         // Changing the destination through its popup is a second edit of the
-        // same route and still keeps the inspector on it. The popup list is
-        // not opened here; the parameter setter is the same edit path.
+        // same route and still keeps the selection on it. The readings of the
+        // row follow the edit, because they live in the row itself.
         let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
         let setter = gui_ctx.param_setter();
         setter.set_parameter(&params.mod3_source, ModSource::Lfo2);
         setter.set_parameter(&params.mod3_dest, ModDest::Pitch);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.iter().any(|text| text == "LFO 2 > Pitch"),
-            "the inspector did not follow the edited route: {names:?}"
-        );
+        for expected in ["NOW", "TRAVEL"] {
+            assert!(
+                names.iter().any(|text| text == expected),
+                "the row lost its {expected} reading: {names:?}"
+            );
+        }
         assert_eq!(editor.state.mod_selected, 2);
     }
 
-    #[test]
-    fn the_target_inspector_follows_the_selected_route() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
-        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
-        setter.set_parameter(&params.mod1_amount, 0.62);
-        setter.set_parameter(&params.mod2_source, ModSource::ModWheel);
-        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
-        setter.set_parameter(&params.mod2_amount, -0.5);
-        editor.state.page = Page::Mod;
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let rows = editor.state.mod_row_rects.clone();
-
-        run_frames(
-            &ctx,
-            &mut editor,
-            click(egui::pos2(rows[0].left() + 3.0, rows[0].center().y)),
-        );
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["01", "LFO 1 > Cutoff", "+62%", "3 kHz", "±3.1 octaves"] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the inspector has no {expected:?}: {names:?}"
-            );
-        }
-
-        run_frames(
-            &ctx,
-            &mut editor,
-            click(egui::pos2(rows[1].left() + 3.0, rows[1].center().y)),
-        );
-        assert_eq!(editor.state.mod_selected, 1);
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["02", "Mod Wheel > Volume", "-50%", "-6 dB", "±50%"] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the inspector has no {expected:?}: {names:?}"
-            );
-        }
-        assert!(
-            !names.iter().any(|text| text == "LFO 1 > Cutoff"),
-            "the inspector kept the old route: {names:?}"
-        );
-    }
-
+    
     #[test]
     fn the_target_inspector_uses_the_units_of_the_destination() {
         let (_ctx, editor, params) = make_editor();
@@ -9134,99 +8781,8 @@ faders and the three macros; the VCA is main-page only"
         );
     }
 
-    #[test]
-    fn the_target_inspector_has_a_quiet_empty_state() {
-        let (ctx, mut editor, params) = make_editor();
-        editor.state.page = Page::Mod;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["Select a route", "No modulation"] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the empty inspector has no {expected:?}: {names:?}"
-            );
-        }
-        for hidden in ["CURRENT", "RANGE", "LIVE"] {
-            assert!(
-                !names.iter().any(|text| text == hidden),
-                "the empty inspector shows a fake {hidden}: {names:?}"
-            );
-        }
-
-        // A route with only one side set is still Off, and stays quiet.
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.iter().any(|text| text == "Select a route"));
-        assert!(names.iter().any(|text| text == "No modulation"));
-    }
-
-    #[test]
-    fn the_target_inspector_fits_its_section_at_representative_zooms() {
-        for percent in ZOOMS {
-            let zoom = percent as f32 / 100.0;
-            let (ctx, mut editor, params) = make_editor();
-            let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-            let setter = gui_ctx.param_setter();
-            // The longest source and destination names, a negative amount and
-            // a live global source exercise the widest inspector text.
-            setter.set_parameter(&params.mod8_source, ModSource::ModWheel);
-            setter.set_parameter(&params.mod8_dest, ModDest::FilterKeytrack);
-            setter.set_parameter(&params.mod8_amount, -1.0);
-            editor.state.page = Page::Mod;
-            editor.state.mod_selected = 7;
-            editor.mod_feedback.store(ModFeedbackValues {
-                mod_wheel: 1.0,
-                ..Default::default()
-            });
-
-            let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
-            let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size), TEST_ZOOM)
-                .expect("the window is big enough");
-            let target = layout.mod_target();
-            let macros = layout.mod_module(4);
-
-            let target_texts: Vec<(String, Rect)> = text_shapes(&output)
-                .into_iter()
-                .filter(|(_, pos, _)| target.contains(*pos))
-                .map(|(text, pos, text_size)| (text, Rect::from_min_size(pos, text_size)))
-                .collect();
-            for expected in ["TARGET", "NOW", "TRAVEL", "±100%"] {
-                assert!(
-                    target_texts.iter().any(|(text, _)| text == expected),
-                    "the inspector has no {expected:?} at {percent}%: {target_texts:?}"
-                );
-            }
-            for (first, first_rect) in &target_texts {
-                assert!(
-                    target.contains_rect(*first_rect),
-                    "the inspector text {first:?} leaves its section at {percent}%: \
-{first_rect:?} / {target:?}"
-                );
-            }
-            for (index, (first, first_rect)) in target_texts.iter().enumerate() {
-                for (second, second_rect) in target_texts.iter().skip(index + 1) {
-                    let overlap = first_rect.intersect(*second_rect);
-                    assert!(
-                        overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                        "the inspector texts {first:?} and {second:?} overlap at {percent}%: \
-{first_rect:?} / {second_rect:?}"
-                    );
-                }
-            }
-
-            // The macros remain usable: three faders in the right-hand band.
-            let macro_faders = slider_rects(&ctx, &output)
-                .into_iter()
-                .filter(|rect| macros.contains_rect(*rect))
-                .count();
-            assert_eq!(macro_faders, 3, "the macros lost a fader at {percent}%");
-        }
-    }
-
+    
+    
     #[test]
     fn the_main_page_macros_and_vca_are_clean_fader_groups() {
         let (ctx, mut editor, _params) = make_editor();
@@ -9274,89 +8830,7 @@ faders and the three macros; the VCA is main-page only"
         }
     }
 
-    #[test]
-    fn the_target_inspector_draws_a_range_bar_without_a_source_graph() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
-        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
-        setter.set_parameter(&params.mod1_amount, 0.62);
-        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
-        setter.set_parameter(&params.mod2_dest, ModDest::Volume);
-        setter.set_parameter(&params.mod2_amount, 0.5);
-        editor.state.page = Page::Mod;
-        editor.mod_feedback.store(ModFeedbackValues {
-            lfo1: 0.8,
-            ..Default::default()
-        });
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ), TEST_ZOOM)
-        .expect("the window is big enough");
-        let target = layout.mod_target();
-
-        // An LFO route: the range bar has a current marker and a separate
-        // live dot. There is no waveform preview, only the range instrument.
-        editor.state.mod_selected = 0;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["LFO 1 > Cutoff", "NOW", "TRAVEL"] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the inspector has no {expected:?}: {names:?}"
-            );
-        }
-        assert!(
-            !names.iter().any(|text| text == "SOURCE"),
-            "the inspector still has a source preview: {names:?}"
-        );
-        let bar = editor
-            .state
-            .target_bar_rect
-            .expect("the inspector has no range bar");
-        let current = editor
-            .state
-            .target_current_marker_rect
-            .expect("the range bar has no current marker");
-        let dot = editor
-            .state
-            .target_live_dot_rect
-            .expect("a live LFO route has no live dot");
-        assert!(
-            target.contains_rect(bar),
-            "the range bar left the target band"
-        );
-        assert!(bar.contains_rect(current));
-        assert!(bar.contains_rect(dot));
-        assert!(
-            (dot.center().x - current.center().x).abs() > 2.0,
-            "the live dot sits on the current marker"
-        );
-        assert!(
-            !output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::epaint::Shape::Path(_))
-                    && target.contains_rect(shape.shape.visual_bounding_rect())
-            }),
-            "the target inspector still draws a decorative graph"
-        );
-
-        // An envelope route: no global live value, but the explicit
-        // per-voice fallback stays.
-        editor.state.mod_selected = 1;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        assert_eq!(
-            editor.state.target_live_dot_rect, None,
-            "a per-voice source invented a live dot"
-        );
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            names.iter().any(|text| text == "per-voice"),
-            "the envelope route lost its per-voice fallback: {names:?}"
-        );
-    }
-
+    
     #[test]
     fn the_live_markers_are_drawn_only_on_global_routes() {
         let (ctx, mut editor, params) = make_editor();
@@ -12172,23 +11646,16 @@ faders and the three macros; the VCA is main-page only"
                 "the left column is not two thirds of the workspace: {left:?} {right:?}"
             );
 
+            // The table owns the whole left column now: the readings of a
+            // route live in its own row, so there is no inspector below it.
             let table = layout.mod_table();
-            let target = layout.mod_target();
             assert!(left.contains_rect(table));
-            assert!(left.contains_rect(target));
             assert!((table.left() - left.left()).abs() < 0.01);
             assert!((table.right() - left.right()).abs() < 0.01);
-            assert!((target.left() - left.left()).abs() < 0.01);
-            assert!((target.right() - left.right()).abs() < 0.01);
             assert!(
-                table.bottom() < target.top(),
-                "the routing table does not sit above the target inspector: {table:?} {target:?}"
+                (table.bottom() - left.bottom()).abs() < 0.01,
+                "the routing table does not fill the left column: {table:?} {left:?}"
             );
-            assert!(
-                (target.bottom() - left.bottom()).abs() < 0.01,
-                "the target inspector does not reach the bottom of the left column: {target:?}"
-            );
-            assert!(!table.intersects(target));
 
             let mut previous: Option<Rect> = None;
             for index in 0..Layout::mod_module_count() {
@@ -12217,47 +11684,7 @@ faders and the three macros; the VCA is main-page only"
         }
     }
 
-    #[test]
-    fn the_modulation_page_puts_the_table_and_target_on_the_left() {
-        let (ctx, mut editor, _params) = make_editor();
-        editor.state.page = Page::Mod;
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ), TEST_ZOOM)
-        .expect("the window is big enough");
-        let table = layout.mod_table();
-        let target = layout.mod_target();
-        let shapes = text_shapes(&output);
-
-        for (label, section) in [("MODULATION", table), ("TARGET", target)] {
-            let (_, pos, size) = shapes
-                .iter()
-                .find(|(text, _, _)| text == label)
-                .unwrap_or_else(|| panic!("the page has no {label} title"));
-            let title = Rect::from_min_size(*pos, *size);
-            assert!(
-                section.contains_rect(title),
-                "the {label} title left its section: {title:?} / {section:?}"
-            );
-        }
-        assert!(
-            table.bottom() < target.top(),
-            "the target inspector is not below the routing table: {table:?} / {target:?}"
-        );
-
-        // Every route row is a full-width line of the routing table.
-        let rows = editor.state.mod_row_rects.clone();
-        assert_eq!(rows.len(), crate::params::MOD_SLOTS);
-        for row in rows {
-            assert!(
-                table.contains_rect(row),
-                "a route row left the routing table: {row:?} / {table:?}"
-            );
-        }
-    }
-
+    
     #[test]
     fn the_modulation_page_has_five_source_modules_in_order() {
         let (ctx, mut editor, _params) = make_editor();
@@ -12381,67 +11808,7 @@ faders and the three macros; the VCA is main-page only"
         }
     }
 
-    #[test]
-    fn the_target_inspector_updates_from_the_left_routing_table() {
-        let (ctx, mut editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
-        setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
-        setter.set_parameter(&params.mod1_amount, 0.5);
-        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
-        setter.set_parameter(&params.mod2_dest, ModDest::Resonance);
-        setter.set_parameter(&params.mod2_amount, -0.25);
-        editor.state.page = Page::Mod;
-        run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let layout = Layout::for_rect(Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ), TEST_ZOOM)
-        .expect("the window is big enough");
-        let target = layout.mod_target();
-        let rows = editor.state.mod_row_rects.clone();
-
-        run_frames(
-            &ctx,
-            &mut editor,
-            click(egui::pos2(rows[1].left() + 3.0, rows[1].center().y)),
-        );
-        assert_eq!(editor.state.mod_selected, 1);
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
-        let shapes = text_shapes(&output);
-        let names: Vec<String> = shapes.iter().map(|(text, _, _)| text.clone()).collect();
-        for expected in [
-            "Mod Env > Resonance",
-            "-25%",
-            "NOW",
-            "TRAVEL",
-            "per-voice",
-        ] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the target inspector has no {expected:?}: {names:?}"
-            );
-        }
-        for (text, pos, size) in &shapes {
-            if [
-                "Mod Env > Resonance",
-                "-25%",
-                "NOW",
-                "TRAVEL",
-                "per-voice",
-            ]
-            .contains(&text.as_str())
-            {
-                let rect = Rect::from_min_size(*pos, *size);
-                assert!(
-                    target.contains_rect(rect),
-                    "the target text {text:?} left the inspector: {rect:?} / {target:?}"
-                );
-            }
-        }
-    }
-
+    
     #[test]
     fn the_modulation_page_right_column_fits_at_representative_zooms() {
         for percent in ZOOMS {
