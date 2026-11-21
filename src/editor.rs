@@ -2053,7 +2053,7 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
         egui::pos2(inner.left(), baseline),
         Align2::LEFT_BOTTOM,
         &truncate_name(&label, 16),
-        FontId::new(font_size(9.5, zoom), label_family()),
+        FontId::new(font_size(12.5, zoom), label_family()),
         palette().title_blue,
         0.8 * zoom,
     );
@@ -2068,24 +2068,56 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
         palette().text,
     );
 
-    // The voice count along the bottom edge of the block.
+    // The voices along the bottom edge of the block: the light bar of the old
+    // faceplate, one square per voice.
     let footer = inner.bottom();
+    let label_font = FontId::new(font_size(8.5, zoom), label_family());
     tracked_text(
         &painter,
         egui::pos2(inner.left(), footer),
         Align2::LEFT_BOTTOM,
         "VOICES",
-        FontId::new(font_size(8.0, zoom), label_family()),
+        label_font.clone(),
         palette().muted,
         0.9 * zoom,
     );
-    painter.text(
-        egui::pos2(inner.right(), footer),
-        Align2::RIGHT_BOTTOM,
-        voice_count.load(Ordering::Relaxed).min(VOICE_LEDS).to_string(),
-        FontId::new(font_size(11.0, zoom), value_family()),
-        palette().lcd_fg,
+    let label_width = text_width(&painter, "VOICES", &label_font) + 0.9 * zoom * 5.0;
+    voice_leds(
+        &painter,
+        Rect::from_min_max(
+            egui::pos2(inner.left() + label_width + 8.0 * zoom, footer - 7.0 * zoom),
+            egui::pos2(inner.right(), footer),
+        ),
+        voice_count.load(Ordering::Relaxed),
+        zoom,
     );
+}
+
+/// The light bar of the voice count: one square per voice that the panel can
+/// play, lit for every voice that is sounding right now.
+fn voice_leds(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
+    let gap = 3.0 * zoom;
+    let cell = ((rect.width() - gap * (VOICE_LEDS as f32 - 1.0)) / VOICE_LEDS as f32)
+        .min(7.0 * zoom)
+        .max(1.0);
+    let height = rect.height().min(cell * 1.6);
+    let lit = voices.min(VOICE_LEDS);
+    for index in 0..VOICE_LEDS {
+        let x = rect.left() + index as f32 * (cell + gap);
+        let square = Rect::from_min_size(
+            egui::pos2(x, rect.bottom() - height),
+            egui::vec2(cell, height),
+        );
+        painter.rect_filled(
+            square,
+            CornerRadius::ZERO,
+            if index < lit {
+                palette().led_on
+            } else {
+                palette().track
+            },
+        );
+    }
 }
 
 
