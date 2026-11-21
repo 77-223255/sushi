@@ -37,7 +37,12 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 | Wheel / Shift+wheel | change / fine-tune |
 | Right-click a control | type a value |
 | Double-click | reset |
-| **Right-click the background** | **UI zoom 50–300%** (a level is a cap: a bigger window does not stretch the panel) |
+| **Right-click the background** | **UI zoom 50–300%** |
+
+The panel always snaps to one of the zoom levels — it never stretches with the
+window. A level is a cap: if the window is smaller than the level you picked,
+the panel stays at the largest level that fits. Resize the window (REAPER lets
+you drag its border) to reach the higher levels.
 
 ## Sound
 

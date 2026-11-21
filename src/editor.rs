@@ -1194,6 +1194,10 @@ pub struct SushiEditor {
     zoom_level: usize,
     /// The level picked in the menu, as a cap for [`Layout::for_rect`].
     zoom_cap: f32,
+    /// Whether the panel snaps to a level instead of following the window
+    /// continuously. The geometry tests turn this off to measure the
+    /// continuous layout.
+    snap_zoom: bool,
     /// Where the right-click zoom menu is open, if it is open.
     zoom_menu: Option<Pos2>,
     /// The number of arpeggiator triggers.
@@ -1230,6 +1234,7 @@ impl SushiEditor {
             zoom: 1.0,
             zoom_level: DEFAULT_ZOOM_LEVEL,
             zoom_cap: ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL],
+            snap_zoom: true,
             zoom_menu: None,
             state: EditorState {
                 texts: HashMap::new(),
@@ -1632,7 +1637,23 @@ impl SushiEditor {
             self.zoom_menu = None;
         }
 
-        let Some(layout) = Layout::for_rect(full, self.zoom_cap) else {
+        // The panel is always drawn at one of the levels of the menu: the
+        // level the user picked, or the largest level that still fits the
+        // window. Dragging the window border does not scale the panel, it only
+        // makes higher levels reachable.
+        let desired = if self.snap_zoom {
+            let fits = (full.width() / WINDOW_WIDTH).min(full.height() / WINDOW_HEIGHT);
+            ZOOM_LEVELS
+                .iter()
+                .rev()
+                .copied()
+                .find(|level| *level <= fits + 1e-3)
+                .unwrap_or(MIN_ZOOM)
+                .min(self.zoom_cap)
+        } else {
+            self.zoom_cap
+        };
+        let Some(layout) = Layout::for_rect(full, desired) else {
             draw_too_small(ui, full);
             return;
         };
@@ -1879,7 +1900,12 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
     // The line below the face tells the user how big the window has to be.
     // It gets a bit smaller when the window is too narrow for it.
-    let hint = format!("MINIMUM {} x {}", WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
+    let smallest = ZOOM_LEVELS[0];
+    let hint = format!(
+        "MINIMUM {} x {}",
+        (WINDOW_WIDTH * smallest) as i32,
+        (WINDOW_HEIGHT * smallest) as i32
+    );
     let width = (rect.width() - 8.0).max(8.0);
     let galley = painter.layout_no_wrap(
         hint.to_string(),
@@ -1922,8 +1948,11 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 /// is a *cap*: the panel never grows past the chosen level, and it only shrinks
 /// below it when the window of the host is smaller than the level.
 pub const ZOOM_LEVELS: [f32; 8] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
-/// The level the panel starts on.
-const DEFAULT_ZOOM_LEVEL: usize = 4;
+/// The level the panel starts on. The editor opens at exactly this level, so
+/// the panel fills the window on the first frame.
+const DEFAULT_ZOOM_LEVEL: usize = 3;
+/// The same level as a plain scale, for the initial size of the window.
+pub const DEFAULT_ZOOM_SCALE: f32 = ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL];
 /// The smallest level the panel can be drawn at.
 const MIN_ZOOM: f32 = ZOOM_LEVELS[0];
 
@@ -7166,8 +7195,9 @@ mod tests {
             mod_feedback,
         );
         // The geometry tests measure the panel continuously, so the editor
-        // they drive has no zoom cap.
+        // they drive has no cap and does not snap to a level.
         editor.zoom_cap = f32::INFINITY;
+        editor.snap_zoom = false;
         let ctx = egui::Context::default();
         // The tests draw with the fonts of the real panel, so that a text that
         // is too wide is caught here and not only in the host.
@@ -12347,9 +12377,15 @@ faders and the three macros; the VCA is main-page only"
             names.contains(&":(".to_string()),
             "the panel has no sad face: {names:?}"
         );
+        let smallest = ZOOM_LEVELS[0];
+        let hint = format!(
+            "MINIMUM {} x {}",
+            (WINDOW_WIDTH * smallest) as i32,
+            (WINDOW_HEIGHT * smallest) as i32
+        );
         assert!(
-            names.contains(&"MINIMUM 960 x 680".to_string()),
-            "the panel has no hint: {names:?}"
+            names.contains(&hint),
+            "the panel has no {hint:?}: {names:?}"
         );
 
         // The panel itself is not drawn at all.

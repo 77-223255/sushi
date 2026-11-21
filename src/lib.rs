@@ -296,8 +296,13 @@ impl Default for Sushi {
             // the panel is comfortable on a normal DAW screen and still fits
             // under a 1080p window. The design scales continuously from its
             // 960x680 minimum.
+            // The window opens at exactly the default zoom level, so the
+            // panel fills it without stretching.
             editor_state: EguiEditorState::from_size(
-                LogicalSize::new(WINDOW_WIDTH * 6.0 / 5.0, WINDOW_HEIGHT * 6.0 / 5.0),
+                LogicalSize::new(
+                    WINDOW_WIDTH * crate::editor::DEFAULT_ZOOM_SCALE,
+                    WINDOW_HEIGHT * crate::editor::DEFAULT_ZOOM_SCALE,
+                ),
                 1.0,
             ),
             repaint_notifier: RepaintNotifier::new(),
