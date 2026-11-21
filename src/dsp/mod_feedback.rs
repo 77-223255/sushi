@@ -36,22 +36,16 @@ pub enum FeedSource {
     Lfo2,
     ModEnv,
     AmpEnv,
-    Macro1,
-    Macro2,
-    Macro3,
     ModWheel,
 }
 
 impl FeedSource {
     /// Every source that has a value the editor can read.
-    pub const ALL: [FeedSource; 8] = [
+    pub const ALL: [FeedSource; 5] = [
         FeedSource::Lfo1,
         FeedSource::Lfo2,
         FeedSource::ModEnv,
         FeedSource::AmpEnv,
-        FeedSource::Macro1,
-        FeedSource::Macro2,
-        FeedSource::Macro3,
         FeedSource::ModWheel,
     ];
 
@@ -61,10 +55,7 @@ impl FeedSource {
             FeedSource::Lfo2 => 1,
             FeedSource::ModEnv => 2,
             FeedSource::AmpEnv => 3,
-            FeedSource::Macro1 => 4,
-            FeedSource::Macro2 => 5,
-            FeedSource::Macro3 => 6,
-            FeedSource::ModWheel => 7,
+            FeedSource::ModWheel => 4,
         }
     }
 
@@ -74,9 +65,6 @@ impl FeedSource {
             FeedSource::Lfo2 => values.lfo2,
             FeedSource::ModEnv => values.mod_env,
             FeedSource::AmpEnv => values.amp_env,
-            FeedSource::Macro1 => values.macro1,
-            FeedSource::Macro2 => values.macro2,
-            FeedSource::Macro3 => values.macro3,
             FeedSource::ModWheel => values.mod_wheel,
         }
     }
@@ -136,7 +124,11 @@ pub struct ModFeedback {
     key: AtomicU32,
     random: AtomicU32,
     voice_active: AtomicU32,
-    history: [Ring; 8],
+    history: [Ring; 5],
+    /// The last random values, one per note.
+    note_random: Ring,
+    /// The last value that was pushed into `note_random`.
+    last_note_random: AtomicU32,
 }
 
 impl ModFeedback {
@@ -166,6 +158,13 @@ impl ModFeedback {
             .store(u32::from(values.voice_active), Ordering::Relaxed);
         for source in FeedSource::ALL {
             self.history[source.index()].push(source.value(&values));
+        }
+        // The per-note random only changes when a new note is drawn, so the
+        // ring records one step per note instead of one per block.
+        let bits = values.random.to_bits();
+        if bits != self.last_note_random.load(Ordering::Relaxed) {
+            self.last_note_random.store(bits, Ordering::Relaxed);
+            self.note_random.push(values.random);
         }
     }
 
@@ -227,6 +226,12 @@ impl ModFeedback {
     /// Whether a voice is sounding right now.
     pub fn voice_active(&self) -> bool {
         self.voice_active.load(Ordering::Relaxed) != 0
+    }
+
+    /// The history of the per-note random values, oldest first: one step per
+    /// note. The panel draws it like a sample and hold LFO.
+    pub fn note_random_history(&self, out: &mut Vec<f32>) {
+        self.note_random.snapshot(out);
     }
 
     /// The history of one source, oldest first. The vector is reused by the

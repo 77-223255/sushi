@@ -70,12 +70,6 @@ pub enum ModSource {
     AmpEnv,
     Velocity,
     Key,
-    #[name = "Macro 1"]
-    Macro1,
-    #[name = "Macro 2"]
-    Macro2,
-    #[name = "Macro 3"]
-    Macro3,
     #[name = "Mod Wheel"]
     ModWheel,
     Random,

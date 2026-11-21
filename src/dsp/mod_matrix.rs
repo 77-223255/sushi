@@ -176,9 +176,6 @@ fn source_value(source: ModSource, sources: &ModSources) -> f32 {
         ModSource::AmpEnv => sources.amp_env,
         ModSource::Velocity => sources.velocity,
         ModSource::Key => sources.key,
-        ModSource::Macro1 => sources.macro1,
-        ModSource::Macro2 => sources.macro2,
-        ModSource::Macro3 => sources.macro3,
         ModSource::ModWheel => sources.mod_wheel,
         ModSource::Random => sources.random,
     }

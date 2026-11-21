@@ -2533,52 +2533,15 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             } else {
                 wave.height() * 0.5
             };
-            // A source that belongs to one note has no history of its own: its
-            // strip is the curve it reads from (velocity raises, key raises
-            // with the note, random is flat) and a dot at the value of the
-            // newest note.
-            if let Some(value) = per_note_point(source, ctx.mod_feedback) {
-                let rule = Stroke::new(1.0, MOD_NOTE_RULE);
-                if source == ModSource::Random {
-                    // A per-note random has no curve; a staircase says that the
-                    // value is drawn instead of followed.
-                    let steps = 7;
-                    for step in 0..steps {
-                        let t = step as f32 / steps as f32;
-                        let height = (0.15 + 0.7 * ((step * 37 % 11) as f32 / 10.0)) * span;
-                        let x = wave.left() + wave.width() * t;
-                        let next = wave.left() + wave.width() * (t + 1.0 / steps as f32);
-                        painter.line_segment(
-                            [egui::pos2(x, floor_y), egui::pos2(x, floor_y - height)],
-                            rule,
-                        );
-                        painter.line_segment(
-                            [egui::pos2(x, floor_y - height), egui::pos2(next, floor_y - height)],
-                            rule,
-                        );
-                    }
-                } else {
-                    painter.line_segment(
-                        [
-                            egui::pos2(wave.left(), floor_y + span),
-                            egui::pos2(wave.right(), floor_y - span),
-                        ],
-                        rule,
-                    );
-                }
-                painter.line_segment(
-                    [egui::pos2(wave.left(), floor_y), egui::pos2(wave.right(), floor_y)],
-                    Stroke::new(1.0, palette().rule),
-                );
-                let x = wave.left()
-                    + wave.width()
-                        * if source == ModSource::Velocity {
-                            value.clamp(0.0, 1.0)
-                        } else {
-                            (value + 1.0) * 0.5
-                        };
-                let y = floor_y - value.clamp(-1.0, 1.0) * span;
-                painter.circle_filled(egui::pos2(x, y), 3.0 * zoom, palette().accent);
+            // A source that belongs to one note has no history of its own, so
+            // each of them draws what it is: the velocity as a level bar, the
+            // key as a strip of the keyboard, the random as the steps of the
+            // notes that were played.
+            if matches!(
+                source,
+                ModSource::Velocity | ModSource::Key | ModSource::Random
+            ) {
+                draw_note_source(&painter, wave, source, ctx, zoom);
             }
             let history = source_history(source, ctx.mod_feedback, &mut ctx.wave_history);
             if let Some(history) = history {
@@ -5775,9 +5738,6 @@ fn live_source_value(source: ModSource, feedback: &ModFeedback) -> Option<f32> {
     match source {
         ModSource::Lfo1 => Some(feedback.lfo1()),
         ModSource::Lfo2 => Some(feedback.lfo2()),
-        ModSource::Macro1 => Some(feedback.macro1()),
-        ModSource::Macro2 => Some(feedback.macro2()),
-        ModSource::Macro3 => Some(feedback.macro3()),
         ModSource::ModWheel => Some(feedback.mod_wheel()),
         // The envelopes belong to the voices. The audio thread publishes the
         // newest sounding voice, so a route can show a real value for them.
@@ -5993,9 +5953,6 @@ fn source_span(
         ModSource::Lfo2 => feedback.history(FeedSource::Lfo2, history),
         ModSource::ModEnv => feedback.history(FeedSource::ModEnv, history),
         ModSource::AmpEnv => feedback.history(FeedSource::AmpEnv, history),
-        ModSource::Macro1 => feedback.history(FeedSource::Macro1, history),
-        ModSource::Macro2 => feedback.history(FeedSource::Macro2, history),
-        ModSource::Macro3 => feedback.history(FeedSource::Macro3, history),
         ModSource::ModWheel => feedback.history(FeedSource::ModWheel, history),
         _ => return None,
     }
@@ -6011,9 +5968,126 @@ fn source_span(
     Some((a.min(b), a.max(b)))
 }
 
-/// The dim green of the curve that a source of one note reads from. It is a
-/// structure line, not a value, so it stays under the bright dot.
-const MOD_NOTE_RULE: egui::Color32 = egui::Color32::from_rgb(0x33, 0x48, 0x31);
+/// The strip of a source that belongs to one note. It has no history to draw,
+/// so it shows what the source is: a level bar for the velocity, the strip of
+/// the keyboard for the key and the steps of the played notes for the random.
+fn draw_note_source(
+    painter: &egui::Painter,
+    cell: Rect,
+    source: ModSource,
+    ctx: &mut Ctx,
+    zoom: f32,
+) {
+    // The three strips share one band in the middle of the cell, so a row of
+    // any source keeps the same reading height.
+    let height = cell.height() * 0.62;
+    let track = Rect::from_center_size(
+        cell.center(),
+        egui::vec2(cell.width(), height),
+    );
+    match source {
+        ModSource::Velocity => {
+            let velocity = ctx.mod_feedback.velocity().clamp(0.0, 1.0);
+            painter.rect_filled(track, CornerRadius::ZERO, palette().field_bg);
+            painter.rect_stroke(
+                track,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, palette().line),
+                egui::StrokeKind::Inside,
+            );
+            // The bar grows to the right with the velocity of the newest note,
+            // exactly like a level meter.
+            let fill = Rect::from_min_max(
+                egui::pos2(track.left() + zoom, track.top() + zoom),
+                egui::pos2(
+                    track.left() + zoom + (track.width() - 2.0 * zoom) * velocity,
+                    track.bottom() - zoom,
+                ),
+            );
+            painter.rect_filled(fill, CornerRadius::ZERO, palette().accent);
+        }
+        ModSource::Key => {
+            // A quiet spectrum across the two octaves of the source, with a
+            // marker on the note that is playing.
+            let steps = 48;
+            for step in 0..steps {
+                let t = step as f32 / steps as f32;
+                let hue = 265.0 * (1.0 - t);
+                let band = Rect::from_min_size(
+                    egui::pos2(
+                        track.left() + track.width() * step as f32 / steps as f32,
+                        track.top(),
+                    ),
+                    egui::vec2(track.width() / steps as f32 + 0.5, track.height()),
+                );
+                let color = spectrum_color(hue, 0.30);
+                painter.rect_filled(band, CornerRadius::ZERO, color);
+            }
+            let key = ((ctx.mod_feedback.key() - 36.0) / 48.0).clamp(0.0, 1.0);
+            let x = track.left() + track.width() * key;
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(x - zoom, track.top()),
+                    egui::pos2(x + zoom, track.bottom()),
+                ),
+                CornerRadius::ZERO,
+                palette().text,
+            );
+        }
+        _ => {
+            // The random values of the notes that were played, as a sample and
+            // hold curve.
+            ctx.mod_feedback
+                .note_random_history(&mut ctx.wave_history);
+            painter.line_segment(
+                [
+                    egui::pos2(cell.left(), cell.center().y),
+                    egui::pos2(cell.right(), cell.center().y),
+                ],
+                Stroke::new(1.0, palette().rule),
+            );
+            // The last sixteen notes, so every step is wide enough to read as a
+            // step instead of a blur.
+            let values = &ctx.wave_history;
+            if values.is_empty() {
+                return;
+            }
+            let values = &values[values.len().saturating_sub(16)..];
+            let width = cell.width() / values.len() as f32;
+            let mut points = Vec::with_capacity(values.len() * 2);
+            for (index, value) in values.iter().enumerate() {
+                let x = cell.left() + width * index as f32;
+                let y = cell.center().y - value.clamp(-1.0, 1.0) * (cell.height() * 0.44);
+                points.push(egui::pos2(x, y));
+                points.push(egui::pos2(x + width, y));
+            }
+            painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+        }
+    }
+}
+
+/// A colour of the keyboard strip: the hue in degrees, with a low saturation
+/// and value, so the spectrum stays a quiet structure line of the panel.
+fn spectrum_color(hue: f32, value: f32) -> egui::Color32 {
+    let h = (hue.rem_euclid(360.0)) / 60.0;
+    let saturation = 0.55;
+    let chroma = value * saturation;
+    let x = chroma * (1.0 - ((h % 2.0) - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = value - chroma;
+    egui::Color32::from_rgb(
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
 
 /// The key of a note as a modulation value, `-1..1`, with the middle C in the
 /// middle. The DSP uses the same mapping, so the panel shows the value that
@@ -6028,14 +6102,6 @@ fn key_source_value(key: f32) -> f32 {
 /// source reads from, drawn from the bottom left to the top right. The dot of
 /// the live value sits on it, so a velocity or a key route is visible even
 /// though it has no history of its own.
-fn per_note_point(source: ModSource, feedback: &ModFeedback) -> Option<f32> {
-    match source {
-        ModSource::Velocity => Some(feedback.velocity()),
-        ModSource::Key => Some(key_source_value(feedback.key())),
-        ModSource::Random => Some(feedback.random()),
-        _ => None,
-    }
-}
 
 /// The recorded history of one source of the matrix, oldest first. The hand
 /// controls and the envelopes have a history too, so a route always draws what
@@ -6051,9 +6117,6 @@ fn source_history<'a>(
         ModSource::Lfo2 => FeedSource::Lfo2,
         ModSource::ModEnv => FeedSource::ModEnv,
         ModSource::AmpEnv => FeedSource::AmpEnv,
-        ModSource::Macro1 => FeedSource::Macro1,
-        ModSource::Macro2 => FeedSource::Macro2,
-        ModSource::Macro3 => FeedSource::Macro3,
         ModSource::ModWheel => FeedSource::ModWheel,
         _ => return None,
     };
@@ -6843,5 +6906,6 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
         );
     }
 }
+
 
 

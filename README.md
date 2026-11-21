@@ -31,7 +31,10 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
   are the ones that hold still — while LFO 1 / LFO 2 / MOD ENV / AMP ENV sit
   down the right. A source that belongs to one note (`Velocity`, `Key`,
   `Random`) has no history, so it draws the curve it reads from instead — a dim
-  green line, with an orange dot on the value of the newest note
+  what it is: the velocity as a level bar, the key as a strip of the keyboard
+  with a marker on the note, the per-note random as the steps of the notes that
+  were played. `Macro 1–3` are not sources of the matrix: the macros are a
+  performance control of the main page.
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right
