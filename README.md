@@ -25,9 +25,11 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 - **MOD page**: the routing table fills the left column — under the controls of
   every route runs the recorded history of its source (what the modulation
   really did, block by block, live) and, on the right, `NOW`: the centre value
-  of the destination in green and the value it reads right now in orange, both
-  in the same units — while LFO 1 / LFO 2 / MOD ENV / AMP ENV / MACROS sit
-  down the right
+  of the destination in green and, in orange, the span the route is sweeping
+  right now (`568 Hz – 15.8 kHz`), both in the same units — the curve carries a
+  dot at its live end, so the instant is a moving dot and the numbers to read
+  are the ones that hold still — while LFO 1 / LFO 2 / MOD ENV / AMP ENV /
+  MACROS sit down the right
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right

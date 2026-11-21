@@ -1715,6 +1715,9 @@ impl SushiEditor {
                 wave_history: Vec::with_capacity(
                     crate::dsp::mod_feedback::HISTORY_LENGTH,
                 ),
+                span_history: Vec::with_capacity(
+                    crate::dsp::mod_feedback::HISTORY_LENGTH,
+                ),
             };
 
             if ctx.state.patch_open {
@@ -2734,20 +2737,60 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                     ],
                     Stroke::new(1.0, palette().rule),
                 );
-                painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+                painter.add(egui::Shape::line(
+                    points.clone(),
+                    Stroke::new(1.0, palette().accent),
+                ));
+                // The newest sample is the only moving part of the curve: a dot
+                // at the live end says "here, now" without a stretching block.
+                if let Some(tip) = points.last() {
+                    painter.circle_filled(*tip, 2.5 * zoom, palette().accent);
+                }
             }
 
             // The reading sits on the column of the amount bar, under it, so
             // the two values start at a stable x instead of hanging off the
             // right edge.
+            //
+            // A number that follows every sample is unreadable at 5 Hz, so the
+            // orange side shows the span the route is sweeping right now, taken
+            // from the same history as the curve. It only changes when the
+            // extremes of the modulation change, and it says more than an
+            // instant that flickers: "this route moves the cutoff between 2 and
+            // 12 kHz". A source that stands still collapses to a single value.
+            let now_x = bar_x.max(wave_right + 12.0 * zoom);
+            let base_x = now_x + MOD_NOW_LABEL_WIDTH * zoom;
             let (live_text, live_color) = match live {
-                Some(value) => (
-                    target_live_text(dest, ctx.params, value * amount),
-                    palette().accent,
-                ),
+                Some(_) => match source_span(source, ctx.mod_feedback, amount, &mut ctx.span_history) {
+                    Some((low, high)) => {
+                        let low_text = target_live_text(dest, ctx.params, low);
+                        let high_text = target_live_text(dest, ctx.params, high);
+                        let span_text = format!("{low_text} – {high_text}");
+                        let room = value_right
+                            - (base_x + MOD_NOW_BASE_WIDTH * zoom)
+                            - 4.0 * zoom;
+                        if low_text == high_text
+                            || text_width(&painter, &span_text, &reading) > room
+                        {
+                            (
+                                target_live_text(
+                                    dest,
+                                    ctx.params,
+                                    live.unwrap_or(0.0) * amount,
+                                ),
+                                palette().accent,
+                            )
+                        } else {
+                            (span_text, palette().accent)
+                        }
+                    }
+                    None => (
+                        target_live_text(dest, ctx.params, live.unwrap_or(0.0) * amount),
+                        palette().accent,
+                    ),
+                },
                 None => ("per-voice".to_string(), palette().muted),
             };
-            let now_x = bar_x.max(wave_right + 12.0 * zoom);
             tracked_text(
                 &painter,
                 egui::pos2(now_x, row_middle),
@@ -2757,7 +2800,6 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 palette().muted,
                 0.8 * zoom,
             );
-            let base_x = now_x + MOD_NOW_LABEL_WIDTH * zoom;
             painter.text(
                 egui::pos2(base_x, row_middle),
                 Align2::LEFT_CENTER,
@@ -4153,6 +4195,8 @@ struct Ctx<'a, 'b> {
     zoom: f32,
     /// The scratch buffer of the history of a modulation source.
     wave_history: Vec<f32>,
+    /// The scratch buffer of the span of a modulation source.
+    span_history: Vec<f32>,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -6143,6 +6187,40 @@ fn target_live_text(dest: ModDest, params: &SushiParams, contribution: f32) -> S
     }
 }
 
+/// The lowest and the highest contribution that a route made over the window
+/// of the history, in the units of the matrix. `None` when the source has no
+/// history, so the caller can fall back to the live value.
+fn source_span(
+    source: ModSource,
+    feedback: &ModFeedback,
+    amount: f32,
+    history: &mut Vec<f32>,
+) -> Option<(f32, f32)> {
+    let mut low = f32::INFINITY;
+    let mut high = f32::NEG_INFINITY;
+    match source {
+        ModSource::Lfo1 => feedback.history(FeedSource::Lfo1, history),
+        ModSource::Lfo2 => feedback.history(FeedSource::Lfo2, history),
+        ModSource::ModEnv => feedback.history(FeedSource::ModEnv, history),
+        ModSource::AmpEnv => feedback.history(FeedSource::AmpEnv, history),
+        ModSource::Macro1 => feedback.history(FeedSource::Macro1, history),
+        ModSource::Macro2 => feedback.history(FeedSource::Macro2, history),
+        ModSource::Macro3 => feedback.history(FeedSource::Macro3, history),
+        ModSource::ModWheel => feedback.history(FeedSource::ModWheel, history),
+        _ => return None,
+    }
+    for value in history.iter() {
+        low = low.min(*value);
+        high = high.max(*value);
+    }
+    if !low.is_finite() || !high.is_finite() {
+        return None;
+    }
+    let a = low * amount;
+    let b = high * amount;
+    Some((a.min(b), a.max(b)))
+}
+
 /// The recorded history of one source of the matrix, oldest first. The hand
 /// controls and the envelopes have a history too, so a route always draws what
 /// its source really did. `None` means the source has no value the panel can
@@ -7715,6 +7793,7 @@ mod tests {
             slider_width: SLIDER_WIDTH,
             zoom: 1.0,
             wave_history: Vec::new(),
+            span_history: Vec::new(),
         }
     }
 
@@ -9415,9 +9494,13 @@ faders and the three macros; the VCA is main-page only"
         // both in hertz.
         let cutoff = SushiParams::default().cutoff.value();
         let centre = target_current_text(ModDest::Cutoff, &SushiParams::default());
-        let live = target_live_text(ModDest::Cutoff, &SushiParams::default(), 0.8 * 0.5);
+        // The orange side is the span that the route is sweeping: the history
+        // of the source, from the bottom of its travel to the top.
+        let rest = target_live_text(ModDest::Cutoff, &SushiParams::default(), 0.0);
+        let top = target_live_text(ModDest::Cutoff, &SushiParams::default(), 0.8 * 0.5);
+        let span = format!("{rest} – {top}");
         assert!(names.iter().any(|text| text == &centre), "{names:?}");
-        assert!(names.iter().any(|text| text == &live), "{names:?}");
+        assert!(names.iter().any(|text| text == &span), "{names:?}");
         assert!(cutoff > 0.0);
 
         let rows = editor.state.mod_row_rects.clone();
