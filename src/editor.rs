@@ -1,13 +1,15 @@
-//! The Sushi editor: a flat blueprint panel.
+//! The Sushi editor: a flat black plate, one orange accent, green for data.
 //!
 //! Every continuous parameter is a vertical slider whose handle is a band that
 //! is fully embedded inside the track (it never sticks out), every parameter
 //! can also be typed into a small numeric popup that opens with a right click,
 //! and every choice parameter opens a popup menu. The parameters are grouped
 //! into sections that are named by a coloured title and a thin rule below a
-//! header that holds the wordmark, the factory presets and a small
-//! oscilloscope. Nothing on the panel has a bevel, a shadow or a rounded
-//! corner: every widget is a flat fill with a single 1 px border.
+//! header that holds the wordmark, the presets and a small oscilloscope.
+//! Nothing on the panel has a bevel, a shadow, a gradient or a rounded corner:
+//! every widget is a flat fill on the black plate with a single 1 px border,
+//! the accent is the only warm hue and everything that reads as data — the
+//! preset display, the LEDs, the trace — is green.
 //!
 //! The type system has two families and five weights. Quicksand, a rounded
 //! geometric sans, carries the voice of the faceplate: 500 for running text,
@@ -1596,7 +1598,9 @@ impl SushiEditor {
 
         self.collect_scope();
         self.update_arp_position();
-        ui.ctx().request_repaint_after(Duration::from_millis(16));
+        // 120 fps: the meters and the trace are the only animation, and the
+        // panel should follow the sound without a visible step.
+        ui.ctx().request_repaint_after(Duration::from_millis(8));
 
         let full = ui.max_rect();
         ui.painter()
@@ -1969,15 +1973,6 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         FontId::new(font_size(22.0, zoom), bold()),
         palette().text,
         0.6 * zoom,
-    );
-    tracked_text(
-        &painter,
-        rects.logo.left_top() + egui::vec2(2.0, 31.0) * zoom,
-        Align2::LEFT_TOP,
-        "POLYPHONIC SYNTHESIZER",
-        FontId::monospace(font_size(6.6, zoom)),
-        palette().muted,
-        1.5 * zoom,
     );
 
     // The preset display is the patch browser button now. It keeps showing
@@ -6847,8 +6842,8 @@ fn absolute_path(path: &Path) -> PathBuf {
 // --- The theme ---------------------------------------------------------------
 
 fn apply_theme(ctx: &egui::Context, zoom: f32) {
-    let mut visuals = egui::Visuals::light();
-    visuals.dark_mode = false;
+    let mut visuals = egui::Visuals::dark();
+    visuals.dark_mode = true;
     visuals.override_text_color = Some(palette().text);
     visuals.panel_fill = palette().bg;
     visuals.window_fill = palette().bg;

@@ -1,9 +1,10 @@
-//! The warm legacy palette of the panel.
+//! The palette of the panel: black plate, one orange accent, green for data.
 //!
-//! Sushi only ships the Legacy engine, so the faceplate always uses the aged
-//! paper and burnt-orange palette. The palette is a plain static, because all
-//! painting happens on the GUI thread and several plugin instances can be open
-//! in the same process.
+//! Every surface is a flat fill with a single 1 px line, so the palette only
+//! has to describe the inks: the plate, the rules, the type, the one accent
+//! and the green of the readouts, the LEDs and the trace. The palette is a
+//! plain static, because all painting happens on the GUI thread and several
+//! plugin instances can be open in the same process.
 
 use egui::Color32;
 
@@ -35,32 +36,37 @@ pub struct Palette {
     pub status_error: Color32,
 }
 
+/// Black plate, one orange accent, green for anything that is data.
+///
+/// Every surface is a flat fill with a single 1 px line: no bevel, no shadow,
+/// no gradient, and the only two hues that are allowed to speak are the orange
+/// of the accent and the green of the readouts, the LEDs and the trace.
 pub static LEGACY: Palette = Palette {
-    bg: Color32::from_rgb(0xE9, 0xDE, 0xC7),
-    header_bg: Color32::from_rgb(0xDC, 0xCB, 0xAA),
-    rule: Color32::from_rgb(0xB0, 0x9A, 0x76),
-    line: Color32::from_rgb(0x3A, 0x2E, 0x24),
-    text: Color32::from_rgb(0x2B, 0x21, 0x18),
-    muted: Color32::from_rgb(0x7A, 0x68, 0x52),
-    paper: Color32::from_rgb(0xF7, 0xEE, 0xDB),
-    title_blue: Color32::from_rgb(0xB3, 0x4A, 0x2B),
-    label: Color32::from_rgb(0x7D, 0x3E, 0x25),
-    accent: Color32::from_rgb(0xB3, 0x4A, 0x2B),
-    track: Color32::from_rgb(0xF8, 0xF0, 0xDD),
-    handle: Color32::from_rgb(0x2B, 0x21, 0x18),
-    tick: Color32::from_rgb(0x9B, 0x84, 0x66),
-    field_bg: Color32::from_rgb(0xFB, 0xF4, 0xE3),
-    button_bg: Color32::from_rgb(0xD8, 0xC5, 0xA5),
-    button_active: Color32::from_rgb(0xE7, 0xC0, 0x8E),
-    primary_bg: Color32::from_rgb(0xE8, 0xC1, 0x8E),
-    lcd_bg: Color32::from_rgb(0xEA, 0xD9, 0xB8),
-    lcd_fg: Color32::from_rgb(0x6F, 0x2A, 0x18),
-    led_on: Color32::from_rgb(0xC0, 0x5A, 0x2A),
-    led_red: Color32::from_rgb(0x9A, 0x2E, 0x22),
-    led_off: Color32::from_rgb(0xBB, 0xA9, 0x8C),
-    trace: Color32::from_rgb(0xB5, 0x53, 0x2E),
-    status_ok: Color32::from_rgb(0x6B, 0x7A, 0x3A),
-    status_error: Color32::from_rgb(0x9A, 0x2E, 0x22),
+    bg: Color32::from_rgb(0x0A, 0x0A, 0x0B),
+    header_bg: Color32::from_rgb(0x10, 0x10, 0x12),
+    rule: Color32::from_rgb(0x1C, 0x1C, 0x1F),
+    line: Color32::from_rgb(0x2C, 0x2C, 0x30),
+    text: Color32::from_rgb(0xE9, 0xE9, 0xEA),
+    muted: Color32::from_rgb(0x77, 0x77, 0x7D),
+    paper: Color32::from_rgb(0x12, 0x12, 0x15),
+    title_blue: Color32::from_rgb(0xE8, 0x7A, 0x28),
+    label: Color32::from_rgb(0x8B, 0x8B, 0x91),
+    accent: Color32::from_rgb(0xE8, 0x7A, 0x28),
+    track: Color32::from_rgb(0x20, 0x20, 0x24),
+    handle: Color32::from_rgb(0xE9, 0xE9, 0xEA),
+    tick: Color32::from_rgb(0x3A, 0x3A, 0x3F),
+    field_bg: Color32::from_rgb(0x16, 0x16, 0x1A),
+    button_bg: Color32::from_rgb(0x1A, 0x1A, 0x1E),
+    button_active: Color32::from_rgb(0x2A, 0x21, 0x18),
+    primary_bg: Color32::from_rgb(0xB8, 0x62, 0x1C),
+    lcd_bg: Color32::from_rgb(0x0D, 0x0F, 0x0C),
+    lcd_fg: Color32::from_rgb(0x5C, 0xC9, 0x4A),
+    led_on: Color32::from_rgb(0x5C, 0xC9, 0x4A),
+    led_red: Color32::from_rgb(0xE0, 0x52, 0x3C),
+    led_off: Color32::from_rgb(0x26, 0x26, 0x2A),
+    trace: Color32::from_rgb(0x5C, 0xC9, 0x4A),
+    status_ok: Color32::from_rgb(0x5C, 0xC9, 0x4A),
+    status_error: Color32::from_rgb(0xE0, 0x52, 0x3C),
 };
 
 /// The palette of the panel. Sushi is Legacy-only, so this is always warm.
