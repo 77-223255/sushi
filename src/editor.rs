@@ -3291,12 +3291,6 @@ fn macros_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
 
 
 /// A logarithmic parameter position on its normalized axis.
-fn log_position(value: f32, min: f32, max: f32) -> f32 {
-    if value <= 0.0 || min <= 0.0 || max <= min {
-        return 0.5;
-    }
-    (value / min).ln() / (max / min).ln()
-}
 
 /// The controls of one module of the FX rack. The module index follows the
 /// fixed card grid: drive, phaser, chorus, delay, reverb, EQ, compressor and
@@ -5920,14 +5914,6 @@ fn format_signed_number(value: f32, decimals: usize) -> String {
 
 /// A whole percentage without a sign. It is used for the absolute value of a
 /// `0..1` target such as resonance or a pulse width.
-fn format_whole_percent(value: f32) -> String {
-    let percent = (value * 100.0).round();
-    if percent == 0.0 {
-        "0%".to_string()
-    } else {
-        format!("{percent:.0}%")
-    }
-}
 
 /// A signed whole percentage for a bipolar target or a modulation offset.
 fn format_signed_percent(value: f32) -> String {
@@ -5947,18 +5933,8 @@ fn format_percent_range(value: f32) -> String {
 
 /// A frequency in the compact units of the panel: hertz below one kilohertz
 /// and kilohertz above it.
-fn format_frequency(hz: f32) -> String {
-    if hz >= 1_000.0 {
-        format!("{} kHz", format_number(hz / 1_000.0, 1))
-    } else {
-        format!("{} Hz", format_number(hz, 0))
-    }
-}
 
 /// A gain in decibels, with the scale of the volume fader.
-fn format_gain_db(gain: f32) -> String {
-    format!("{} dB", format_signed_number(util::gain_to_db(gain), 1))
-}
 
 /// A semitone value, used by the pitch destinations.
 fn format_semitones(semitones: f32) -> String {
@@ -5985,34 +5961,6 @@ fn format_octave_range(octaves: f32) -> String {
 /// `Pitch` has no single scalar parameter: it offsets every oscillator at
 /// once. It therefore gets a description instead of the tune value, which
 /// would look like a real target that the route does not actually move.
-fn target_current_text(dest: ModDest, params: &SushiParams) -> String {
-    match dest {
-        ModDest::Off => "No modulation".to_string(),
-        ModDest::Pitch => "All oscillators".to_string(),
-        ModDest::Pulse1 => format_whole_percent(params.osc1_pw.value()),
-        ModDest::Pulse2 => format_whole_percent(params.osc2_pw.value()),
-        ModDest::Cutoff => format_frequency(params.cutoff.value()),
-        ModDest::Resonance => format_whole_percent(params.resonance.value()),
-        ModDest::Drive => format_whole_percent(params.filter_drive.value()),
-        ModDest::Pan => format_signed_percent(params.vca_pan.value()),
-        ModDest::Volume => format_gain_db(params.volume.value()),
-        ModDest::Osc2Pitch => format_semitones(
-            params.osc2_octave.value() as f32 * 12.0 + params.osc2_semi.value() as f32,
-        ),
-        ModDest::Osc2Fine => format_cents(params.osc2_fine.value()),
-        ModDest::SubLevel => format_whole_percent(params.sub_level.value()),
-        ModDest::NoiseLevel => format_whole_percent(params.noise_level.value()),
-        ModDest::Detune => format_cents(params.detune.value()),
-        ModDest::FilterEnv => format_signed_percent(params.filter_env_amount.value()),
-        ModDest::Osc1Pitch => format_semitones(
-            params.osc1_octave.value() as f32 * 12.0 + params.osc1_semi.value() as f32,
-        ),
-        ModDest::Osc1Fine => format_cents(params.osc1_fine.value()),
-        ModDest::FilterDrive => format_whole_percent(params.filter_drive.value()),
-        ModDest::FilterKeytrack => format_whole_percent(params.filter_keytrack.value()),
-        ModDest::RingMod => format_whole_percent(params.ring_mod.value()),
-    }
-}
 
 /// The range that a route can add to its target. The amount scales the full
 /// range of the destination, and the sign of the amount does not change the
@@ -6080,44 +6028,6 @@ fn target_offset_text(dest: ModDest, value: f32) -> String {
 /// editor can read and one contribution that the route makes. A per-voice
 
 /// The source, destination and amount of one route of the matrix.
-fn mod_route_values(params: &SushiParams, slot: usize) -> (ModSource, ModDest, f32) {
-    let sources = [
-        &params.mod1_source,
-        &params.mod2_source,
-        &params.mod3_source,
-        &params.mod4_source,
-        &params.mod5_source,
-        &params.mod6_source,
-        &params.mod7_source,
-        &params.mod8_source,
-    ];
-    let dests = [
-        &params.mod1_dest,
-        &params.mod2_dest,
-        &params.mod3_dest,
-        &params.mod4_dest,
-        &params.mod5_dest,
-        &params.mod6_dest,
-        &params.mod7_dest,
-        &params.mod8_dest,
-    ];
-    let amounts = [
-        &params.mod1_amount,
-        &params.mod2_amount,
-        &params.mod3_amount,
-        &params.mod4_amount,
-        &params.mod5_amount,
-        &params.mod6_amount,
-        &params.mod7_amount,
-        &params.mod8_amount,
-    ];
-    let slot = slot.min(crate::params::MOD_SLOTS - 1);
-    (
-        sources[slot].value(),
-        dests[slot].value(),
-        amounts[slot].value(),
-    )
-}
 
 /// The geometry of one two-lane fader. The thumb width is a ratio of the
 /// inner lane width and the thumb is always centered in that lane, so the
