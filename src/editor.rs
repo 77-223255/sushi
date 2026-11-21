@@ -285,7 +285,6 @@ const MOD_VALUE_WIDTH: f32 = 44.0;
 /// The gap between two columns of the modulation table.
 const MOD_COLUMN_GAP: f32 = 4.0;
 /// The height of the visible track of an amount bar.
-const MOD_BAR_HEIGHT: f32 = 16.0;
 /// The width of the black handle of an amount bar.
 const MOD_BAR_HANDLE_WIDTH: f32 = 7.0;
 /// How far the handle of an amount bar stays away from the ends of its track.
@@ -748,10 +747,6 @@ const PAGE_BUTTON_WIDTH: f32 = 44.0;
 const MOD_NOW_LABEL_WIDTH: f32 = 30.0;
 /// The column of the centre value of a destination, the green one.
 const MOD_NOW_BASE_WIDTH: f32 = 54.0;
-/// The column of the live value of a destination, the orange one.
-const MOD_NOW_LIVE_WIDTH: f32 = 56.0;
-/// The width of the little window that shows the shape of the source.
-const MOD_WAVE_WIDTH: f32 = 64.0;
 /// The width of the `TRAVEL` caption of a modulation row.
 const MOD_TRAVEL_LABEL_WIDTH: f32 = 44.0;
 /// The width of the oscilloscope at the right end of the header.
@@ -2689,10 +2684,10 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             },
         );
 
-        // The readings of the route, under its controls: the centre value of
-        // the destination in green, the value it reads right now in orange,
-        // the shape of the source that moves it, and the travel of the amount.
-        // Nothing is repeated anywhere else on the page.
+        // The readings of the route, on the line under its controls: the
+        // centre value of the destination in green, the value it reads right
+        // now in orange, the shape of the source under the destination box it
+        // belongs to, and the travel of the amount.
         if active {
             let time = ui.input(|input| input.time) as f32;
             let live = live_source_value(source, ctx.mod_feedback);
@@ -2702,29 +2697,32 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 _ => 1.0,
             };
             // The phase of the source at the wall clock of the panel: the
-            // preview moves with the modulation, so a stopped oscillator
-            // stands still.
+            // preview moves with the modulation, so a stopped source stands
+            // still.
             let phase = (time * rate).rem_euclid(1.0);
-            let label = FontId::new(font_size(7.0, zoom), label_family());
+            let caption = FontId::new(font_size(8.0, zoom), label_family());
+            let reading = FontId::monospace(font_size(8.5, zoom));
+
             tracked_text(
                 &painter,
-                egui::pos2(source_x, read_y),
+                egui::pos2(index_x, read_y),
                 Align2::LEFT_CENTER,
                 "NOW",
-                label.clone(),
+                caption.clone(),
                 palette().muted,
                 0.8 * zoom,
             );
             // The centre of the modulation: the value the destination holds
             // without this route.
             painter.text(
-                egui::pos2(source_x + MOD_NOW_LABEL_WIDTH * zoom, read_y),
+                egui::pos2(index_x + MOD_NOW_LABEL_WIDTH * zoom, read_y),
                 Align2::LEFT_CENTER,
                 target_current_text(dest, ctx.params),
-                FontId::monospace(font_size(8.5, zoom)),
+                reading.clone(),
                 palette().led_on,
             );
-            // The value of the destination right now, in its own units.
+            // The value of the destination right now, in the same units as the
+            // centre next to it.
             let (live_text, live_color) = match live {
                 Some(value) => (
                     target_live_text(dest, ctx.params, value * amount),
@@ -2734,90 +2732,82 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             };
             painter.text(
                 egui::pos2(
-                    source_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH) * zoom,
+                    index_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH) * zoom,
                     read_y,
                 ),
                 Align2::LEFT_CENTER,
                 live_text,
-                FontId::monospace(font_size(8.5, zoom)),
+                reading.clone(),
                 live_color,
+            );
+
+            // The shape of the source, on the same column as the destination
+            // box above it and just as wide.
+            let wave_h = ((row_height - control_h) * 0.78).max(9.0 * zoom);
+            let wave = Rect::from_min_size(
+                egui::pos2(dest_x, read_y - wave_h * 0.5),
+                egui::vec2(MOD_DEST_WIDTH * zoom, wave_h),
+            );
+            let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
+            let floor_y = if unipolar {
+                wave.bottom() - 2.0 * zoom
+            } else {
+                wave.center().y
+            };
+            let span = if unipolar {
+                wave.height() - 4.0 * zoom
+            } else {
+                wave.height() * 0.5 - 2.0 * zoom
+            };
+            let steps = (wave.width() / (2.0 * zoom)).max(8.0) as usize;
+            let points: Vec<egui::Pos2> = (0..=steps)
+                .map(|step| {
+                    let t = step as f32 / steps as f32;
+                    let value = source_shape(source, ctx, t + phase).unwrap_or_else(|| {
+                        // A hand control has no shape of its own: its line sits
+                        // at the value it is sending.
+                        live.unwrap_or(0.0)
+                    });
+                    egui::pos2(
+                        wave.left() + wave.width() * t,
+                        floor_y - value.clamp(-1.0, 1.0) * span,
+                    )
+                })
+                .collect();
+            // No plate and no moving block under the curve: the line itself is
+            // a rule, and the baseline is the floor of the shape.
+            painter.line_segment(
+                [
+                    egui::pos2(wave.left(), wave.bottom() - zoom),
+                    egui::pos2(wave.right(), wave.bottom() - zoom),
+                ],
+                Stroke::new(1.0, palette().rule),
+            );
+            painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+
+            // The travel sits flush with the right edge, under the amount
+            // value, so the line has one reading on each side of the curve.
+            let travel = target_range_text(dest, amount);
+            let travel_width = text_width(&painter, &travel, &reading);
+            painter.text(
+                egui::pos2(value_right, read_y),
+                Align2::RIGHT_CENTER,
+                travel,
+                reading,
+                palette().muted,
             );
             tracked_text(
                 &painter,
-                egui::pos2(bar_x, read_y),
+                egui::pos2(
+                    value_right - travel_width - (MOD_TRAVEL_LABEL_WIDTH + 6.0) * zoom,
+                    read_y,
+                ),
                 Align2::LEFT_CENTER,
                 "TRAVEL",
-                label,
+                caption,
                 palette().muted,
                 0.8 * zoom,
             );
-            painter.text(
-                egui::pos2(bar_x + MOD_TRAVEL_LABEL_WIDTH * zoom, read_y),
-                Align2::LEFT_CENTER,
-                target_range_text(dest, amount),
-                FontId::monospace(font_size(8.5, zoom)),
-                palette().muted,
-            );
-
-            // The window of the shape, between the live value and the travel
-            // of the amount: the curve of the source in orange over the block
-            // of the cycle it has already played.
-            let wave_x =
-                source_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH + MOD_NOW_LIVE_WIDTH) * zoom;
-            let wave_width = (MOD_WAVE_WIDTH * zoom).min(bar_x - wave_x - 8.0 * zoom);
-            if wave_width >= 24.0 * zoom {
-                let wave_h = (control_h * 0.52).max(10.0 * zoom);
-                let wave = Rect::from_min_size(
-                    egui::pos2(wave_x, read_y - wave_h * 0.5),
-                    egui::vec2(wave_width, wave_h),
-                );
-                painter.rect_filled(wave, CornerRadius::ZERO, palette().field_bg);
-                // The LFOs swing around zero, the envelopes and the hand
-                // controls only rise above it, so each shape is drawn on its
-                // own floor.
-                let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
-                let floor_y = if unipolar {
-                    wave.bottom() - 2.0 * zoom
-                } else {
-                    wave.center().y
-                };
-                let span = if unipolar {
-                    wave.height() - 4.0 * zoom
-                } else {
-                    wave.height() * 0.5 - 2.0 * zoom
-                };
-                let value_to_y = |value: f32| floor_y - value.clamp(-1.0, 1.0) * span;
-                if !unipolar {
-                    let played = Rect::from_min_max(
-                        wave.min,
-                        egui::pos2(wave.left() + wave.width() * phase, wave.bottom()),
-                    );
-                    painter.rect_filled(played, CornerRadius::ZERO, palette().button_active);
-                }
-                painter.line_segment(
-                    [egui::pos2(wave.left(), floor_y), egui::pos2(wave.right(), floor_y)],
-                    Stroke::new(1.0, palette().rule),
-                );
-                let steps = (wave.width() / (2.0 * zoom)).max(8.0) as usize;
-                let points: Vec<egui::Pos2> = (0..=steps)
-                    .map(|step| {
-                        let t = step as f32 / steps as f32;
-                        let value = source_shape(source, ctx, t + phase).unwrap_or_else(|| {
-                            // A hand control has no shape of its own: its line
-                            // sits at the value it is sending.
-                            live.unwrap_or(0.0)
-                        });
-                        egui::pos2(wave.left() + wave.width() * t, value_to_y(value))
-                    })
-                    .collect();
-                painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
-                painter.rect_stroke(
-                    wave,
-                    CornerRadius::ZERO,
-                    Stroke::new(1.0, palette().line),
-                    egui::StrokeKind::Inside,
-                );
-            }
         }
 
         painter.line_segment(
@@ -4522,9 +4512,12 @@ impl<'a, 'b> Ctx<'a, 'b> {
         }
 
         let painter = ui.painter_at(rect);
+        // The bar is as tall as the popups above it: one line of controls, one
+        // height.
+        let track_height = MOD_POPUP_HEIGHT * zoom;
         let track = Rect::from_center_size(
             rect.center(),
-            egui::vec2(rect.width(), MOD_BAR_HEIGHT * zoom),
+            egui::vec2(rect.width(), track_height),
         );
         painter.rect_filled(track, CornerRadius::ZERO, palette().track);
         painter.rect_stroke(
@@ -4538,24 +4531,6 @@ impl<'a, 'b> Ctx<'a, 'b> {
         let centre = (start + end) * 0.5;
         let value = param.value();
         let handle_x = amount_to_x(value, rect, zoom);
-        let fill = Rect::from_min_max(
-            egui::pos2(centre.min(handle_x), track.top() + zoom),
-            egui::pos2(centre.max(handle_x), track.bottom() - zoom),
-        );
-        // The amount is the quiet band; the live part of the modulation is the
-        // orange block inside it, which stretches and shrinks with the source.
-        painter.rect_filled(fill, CornerRadius::ZERO, palette().button_active);
-        if let Some(value) = live_source_value(source, self.mod_feedback) {
-            let live_x = centre + (handle_x - centre) * value.clamp(-1.0, 1.0);
-            painter.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(centre.min(live_x), track.top() + zoom),
-                    egui::pos2(centre.max(live_x), track.bottom() - zoom),
-                ),
-                CornerRadius::ZERO,
-                palette().accent,
-            );
-        }
         painter.line_segment(
             [
                 egui::pos2(centre, track.top() + zoom),
@@ -4565,7 +4540,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
         );
         let handle = Rect::from_center_size(
             egui::pos2(handle_x, track.center().y),
-            egui::vec2(MOD_BAR_HANDLE_WIDTH * zoom, (MOD_BAR_HEIGHT - 4.0) * zoom),
+            egui::vec2(MOD_BAR_HANDLE_WIDTH * zoom, (track_height - 4.0 * zoom).max(4.0)),
         );
         let live = response.hovered() || response.dragged();
         painter.rect_filled(
@@ -6022,7 +5997,7 @@ fn live_marker_rect(
     let x = amount_to_x(live, rect, zoom);
     Some(Rect::from_center_size(
         egui::pos2(x, rect.center().y),
-        egui::vec2(MOD_LIVE_MARKER_WIDTH * zoom, (MOD_BAR_HEIGHT - 6.0) * zoom),
+        egui::vec2(MOD_LIVE_MARKER_WIDTH * zoom, (MOD_POPUP_HEIGHT - 6.0) * zoom),
     ))
 }
 
