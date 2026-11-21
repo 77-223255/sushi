@@ -818,17 +818,17 @@ impl Layout {
     ///
     /// It returns `None` when the rect is too small for the panel: a smaller
     /// window only shows a sad face.
-    fn for_rect(rect: Rect) -> Option<Self> {
-        if rect.width() < WINDOW_WIDTH || rect.height() < WINDOW_HEIGHT {
+    fn for_rect(rect: Rect, desired: f32) -> Option<Self> {
+        if rect.width() < WINDOW_WIDTH * MIN_ZOOM || rect.height() < WINDOW_HEIGHT * MIN_ZOOM {
             return None;
         }
 
-        // The panel follows the window border continuously: it is as big as
-        // the smaller of the two ratios allows, so dragging the border scales
-        // the whole panel (and its fonts) without any zoom levels.
-        let zoom = (rect.width() / WINDOW_WIDTH)
-            .min(rect.height() / WINDOW_HEIGHT)
-            .max(1.0);
+        // The panel is drawn at the level the user picked in the right-click
+        // menu. It never stretches past that level, even when the window of
+        // the host is bigger; it only falls back to the window when the window
+        // is too small to hold the level.
+        let fits = (rect.width() / WINDOW_WIDTH).min(rect.height() / WINDOW_HEIGHT);
+        let zoom = desired.min(fits);
 
         // The panel keeps its proportions and sits in the middle of the
         // window.
@@ -1190,6 +1190,12 @@ pub struct SushiEditor {
     last_persisted: PersistedEditorState,
     /// The zoom of the panel, as it was last applied to the styles.
     zoom: f32,
+    /// The index in [`ZOOM_LEVELS`] of the level picked in the right-click menu.
+    zoom_level: usize,
+    /// The level picked in the menu, as a cap for [`Layout::for_rect`].
+    zoom_cap: f32,
+    /// Where the right-click zoom menu is open, if it is open.
+    zoom_menu: Option<Pos2>,
     /// The number of arpeggiator triggers.
     arp_led: Arc<AtomicUsize>,
     /// The position of the arpeggiator in its pattern.
@@ -1222,6 +1228,9 @@ impl SushiEditor {
             gui_ctx: None,
             last_persisted: PersistedEditorState::default(),
             zoom: 1.0,
+            zoom_level: DEFAULT_ZOOM_LEVEL,
+            zoom_cap: ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL],
+            zoom_menu: None,
             state: EditorState {
                 texts: HashMap::new(),
                 gestures: HashSet::new(),
@@ -1608,7 +1617,22 @@ impl SushiEditor {
 
         // The panel needs at least the size it was made for. A smaller window
         // only shows a sad face, so that nothing is cut in half.
-        let Some(layout) = Layout::for_rect(full) else {
+        // The background of the panel is the one that answers a right click
+        // with the zoom menu. It is registered before every widget, so any
+        // widget that is drawn later sits on top of it and keeps its own
+        // right click (the value editor of a slider, for instance).
+        let background = ui.interact(
+            full,
+            ui.scope_id().with("sushi-background"),
+            Sense::click(),
+        );
+        if background.secondary_clicked() {
+            self.zoom_menu = ui.input(|input| input.pointer.interact_pos());
+        } else if background.clicked() {
+            self.zoom_menu = None;
+        }
+
+        let Some(layout) = Layout::for_rect(full, self.zoom_cap) else {
             draw_too_small(ui, full);
             return;
         };
@@ -1695,7 +1719,85 @@ impl SushiEditor {
             });
         };
         keyboard.show(ui, keyboard_rect, layout.zoom, &held_keys, send);
+
+        // The zoom menu is drawn last, so it covers everything.
+        if let Some(pos) = self.zoom_menu {
+            let chosen = zoom_menu(ui, pos, layout.zoom, self.zoom_level);
+            if let Some(level) = chosen {
+                self.zoom_level = level;
+                self.zoom_cap = ZOOM_LEVELS[level];
+                self.zoom_menu = None;
+                ui.ctx().request_repaint();
+            }
+        } else if ui.input(|input| input.pointer.any_click()) {
+            // A click anywhere else keeps the menu of the previous frame from
+            // coming back.
+        }
     }
+}
+
+/// The right-click menu of the panel: the levels of the zoom.
+///
+/// It returns the level that was picked in this frame, if any. The menu is
+/// drawn with the painter instead of an egui window, so it keeps the flat look
+/// of the panel and its own 1 px border.
+fn zoom_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, current: usize) -> Option<usize> {
+    let row_height = 22.0 * zoom;
+    let width = 118.0 * zoom;
+    let pad = 4.0 * zoom;
+    let height = row_height * ZOOM_LEVELS.len() as f32 + 2.0 * pad;
+
+    let screen = ui.ctx().content_rect();
+    let x = pos.x.min(screen.right() - width - 4.0).max(screen.left() + 4.0);
+    let y = pos.y.min(screen.bottom() - height - 4.0).max(screen.top() + 4.0);
+    let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::ZERO, palette().field_bg);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().line),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut chosen = None;
+    for (index, level) in ZOOM_LEVELS.iter().enumerate() {
+        let row = Rect::from_min_size(
+            egui::pos2(rect.left() + pad, rect.top() + pad + row_height * index as f32),
+            egui::vec2(width - 2.0 * pad, row_height),
+        );
+        let response = ui.interact(
+            row,
+            ui.scope_id().with(("sushi-zoom-menu", index)),
+            Sense::click(),
+        );
+        if response.hovered() {
+            painter.rect_filled(row, CornerRadius::ZERO, palette().track);
+        }
+        if index == current {
+            painter.circle_filled(
+                egui::pos2(row.left() + 8.0 * zoom, row.center().y),
+                2.5 * zoom,
+                palette().accent,
+            );
+        }
+        painter.text(
+            egui::pos2(row.left() + 18.0 * zoom, row.center().y),
+            Align2::LEFT_CENTER,
+            format!("Zoom {:.0}%", level * 100.0),
+            FontId::new(font_size(10.5, zoom), label_family()),
+            if index == current {
+                palette().text
+            } else {
+                palette().muted
+            },
+        );
+        if response.clicked() {
+            chosen = Some(index);
+        }
+    }
+    chosen
 }
 
 /// The footer silkscreen: the model name, the readout of the last parameter
@@ -1816,10 +1918,17 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 
 // --- The header -------------------------------------------------------------
 
+/// The zoom levels of the panel, in the order of the right-click menu. A level
+/// is a *cap*: the panel never grows past the chosen level, and it only shrinks
+/// below it when the window of the host is smaller than the level.
+pub const ZOOM_LEVELS: [f32; 8] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
+/// The level the panel starts on.
+const DEFAULT_ZOOM_LEVEL: usize = 4;
+/// The smallest level the panel can be drawn at.
+const MIN_ZOOM: f32 = ZOOM_LEVELS[0];
+
 /// The places of the widgets of the header.
 struct HeaderRects {
-    /// The area of the wordmark. The subtitle has to stay inside it.
-    logo: Rect,
     /// The button of the previous sound: a patch of the user or a preset.
     previous: Rect,
     /// The display that shows the name of the sound and opens the patches.
@@ -1838,16 +1947,9 @@ struct HeaderRects {
 
 /// The places of the widgets of the header.
 fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
-    // The wordmark has a fixed place, and its subtitle has to fit into the
-    // same area, so the logo stops before the presets.
-    let logo = Rect::from_min_size(
-        rect.left_top() + egui::vec2(6.0, 0.0) * zoom,
-        egui::vec2(140.0, HEADER_HEIGHT) * zoom,
-    );
-
-    // The presets. The display is wider than before, because the separate
-    // PATCHES button is gone and the LCD itself opens the browser now.
-    let preset_x = rect.left() + 152.0 * zoom;
+    // There is no wordmark any more: the header starts with the presets, so
+    // the row reads from left to right as "sound, mutate, page, meter".
+    let preset_x = rect.left() + 6.0 * zoom;
     let button_y = rect.top() + (HEADER_HEIGHT - 28.0) * 0.5 * zoom;
     let previous = Rect::from_min_size(
         egui::pos2(preset_x, button_y),
@@ -1855,7 +1957,7 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     );
     let display = Rect::from_min_size(
         egui::pos2(preset_x + 26.0 * zoom, button_y),
-        egui::vec2(198.0, 28.0) * zoom,
+        egui::vec2(252.0, 28.0) * zoom,
     );
     let next = Rect::from_min_size(
         egui::pos2(display.right() + 4.0 * zoom, button_y),
@@ -1869,8 +1971,10 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     // The two page tabs sit between the patch commands and the meter. They
     // are mutually exclusive and the active one is filled like a pressed
     // tab, without moving any of the neighbouring controls.
+    // The tabs sit a little further right than the patch commands, so the two
+    // groups read as two groups.
     let mod_page = Rect::from_min_size(
-        egui::pos2(mutate.right() + 4.0 * zoom, button_y),
+        egui::pos2(mutate.right() + 14.0 * zoom, button_y),
         egui::vec2(PAGE_BUTTON_WIDTH, 28.0) * zoom,
     );
     let fx_page = Rect::from_min_size(
@@ -1886,7 +1990,6 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
     );
 
     HeaderRects {
-        logo,
         previous,
         display,
         next,
@@ -1962,20 +2065,11 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         Stroke::new(1.0, palette().rule),
     );
 
-    // The wordmark is static: the engine is Legacy-only, so there is no
-    // Modern/Legacy switch and no mode in the subtitle.
+    // There is no wordmark: the header is the preset display, the patch
+    // commands, the page tabs and the meter, nothing else.
     let rects = header_rects(rect, zoom);
-    tracked_text(
-        &painter,
-        rects.logo.left_top() + egui::vec2(1.0, 1.0) * zoom,
-        Align2::LEFT_TOP,
-        "SUSHI",
-        FontId::new(font_size(22.0, zoom), bold()),
-        palette().text,
-        0.6 * zoom,
-    );
 
-    // The preset display is the patch browser button now. It keeps showing
+    // The preset display is the patch browser button. It keeps showing
     // the current name and gets a pointer cursor and a tooltip instead of a
     // separate PATCHES button.
     let display_response = ui.interact(
@@ -6957,6 +7051,10 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests draw the panel with no zoom cap, so the geometry is the
+    /// continuous layout they were written against.
+    const TEST_ZOOM: f32 = f32::INFINITY;
     use crate::dsp::mod_feedback::ModFeedbackValues;
     use crate::patch::test_support::ENV_LOCK;
     use nice_plug::params::internals::ParamPtr;
@@ -7067,6 +7165,9 @@ mod tests {
             voice_count,
             mod_feedback,
         );
+        // The geometry tests measure the panel continuously, so the editor
+        // they drive has no zoom cap.
+        editor.zoom_cap = f32::INFINITY;
         let ctx = egui::Context::default();
         // The tests draw with the fonts of the real panel, so that a text that
         // is too wide is caught here and not only in the host.
@@ -7138,7 +7239,7 @@ mod tests {
     /// The zoom of the panel in the given context. It is the zoom of the
     /// layout that the panel uses in the window of the context.
     fn zoom_of(ctx: &egui::Context) -> f32 {
-        Layout::for_rect(ctx.viewport_rect())
+        Layout::for_rect(ctx.viewport_rect(), TEST_ZOOM)
             .map(|layout| layout.zoom)
             .unwrap_or(1.0)
     }
@@ -7250,7 +7351,7 @@ mod tests {
 
     /// The rects of the header of a window of the given size.
     fn header_rects_at(size: egui::Vec2) -> HeaderRects {
-        let layout = Layout::for_rect(Rect::from_min_size(egui::pos2(0.0, 0.0), size))
+        let layout = Layout::for_rect(Rect::from_min_size(egui::pos2(0.0, 0.0), size), TEST_ZOOM)
             .expect("the window is big enough");
         header_rects(layout.header(), layout.zoom)
     }
@@ -7364,9 +7465,9 @@ mod tests {
             found[0].clone()
         };
 
-        // The wordmark and the section titles are the display weight, and
+        // The section titles and the button faces are the display weight, and
         // they are tracked out.
-        for needle in ["SUSHI", "VCO 1", "MACROS"] {
+        for needle in ["VCO 1", "MACROS"] {
             let style = one(needle);
             assert_eq!(
                 style.family,
@@ -7531,7 +7632,7 @@ mod tests {
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::pos2(0.0, 0.0),
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let sliders = slider_rects(&ctx, &output);
 
@@ -7608,7 +7709,7 @@ mod tests {
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::pos2(0.0, 0.0),
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
 
         // Seven ARP faders and the chord popup in the header.
@@ -7663,7 +7764,7 @@ mod tests {
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::pos2(0.0, 0.0),
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let sliders = slider_rects(&ctx, &output);
 
@@ -7851,7 +7952,7 @@ mod tests {
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let lfo1 = layout.mod_module(0);
         let (_, division) = texts(&output)
@@ -8501,7 +8602,7 @@ mod tests {
             // Every header control has its own slot, in reading order. The
             // removed PATCHES button leaves room for the wider LCD and the two
             // page tabs, without an overlap.
-            assert!(rects.previous.left() >= rects.logo.right());
+            assert!(rects.previous.left() <= rects.display.left());
             assert!(rects.display.left() >= rects.previous.right());
             assert!(rects.next.left() >= rects.display.right());
             assert!(rects.mutate.left() >= rects.next.right());
@@ -8594,7 +8695,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let table_rect = layout.mod_table();
         let table: Vec<String> = texts(&output)
@@ -8916,7 +9017,7 @@ faders and the three macros; the VCA is main-page only"
 
             let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
+            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size), TEST_ZOOM)
                 .expect("the window is big enough");
             let target = layout.mod_target();
             let macros = layout.mod_module(4);
@@ -8976,7 +9077,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
         for removed in ["CUTOFF/RES", "DRIFT/LFO", "FX WET", "OUT", "VOICE 03"] {
@@ -9025,7 +9126,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let target = layout.mod_target();
 
@@ -9298,7 +9399,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let table = layout.mod_table();
         let (_, item) = texts(&output)
@@ -9815,7 +9916,7 @@ faders and the three macros; the VCA is main-page only"
             let zoom = percent as f32 / 100.0;
             let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let layout = Layout::for_rect(Rect::from_min_size(Pos2::ZERO, size))
+            let layout = Layout::for_rect(Rect::from_min_size(Pos2::ZERO, size), TEST_ZOOM)
                 .expect("the window is big enough");
             let rack = fx_rack_rect(&layout);
             let panel = Rect::from_min_size(Pos2::ZERO, size);
@@ -11537,20 +11638,28 @@ faders and the three macros; the VCA is main-page only"
             egui::pos2(0.0, 0.0),
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
         );
-        assert!(Layout::for_rect(default).is_some());
+        assert!(Layout::for_rect(default, TEST_ZOOM).is_some());
+
+        // The panel can now be drawn down to the smallest level of the zoom
+        // menu, and nothing below it.
+        let smallest = ZOOM_LEVELS[0];
+        let rect = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * smallest,
+        );
+        assert!(Layout::for_rect(rect, TEST_ZOOM).is_some());
 
         // A window that is too small has no layout.
         for (width, height) in [
-            (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT),
-            (WINDOW_WIDTH, WINDOW_HEIGHT - 1.0),
-            (WINDOW_WIDTH - 1.0, WINDOW_HEIGHT - 1.0),
-            (800.0, 600.0),
+            (WINDOW_WIDTH * smallest - 1.0, WINDOW_HEIGHT * smallest),
+            (WINDOW_WIDTH * smallest, WINDOW_HEIGHT * smallest - 1.0),
+            (400.0, 300.0),
             (300.0, 200.0),
             (0.0, 0.0),
         ] {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
             assert!(
-                Layout::for_rect(rect).is_none(),
+                Layout::for_rect(rect, TEST_ZOOM).is_none(),
                 "the window of {width} x {height} has a layout"
             );
         }
@@ -11589,7 +11698,7 @@ faders and the three macros; the VCA is main-page only"
 
         for (width, height, zoom, panel_width, panel_height) in cases {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
-            let layout = Layout::for_rect(rect).expect("the window is big enough");
+            let layout = Layout::for_rect(rect, TEST_ZOOM).expect("the window is big enough");
 
             assert!(
                 (layout.zoom - zoom).abs() < 0.001,
@@ -11616,7 +11725,7 @@ faders and the three macros; the VCA is main-page only"
 
         // A wider window of the same height leaves room on both sides.
         let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1600.0, 800.0));
-        let layout = Layout::for_rect(rect).expect("the window is big enough");
+        let layout = Layout::for_rect(rect, TEST_ZOOM).expect("the window is big enough");
         assert!((layout.panel.top() - 0.0).abs() < 0.01);
         assert!(
             (layout.panel.left() - (1600.0 - layout.panel.width()) * 0.5).abs() < 0.01,
@@ -11629,7 +11738,7 @@ faders and the three macros; the VCA is main-page only"
     fn the_keyboard_strip_sits_between_the_bands_and_the_footer() {
         for (width, height) in SIZES {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
-            let layout = Layout::for_rect(rect).expect("the window is big enough");
+            let layout = Layout::for_rect(rect, TEST_ZOOM).expect("the window is big enough");
             let strip = layout.keyboard();
             let zoom = layout.zoom;
 
@@ -11673,7 +11782,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let octave = editor.state.keyboard.octave();
         let (key, note) = keyboard::white_key(layout.keyboard(), layout.zoom, octave, 3);
@@ -11757,7 +11866,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let octave = editor.state.keyboard.octave();
         let (key, note) = keyboard::white_key(layout.keyboard(), layout.zoom, octave, 2);
@@ -11812,7 +11921,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         editor.state.patch_open = true;
 
@@ -11843,7 +11952,7 @@ faders and the three macros; the VCA is main-page only"
     fn the_sections_of_the_layout_do_not_overlap() {
         for (width, height) in SIZES {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
-            let layout = Layout::for_rect(rect).expect("the window is big enough");
+            let layout = Layout::for_rect(rect, TEST_ZOOM).expect("the window is big enough");
 
             for row in 0..4 {
                 let count = Layout::group_count(row);
@@ -11950,7 +12059,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let table = layout.mod_table();
         let target = layout.mod_target();
@@ -11991,7 +12100,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let right = layout.mod_right();
         let left = layout.mod_left();
@@ -12122,7 +12231,7 @@ faders and the three macros; the VCA is main-page only"
         let layout = Layout::for_rect(Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT),
-        ))
+        ), TEST_ZOOM)
         .expect("the window is big enough");
         let target = layout.mod_target();
         let rows = editor.state.mod_row_rects.clone();
@@ -12175,7 +12284,7 @@ faders and the three macros; the VCA is main-page only"
             editor.state.page = Page::Mod;
             let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * zoom;
             let output = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
-            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size))
+            let layout = Layout::for_rect(Rect::from_min_size(egui::Pos2::ZERO, size), TEST_ZOOM)
                 .expect("the window is big enough");
             let panel = layout.panel;
             assert_the_widgets_fit(&ctx, &output, panel);
@@ -12278,10 +12387,76 @@ faders and the three macros; the VCA is main-page only"
             let panel = Layout::for_rect(Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
                 egui::vec2(width, height),
-            ))
+            ), TEST_ZOOM)
             .expect("the window is big enough")
             .panel;
             assert_the_widgets_fit(&ctx, &output, panel);
+        }
+    }
+
+    #[test]
+    fn the_zoom_level_caps_the_size_of_the_panel() {
+        let (ctx, mut editor, _params) = make_editor();
+        let level = ZOOM_LEVELS.len() - 1;
+        editor.zoom_level = level;
+        editor.zoom_cap = ZOOM_LEVELS[level];
+
+        // A window that is larger than the level does not stretch the panel.
+        let size = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * 4.0;
+        let _ = run_frames(&ctx, &mut editor, vec![input_at(size, vec![])]);
+        let layout =
+            Layout::for_rect(Rect::from_min_size(Pos2::ZERO, size), editor.zoom_cap)
+                .expect("the window is big enough");
+        assert!(
+            (layout.zoom - ZOOM_LEVELS[level]).abs() < 1e-6,
+            "the panel stretches past its level: {} vs {}",
+            layout.zoom,
+            ZOOM_LEVELS[level]
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_the_background_opens_the_zoom_menu() {
+        let (ctx, mut editor, _params) = make_editor();
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        assert!(editor.zoom_menu.is_none());
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            !names.iter().any(|name| name.starts_with("Zoom ")),
+            "the menu is open before the right click"
+        );
+
+        // A right click on a spot of the background, away from every widget.
+        let pos = egui::pos2(MARGIN + 4.0, WINDOW_HEIGHT - FOOTER_HEIGHT - 4.0);
+        let _ = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Secondary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ])],
+        );
+        assert!(editor.zoom_menu.is_some(), "the right click opened no menu");
+
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        for level in ZOOM_LEVELS {
+            let label = format!("Zoom {:.0}%", level * 100.0);
+            assert!(
+                names.contains(&label),
+                "the menu has no {label}: {names:?}"
+            );
         }
     }
 }
