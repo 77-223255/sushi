@@ -3,14 +3,140 @@
 //! The plugin is built on [nice-plug](https://codeberg.org/RustAudio/nice-plug)
 //! and exported as a CLAP plugin.
 
-use nice_plug::editor::dpi::LogicalSize;
+use nice_plug::editor::dpi::{LogicalSize, NativeSize, Size};
+use nice_plug::context::gui::GuiContext;
+use nice_plug::editor::{HostCallbacks, HostMethods, SpawnedEditor};
+use std::error::Error;
 use nice_plug::midi::{Channel, Key, VoiceID};
 use nice_plug::prelude::*;
 use nice_plug_egui::{
-    EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier, create_egui_editor,
+    EguiEditor, EguiEditorHandle, EguiEditorState, EguiNiceSettings, RepaintNotifier,
+    create_egui_editor,
 };
+use std::sync::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A pair of callbacks the panel can use to ask the host for a new window
+/// size. The handle is shared with the window, which forwards the request to
+/// the CLAP gui extension of the host.
+type Callbacks = Option<Box<dyn HostCallbacks>>;
+
+/// The slot that holds the callbacks of the host. The boxed trait is not
+/// `Send`, so the slot is a newtype that says it may travel between threads;
+/// every access goes through the mutex and happens on the gui thread.
+#[derive(Clone)]
+struct CallbackSlot(Arc<Mutex<Callbacks>>);
+
+unsafe impl Send for CallbackSlot {}
+unsafe impl Sync for CallbackSlot {}
+
+impl CallbackSlot {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+    fn set(&self, callbacks: Box<dyn HostCallbacks>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(callbacks);
+        }
+    }
+    fn take(&self) -> Option<Box<dyn HostCallbacks>> {
+        self.0.lock().ok().and_then(|mut slot| slot.take())
+    }
+    fn put(&self, callbacks: Box<dyn HostCallbacks>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(callbacks);
+        }
+    }
+}
+
+/// The handle the panel keeps. `HostCallbacks` is not `Send`, so the mutex is
+/// what makes it safe to hand the handle to the app; the request itself is
+/// always made from the gui thread.
+#[derive(Clone)]
+struct WindowResize(CallbackSlot);
+
+// The callbacks are only ever used from the window thread, and the mutex
+// serializes access, so sharing the handle with the app is sound.
+unsafe impl Send for WindowResize {}
+unsafe impl Sync for WindowResize {}
+
+impl WindowResize {
+    fn request(&self, width: f32, height: f32) {
+        if let Some(mut callbacks) = self.0.take() {
+            let _ = callbacks.request_resize(
+                Size::Logical(LogicalSize::new(width as f64, height as f64)),
+                1.0,
+            );
+            self.0.put(callbacks);
+        }
+    }
+}
+
+/// The callbacks that the window actually holds: it forwards to the host.
+struct SharedCallbacks(CallbackSlot);
+
+impl HostCallbacks for SharedCallbacks {
+    fn request_resize(&mut self, new_size: Size, scale_factor: f64) -> Result<(), Box<dyn Error>> {
+        match self.0.take() {
+            Some(mut callbacks) => {
+                let result = callbacks.request_resize(new_size, scale_factor);
+                self.0.put(callbacks);
+                result
+            }
+            None => Err("the host has no window callbacks".into()),
+        }
+    }
+
+    fn destroyed(&mut self) {
+        if let Some(mut callbacks) = self.0.take() {
+            callbacks.destroyed();
+            self.0.put(callbacks);
+        }
+    }
+}
+
+/// The editor of the plugin: the egui editor with a hook that lets the panel
+/// resize its own window.
+pub struct SushiEditors {
+    inner: EguiEditor<SushiEditor>,
+    callbacks: CallbackSlot,
+}
+
+impl Editor for SushiEditors {
+    type Handle = EguiEditorHandle;
+
+    fn spawn(
+        &self,
+        parent: Option<ParentWindowHandle>,
+        wait_for_parent: bool,
+        fallback_scale_factor: Option<f64>,
+        gui_context: GuiContext,
+        host: Option<HostMethods>,
+    ) -> Result<SpawnedEditor<Self::Handle>, Box<dyn Error>> {
+        let host = host.map(|host| {
+            self.callbacks.set(host.callbacks);
+            HostMethods {
+                callbacks: Box::new(SharedCallbacks(self.callbacks.clone())),
+                main_thread_caller: host.main_thread_caller,
+            }
+        });
+        self.inner
+            .spawn(parent, wait_for_parent, fallback_scale_factor, gui_context, host)
+    }
+
+    fn size(&self) -> NativeSize<u32> {
+        self.inner.size()
+    }
+
+    fn resize_hint(&self) -> ResizeHint {
+        self.inner.resize_hint()
+    }
+
+    fn track_info_updated(&self, info: TrackInfo) {
+        self.inner.track_info_updated(info);
+    }
+}
 
 pub mod dsp;
 mod editor;
@@ -1272,7 +1398,7 @@ impl Plugin for Sushi {
     const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
-    type Editor = EguiEditor<SushiEditor>;
+    type Editor = SushiEditors;
     type SysExMessage = ();
     type BackgroundTask = ();
 
@@ -1284,7 +1410,10 @@ impl Plugin for Sushi {
         let scope_rx = self.scope_rx.take()?;
         let keyboard_tx = self.keyboard_tx.take()?;
 
-        create_egui_editor(
+        let callbacks = CallbackSlot::new();
+        let resize = Arc::new(WindowResize(callbacks.clone()));
+
+        let inner = create_egui_editor(
             self.editor_state.clone(),
             self.repaint_notifier.clone(),
             // The editor may be resized by the host. The panel reflows
@@ -1301,8 +1430,10 @@ impl Plugin for Sushi {
                 self.arp_position.clone(),
                 self.voice_count.clone(),
                 self.mod_feedback.clone(),
+                Some(Arc::new(move |width: f32, height: f32| resize.request(width, height))),
             ),
-        )
+        )?;
+        Some(SushiEditors { inner, callbacks })
     }
 
     /// Old projects were saved before the Modern/Legacy switch existed. The

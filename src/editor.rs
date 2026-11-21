@@ -761,18 +761,16 @@ const LED_SIZE: f32 = 6.0;
 const ARP_LED_SIZE: f32 = 10.0;
 /// The number of the lights of the voice meter.
 const VOICE_LEDS: usize = 16;
-/// The width of a light of the voice meter.
-const VOICE_LED_WIDTH: f32 = 5.0;
-/// The height of a light of the voice meter.
-const VOICE_LED_HEIGHT: f32 = 8.0;
-/// The gap between two lights of the voice meter.
-const VOICE_LED_GAP: f32 = 2.0;
-/// The gap between the caption of the voice meter and its lights.
-const VOICE_METER_GAP: f32 = 8.0;
 /// The width of a page button (MOD / FX) in the header.
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
 /// The width of the oscilloscope at the right end of the header.
 const SCOPE_WIDTH: f32 = 190.0;
+/// The number of cells of the level meter of the header.
+const LEVEL_CELLS: usize = 28;
+/// The gap between two cells of the level meter.
+const LEVEL_CELL_GAP: f32 = 2.0;
+/// The height of a cell of the level meter.
+const LEVEL_CELL_HEIGHT: f32 = 8.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The largest font of the preset display, in the design size. Long names use
@@ -1014,6 +1012,46 @@ impl Layout {
     }
 }
 
+/// A linear peak mapped onto the 60 dB scale of the meters.
+fn db_norm(value: f32) -> f32 {
+    if value <= 0.000_001 {
+        return 0.0;
+    }
+    ((20.0 * value.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+/// The level meter of the header: a row of cells that is filled up to the
+/// level of the sound. A cell keeps the color of its own position, so a loud
+/// signal also pushes the lit cells into the orange and into the red.
+fn level_meter(painter: &egui::Painter, rect: Rect, peak: f32, zoom: f32) {
+    let cells = LEVEL_CELLS;
+    let gap = LEVEL_CELL_GAP * zoom;
+    let cell_width = ((rect.width() - gap * (cells as f32 - 1.0)) / cells as f32).max(1.0);
+    let height = LEVEL_CELL_HEIGHT * zoom;
+    let top = rect.center().y - height * 0.5;
+    let lit = (db_norm(peak) * cells as f32).round() as usize;
+
+    for index in 0..cells {
+        let cell = Rect::from_min_size(
+            egui::pos2(rect.left() + index as f32 * (cell_width + gap), top),
+            egui::vec2(cell_width, height),
+        );
+        let share = (index as f32 + 1.0) / cells as f32;
+        let color = if index < lit {
+            if share > 0.94 {
+                palette().status_error
+            } else if share > 0.80 {
+                palette().accent
+            } else {
+                palette().led_on
+            }
+        } else {
+            palette().track
+        };
+        painter.rect_filled(cell, CornerRadius::ZERO, color);
+    }
+}
+
 /// The size of a font of the panel at the given zoom.
 fn font_size(size: f32, zoom: f32) -> f32 {
     size * zoom
@@ -1217,6 +1255,8 @@ pub struct SushiEditor {
     zoom_level: usize,
     /// The level picked in the menu, as a cap for [`Layout::for_rect`].
     zoom_cap: f32,
+    /// How the panel asks the host for a bigger or a smaller window.
+    resize_window: Option<Arc<dyn Fn(f32, f32) + Send + Sync>>,
     /// Whether the panel snaps to a level instead of following the window
     /// continuously. The geometry tests turn this off to measure the
     /// continuous layout.
@@ -1245,18 +1285,24 @@ impl SushiEditor {
         arp_position: Arc<AtomicUsize>,
         voice_count: Arc<AtomicUsize>,
         mod_feedback: Arc<ModFeedback>,
+        resize_window: Option<Arc<dyn Fn(f32, f32) + Send + Sync>>,
     ) -> Self {
         let mut editor = Self {
             params,
             scope_rx,
             keyboard_tx,
             held_keys,
+            arp_led,
+            arp_position,
+            voice_count,
+            mod_feedback,
             history: VecDeque::with_capacity(HISTORY_LEN),
             gui_ctx: None,
             last_persisted: PersistedEditorState::default(),
             zoom: 1.0,
             zoom_level: DEFAULT_ZOOM_LEVEL,
             zoom_cap: ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL],
+            resize_window,
             snap_zoom: true,
             zoom_menu: None,
             state: EditorState {
@@ -1329,10 +1375,6 @@ impl SushiEditor {
                 patch_preview: String::new(),
                 patch_preview_title: String::new(),
             },
-            arp_led,
-            arp_position,
-            voice_count,
-            mod_feedback,
         };
         editor.init_patch_state();
         editor.last_persisted = editor.read_persisted_state();
@@ -1693,23 +1735,17 @@ impl SushiEditor {
             self.zoom = layout.zoom;
         }
 
-        // The octave readout of the info panel is taken before the borrow of
-        // the state that the pages need.
-        let octave_label = self.state.keyboard.label();
-
         {
             // Split the borrow of the editor, so that the parameters and the
             // state of the panel can be used at the same time.
             let params = self.params.as_ref();
             let history = &self.history;
-            let voice_count = &self.voice_count;
             let mod_feedback = self.mod_feedback.as_ref();
             let mut ctx = Ctx {
                 params,
                 setter: &setter,
                 state: &mut self.state,
                 history,
-                voice_count,
                 mod_feedback,
                 slider_width: layout.slider_width(),
                 zoom: layout.zoom,
@@ -1750,7 +1786,7 @@ impl SushiEditor {
                 }
             }
 
-            draw_info_bar(ui, &layout, ctx.state, &self.voice_count, &octave_label);
+            draw_info_bar(ui, &layout, ctx.state, &self.voice_count);
         }
 
         // The keyboard strip sits under the bands and above the footer. It is
@@ -1777,6 +1813,14 @@ impl SushiEditor {
                     self.zoom_level = level;
                     self.zoom_cap = ZOOM_LEVELS[level];
                     self.zoom_menu = None;
+                    // The window of the host has to grow with the level,
+                    // otherwise the panel could never be drawn bigger.
+                    if let Some(resize) = &self.resize_window {
+                        resize(
+                            WINDOW_WIDTH * ZOOM_LEVELS[level],
+                            WINDOW_HEIGHT * ZOOM_LEVELS[level],
+                        );
+                    }
                     ui.ctx().request_repaint();
                 }
                 Some(MenuAction::Open(panel)) => {
@@ -1823,130 +1867,147 @@ const SHORTCUTS: [(&str, &str); 8] = [
 
 /// Draws the menu of the panel and reports what was clicked.
 ///
-/// The menu has two panels behind one level of nesting: `Zoom` opens the list
-/// of levels, `Shortcuts` opens the help panel. Every command of the panel is
-/// reachable from here, so the panel itself needs no legend.
-fn panel_menu(
-    ui: &mut egui::Ui,
-    pos: Pos2,
-    zoom: f32,
-    panel: MenuPanel,
-    current: usize,
-) -> Option<MenuAction> {
+/// The parent panel always stays on screen: `Zoom` and `Shortcuts` open a
+/// second panel next to their row, so the item that was clicked never
+/// disappears from under the pointer.
+fn panel_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, panel: MenuPanel, current: usize) -> Option<MenuAction> {
     let row = 22.0 * zoom;
     let pad = 4.0 * zoom;
-
-    // The rows of the panel that is open, as (label, action).
-    let rows: Vec<(String, Option<MenuAction>)> = match panel {
-        MenuPanel::Main => vec![
-            ("Zoom".to_string(), Some(MenuAction::Open(MenuPanel::Zoom))),
-            (
-                "Shortcuts".to_string(),
-                Some(MenuAction::Open(MenuPanel::Help)),
-            ),
-        ],
-        MenuPanel::Zoom => ZOOM_LEVELS
-            .iter()
-            .enumerate()
-            .map(|(index, level)| {
-                (
-                    format!("{:.0}%", level * 100.0),
-                    Some(MenuAction::Zoom(index)),
-                )
-            })
-            .collect(),
-        MenuPanel::Help => SHORTCUTS
-            .iter()
-            .map(|(key, what)| (format!("{key}   {what}"), None))
-            .collect(),
-    };
-
-    let width = match panel {
-        MenuPanel::Main => 118.0 * zoom,
-        MenuPanel::Zoom => 74.0 * zoom,
-        MenuPanel::Help => 230.0 * zoom,
-    };
-    let height = row * rows.len() as f32 + 2.0 * pad;
-
     let screen = ui.ctx().content_rect();
-    let x = pos.x.min(screen.right() - width - 4.0).max(screen.left() + 4.0);
-    let y = pos.y.min(screen.bottom() - height - 4.0).max(screen.top() + 4.0);
-    let rect = Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
-
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::ZERO, palette().field_bg);
-    painter.rect_stroke(
-        rect,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, palette().line),
-        egui::StrokeKind::Inside,
+
+    let main: [(&str, MenuPanel); 2] = [
+        ("Zoom", MenuPanel::Zoom),
+        ("Shortcuts", MenuPanel::Help),
+    ];
+    let main_w = 128.0 * zoom;
+    let main_h = row * main.len() as f32 + 2.0 * pad;
+    let main_rect = Rect::from_min_size(
+        egui::pos2(
+            pos.x.clamp(screen.left() + 4.0, (screen.right() - main_w - 4.0).max(4.0)),
+            pos.y.clamp(screen.top() + 4.0, (screen.bottom() - main_h - 4.0).max(4.0)),
+        ),
+        egui::vec2(main_w, main_h),
     );
+    flat_menu(painter, main_rect);
 
     let mut action = None;
-    for (index, (label, row_action)) in rows.iter().enumerate() {
+    for (index, (label, opens)) in main.iter().enumerate() {
         let cell = Rect::from_min_size(
-            egui::pos2(rect.left() + pad, rect.top() + pad + row * index as f32),
-            egui::vec2(width - 2.0 * pad, row),
+            egui::pos2(main_rect.left() + pad, main_rect.top() + pad + row * index as f32),
+            egui::vec2(main_w - 2.0 * pad, row),
         );
-        let response = ui.interact(
-            cell,
-            ui.scope_id().with(("sushi-menu", panel as u8, index)),
-            if row_action.is_some() {
-                Sense::click()
-            } else {
-                Sense::hover()
-            },
-        );
-        let hovered = response.hovered();
-        if hovered && row_action.is_some() {
+        let response = ui.interact(cell, ui.scope_id().with(("sushi-menu", index)), Sense::click());
+        let open = *opens == panel;
+        if response.hovered() || open {
             painter.rect_filled(cell, CornerRadius::ZERO, palette().track);
         }
-
-        // The dot marks the zoom level that is in use.
-        let checked = panel == MenuPanel::Zoom && index == current;
-        if checked {
-            painter.circle_filled(
-                egui::pos2(cell.left() + 7.0 * zoom, cell.center().y),
-                2.5 * zoom,
-                palette().accent,
+        painter.text(
+            egui::pos2(cell.left() + 6.0 * zoom, cell.center().y),
+            Align2::LEFT_CENTER,
+            *label,
+            FontId::new(font_size(10.5, zoom), label_family()),
+            if open { palette().text } else { palette().muted },
+        );
+        // The chevron of a submenu, drawn with two lines.
+        let (cx, cy) = (cell.right() - 10.0 * zoom, cell.center().y);
+        for (from, to) in [
+            ((cx - 2.0 * zoom, cy - 3.5 * zoom), (cx + 1.0 * zoom, cy)),
+            ((cx + 1.0 * zoom, cy), (cx - 2.0 * zoom, cy + 3.5 * zoom)),
+        ] {
+            painter.line_segment(
+                [egui::pos2(from.0, from.1), egui::pos2(to.0, to.1)],
+                Stroke::new(1.0 * zoom, palette().muted),
             );
         }
-
-        painter.text(
-            egui::pos2(
-                cell.left() + if panel == MenuPanel::Zoom { 16.0 * zoom } else { 6.0 * zoom },
-                cell.center().y,
-            ),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::new(
-                font_size(if panel == MenuPanel::Help { 9.0 } else { 10.5 }, zoom),
-                if panel == MenuPanel::Help {
-                    egui::FontFamily::Monospace
-                } else {
-                    label_family()
-                },
-            ),
-            if checked || hovered {
-                palette().text
-            } else {
-                palette().muted
-            },
-        );
-
-        // `Zoom` opens its list on hover, like a submenu.
-        if panel == MenuPanel::Main && hovered && index == 0 {
-            action = Some(MenuAction::Open(MenuPanel::Zoom));
-        }
         if response.clicked() {
-            action = row_action.clone();
+            action = Some(MenuAction::Open(*opens));
         }
     }
 
-    // A click outside of the panel closes it.
+    // The submenu, anchored on the row of the panel that is open.
+    if panel != MenuPanel::Main {
+        let entries: Vec<(String, Option<MenuAction>, bool)> = match panel {
+            MenuPanel::Zoom => ZOOM_LEVELS
+                .iter()
+                .enumerate()
+                .map(|(index, level)| {
+                    (
+                        format!("{:.0}%", level * 100.0),
+                        Some(MenuAction::Zoom(index)),
+                        index == current,
+                    )
+                })
+                .collect(),
+            _ => SHORTCUTS
+                .iter()
+                .map(|(key, what)| (format!("{key}  {what}"), None, false))
+                .collect(),
+        };
+        let sub_w = if panel == MenuPanel::Zoom { 78.0 * zoom } else { 250.0 * zoom };
+        let sub_h = row * entries.len() as f32 + 2.0 * pad;
+        let anchor_row = if panel == MenuPanel::Zoom { 0.0 } else { 1.0 };
+        let mut sub_x = main_rect.right();
+        if sub_x + sub_w > screen.right() - 4.0 {
+            sub_x = (main_rect.left() - sub_w).max(screen.left() + 4.0);
+        }
+        let sub_rect = Rect::from_min_size(
+            egui::pos2(
+                sub_x,
+                (main_rect.top() + pad + row * anchor_row)
+                    .clamp(screen.top() + 4.0, (screen.bottom() - sub_h - 4.0).max(4.0)),
+            ),
+            egui::vec2(sub_w, sub_h),
+        );
+        flat_menu(painter, sub_rect);
+
+        for (index, (label, item_action, checked)) in entries.iter().enumerate() {
+            let cell = Rect::from_min_size(
+                egui::pos2(sub_rect.left() + pad, sub_rect.top() + pad + row * index as f32),
+                egui::vec2(sub_w - 2.0 * pad, row),
+            );
+            let response = ui.interact(
+                cell,
+                ui.scope_id().with(("sushi-submenu", panel as u8, index)),
+                if item_action.is_some() { Sense::click() } else { Sense::hover() },
+            );
+            if response.hovered() && item_action.is_some() {
+                painter.rect_filled(cell, CornerRadius::ZERO, palette().track);
+            }
+            if *checked {
+                painter.circle_filled(
+                    egui::pos2(cell.left() + 8.0 * zoom, cell.center().y),
+                    2.5 * zoom,
+                    palette().accent,
+                );
+            }
+            painter.text(
+                egui::pos2(
+                    cell.left() + if panel == MenuPanel::Zoom { 18.0 * zoom } else { 4.0 * zoom },
+                    cell.center().y,
+                ),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::new(
+                    font_size(if panel == MenuPanel::Zoom { 10.5 } else { 9.0 }, zoom),
+                    if panel == MenuPanel::Zoom {
+                        label_family()
+                    } else {
+                        egui::FontFamily::Monospace
+                    },
+                ),
+                if *checked || response.hovered() { palette().text } else { palette().muted },
+            );
+            if response.clicked() {
+                action = item_action.clone();
+            }
+        }
+    }
+
+    // A click outside of both panels closes the menu.
     if action.is_none() && ui.input(|input| input.pointer.any_click()) {
         if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
-            if !rect.contains(pointer) {
+            if !main_rect.contains(pointer) {
                 action = Some(MenuAction::Close);
             }
         }
@@ -1954,90 +2015,76 @@ fn panel_menu(
     action
 }
 
+/// The flat plate of one menu panel.
+fn flat_menu(painter: &egui::Painter, rect: Rect) {
+    painter.rect_filled(rect, CornerRadius::ZERO, palette().field_bg);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, palette().line),
+        egui::StrokeKind::Inside,
+    );
+}
+
+
 
 /// The info panel at the left of the bottom row.
 ///
-/// There is no footer any more: the readout of the last parameter and the two
-/// live numbers that used to be spread over the bottom edge of the panel now
-/// share one block next to the keys.
-fn draw_info_bar(
-    ui: &mut egui::Ui,
-    layout: &Layout,
-    state: &EditorState,
-    voice_count: &AtomicUsize,
-    octave: &str,
-) {
+/// One line: the name of the last parameter on the left and its value on the
+/// right, both as large as the block allows, and the number of voices that are
+/// sounding along the bottom edge.
+fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_count: &AtomicUsize) {
     let zoom = layout.zoom;
     let rect = layout.info();
     let painter = ui.painter_at(rect);
     flat_box(&painter, rect, palette().paper);
-    let inner = rect.shrink(8.0 * zoom);
+    let inner = rect.shrink(10.0 * zoom);
 
-    // The readout of the last parameter that was touched, or the name of the
-    // sound when nothing has been moved yet.
     let (label, value) = state
         .readout
         .clone()
         .unwrap_or_else(|| ("PATCH".to_string(), display_text(state)));
+
+    // The label and the value share one baseline: the label on the left, the
+    // value flush right, so the block reads like one line of an instrument.
+    let baseline = inner.top() + 20.0 * zoom;
     tracked_text(
         &painter,
-        inner.left_top(),
-        Align2::LEFT_TOP,
-        &truncate_name(&label, 24),
-        FontId::new(font_size(7.5, zoom), label_family()),
+        egui::pos2(inner.left(), baseline),
+        Align2::LEFT_BOTTOM,
+        &truncate_name(&label, 16),
+        FontId::new(font_size(9.5, zoom), label_family()),
         palette().title_blue,
-        0.6 * zoom,
+        0.8 * zoom,
     );
+    let value_text = truncate_name(&value, 14);
+    let value_font = FontId::new(font_size(17.0, zoom), value_family());
+    let value_width = text_width(&painter, &value_text, &value_font);
+    painter.text(
+        egui::pos2(inner.right() - value_width, baseline),
+        Align2::LEFT_BOTTOM,
+        value_text,
+        value_font,
+        palette().text,
+    );
+
+    // The voice count along the bottom edge of the block.
+    let footer = inner.bottom();
     tracked_text(
         &painter,
-        egui::pos2(inner.left(), inner.top() + 26.0 * zoom),
-        Align2::LEFT_TOP,
-        &truncate_name(&value, 16),
-        FontId::new(font_size(15.0, zoom), value_family()),
-        palette().text,
-        0.2 * zoom,
+        egui::pos2(inner.left(), footer),
+        Align2::LEFT_BOTTOM,
+        "VOICES",
+        FontId::new(font_size(8.0, zoom), label_family()),
+        palette().muted,
+        0.9 * zoom,
     );
-
-    // The two live numbers along the bottom of the block: the octave of the
-    // computer keyboard and the voices that are playing.
-    let bottom = inner.bottom() - 4.0 * zoom;
-    let cell = inner.width() * 0.5;
-    let voices = voice_count.load(Ordering::Relaxed).min(VOICE_LEDS);
-    for (index, (name, value)) in [
-        ("OCT", octave.to_string()),
-        ("VOICES", voices.to_string()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let left = inner.left() + cell * index as f32;
-        tracked_text(
-            &painter,
-            egui::pos2(left, bottom),
-            Align2::LEFT_BOTTOM,
-            name,
-            FontId::new(font_size(7.5, zoom), label_family()),
-            palette().muted,
-            0.8 * zoom,
-        );
-        tracked_text(
-            &painter,
-            egui::pos2(left + 46.0 * zoom, bottom),
-            Align2::LEFT_BOTTOM,
-            &value,
-            FontId::new(font_size(9.5, zoom), value_family()),
-            palette().lcd_fg,
-            0.2 * zoom,
-        );
-    }
-
-    // A hairline between the two numbers, so the block reads as two cells.
-    painter.line_segment(
-        [
-            egui::pos2(inner.left() + cell - 4.0 * zoom, bottom - 12.0 * zoom),
-            egui::pos2(inner.left() + cell - 4.0 * zoom, bottom),
-        ],
-        Stroke::new(1.0, palette().rule),
+    painter.text(
+        egui::pos2(inner.right(), footer),
+        Align2::RIGHT_BOTTOM,
+        voice_count.load(Ordering::Relaxed).min(VOICE_LEDS).to_string(),
+        FontId::new(font_size(11.0, zoom), value_family()),
+        palette().lcd_fg,
     );
 }
 
@@ -2298,13 +2345,9 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         };
     }
 
-    // The meter that shows how many voices are playing.
-    voice_meter(
-        &painter,
-        rects.meter,
-        ctx.voice_count.load(Ordering::Relaxed).min(VOICE_LEDS),
-        zoom,
-    );
+    // The meter that shows how loud the panel is playing: a row of cells that
+    // change color with the level.
+    level_meter(&painter, rects.meter, ctx.state.activity, zoom);
 
     // The oscilloscope fills the right-hand end of the header. The activity
     // and clipping lights are gone: the trace and the voice meter are the only
@@ -4315,7 +4358,6 @@ struct Ctx<'a, 'b> {
     /// The samples of the oscilloscope.
     history: &'a VecDeque<f32>,
     /// The number of voices that are currently playing.
-    voice_count: &'a Arc<AtomicUsize>,
     /// The last values of the global modulation sources.
     mod_feedback: &'a ModFeedback,
     /// The width of the sliders of the panel.
@@ -6687,48 +6729,6 @@ fn format_amount(value: f32) -> String {
 
 /// The meter of the header that shows how many voices are playing. The lights
 /// are tiny squares, so that the whole meter fits between the presets and the
-/// lights of the activity meter.
-fn voice_meter(painter: &egui::Painter, rect: Rect, voices: usize, zoom: f32) {
-    let font = FontId::new(font_size(7.2, zoom), label_family());
-    let label = tracked_galley(painter, "VOICES", font.clone(), palette().muted, 1.0 * zoom);
-    let label_width = label.size().x;
-
-    let row_width =
-        (VOICE_LEDS as f32 * VOICE_LED_WIDTH + (VOICE_LEDS as f32 - 1.0) * VOICE_LED_GAP) * zoom;
-    let total = label_width + VOICE_METER_GAP * zoom + row_width;
-
-    // The meter is centered in the free space of the header.
-    let left = (rect.left() + (rect.width() - total) * 0.5).round();
-    let top = rect.center().y - VOICE_LED_HEIGHT * zoom * 0.5;
-
-    painter.galley(
-        Align2::LEFT_CENTER
-            .anchor_size(egui::pos2(left, rect.center().y), label.size())
-            .min,
-        label,
-        palette().muted,
-    );
-
-    // The row of the lights. Every light that stands for a playing voice is
-    // green, the others are dark.
-    let row_left = (left + label_width + VOICE_METER_GAP * zoom).round();
-    for index in 0..VOICE_LEDS {
-        let x = row_left + index as f32 * (VOICE_LED_WIDTH + VOICE_LED_GAP) * zoom;
-        let color = if index < voices {
-            palette().led_on
-        } else {
-            palette().led_off
-        };
-        painter.rect_filled(
-            Rect::from_min_size(
-                egui::pos2(x, top),
-                egui::vec2(VOICE_LED_WIDTH, VOICE_LED_HEIGHT) * zoom,
-            ),
-            CornerRadius::ZERO,
-            color,
-        );
-    }
-}
 
 /// The color of the arpeggiator light for a step. The color is replaced on
 /// every step instead of switching the light off and on, so that a pattern at
@@ -7288,6 +7288,7 @@ mod tests {
             arp_position,
             voice_count,
             mod_feedback,
+            None,
         );
         // The geometry tests measure the panel continuously, so the editor
         // they drive has no cap and does not snap to a level.
@@ -7322,7 +7323,6 @@ mod tests {
             setter,
             state: &mut editor.state,
             history: &editor.history,
-            voice_count: &editor.voice_count,
             mod_feedback: &editor.mod_feedback,
             slider_width: SLIDER_WIDTH,
             zoom: 1.0,
@@ -8760,7 +8760,7 @@ mod tests {
             // The meter still fits between the tabs and the lights of the
             // activity meter.
             assert!(rects.meter.right() <= rect.right() - 194.0 * zoom);
-            assert!(rects.meter.width() > VOICE_LEDS as f32 * VOICE_LED_WIDTH * zoom);
+            assert!(rects.meter.width() > LEVEL_CELLS as f32 * LEVEL_CELL_GAP * zoom);
         }
     }
 
@@ -12071,14 +12071,14 @@ faders and the three macros; the VCA is main-page only"
                 "the browser runs into the strip at {expected}: {pos:?} / {strip:?}"
             );
         }
-        // The octave readout lives in the info panel next to the keys now.
+        // The voice count of the info panel stays out of the keys.
         let (_, pos) = names
             .iter()
-            .find(|(text, _)| text == "OCT")
-            .unwrap_or_else(|| panic!("the info panel has no OCT caption: {names:?}"));
+            .find(|(text, _)| text == "VOICES")
+            .unwrap_or_else(|| panic!("the info panel has no VOICES caption: {names:?}"));
         assert!(
             !strip.contains(*pos),
-            "the OCT caption is inside the keys: {pos:?} / {strip:?}"
+            "the VOICES caption is inside the keys: {pos:?} / {strip:?}"
         );
     }
 

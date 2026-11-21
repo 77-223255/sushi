@@ -240,11 +240,6 @@ impl VirtualKeyboard {
         self.octave
     }
 
-    /// The note that the computer keyboard starts on, for the info panel.
-    pub fn label(&self) -> String {
-        note_name(self.base_note())
-    }
-
     /// Moves the computer keyboard by whole octaves, as `Z` and `X` do.
     pub fn shift_octave(&mut self, delta: i32) {
         self.octave = (self.octave + delta).clamp(MIN_OCTAVE, MAX_OCTAVE);
