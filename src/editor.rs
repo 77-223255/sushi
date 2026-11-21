@@ -237,8 +237,11 @@ const HEADER_HEIGHT: f32 = 48.0;
 const GROUP_GAP: f32 = 12.0;
 /// The gap between two bands. It holds the legend of the band.
 const BAND_GAP: f32 = 8.0;
-/// The footer strip under the last band.
-const FOOTER_HEIGHT: f32 = 20.0;
+/// The width of the info panel at the left of the bottom row, in the design
+/// size of the panel.
+const INFO_WIDTH: f32 = 300.0;
+/// The gap between the info panel and the keys.
+const INFO_GAP: f32 = 8.0;
 /// The padding inside a section.
 const GROUP_PADDING: f32 = 4.0;
 /// The height of the line that holds the title of a section and the controls
@@ -768,6 +771,8 @@ const VOICE_LED_GAP: f32 = 2.0;
 const VOICE_METER_GAP: f32 = 8.0;
 /// The width of a page button (MOD / FX) in the header.
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
+/// The width of the oscilloscope at the right end of the header.
+const SCOPE_WIDTH: f32 = 190.0;
 /// The longest name that the display of the header shows.
 const LCD_NAME_LENGTH: usize = 20;
 /// The largest font of the preset display, in the design size. Long names use
@@ -949,11 +954,29 @@ impl Layout {
     }
 
     /// The rect of the keyboard strip, between the last band and the footer.
-    fn keyboard(&self) -> Rect {
+    /// The bottom row: the info panel on the left and the keys on the right.
+    fn bottom(&self) -> Rect {
+        let top = self.base_rows[3].bottom() + BAND_GAP;
         self.scale(Rect::from_min_size(
-            egui::pos2(MARGIN, self.base_rows[3].bottom() + BAND_GAP),
-            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, keyboard::STRIP_HEIGHT),
+            egui::pos2(MARGIN, top),
+            egui::vec2(WINDOW_WIDTH - 2.0 * MARGIN, WINDOW_HEIGHT - MARGIN - top),
         ))
+    }
+
+    /// The info panel at the left of the bottom row.
+    fn info(&self) -> Rect {
+        let row = self.bottom();
+        Rect::from_min_size(row.min, egui::vec2(INFO_WIDTH * self.zoom, row.height()))
+    }
+
+    /// The keys at the right of the bottom row.
+    fn keyboard(&self) -> Rect {
+        let row = self.bottom();
+        let left = row.left() + (INFO_WIDTH + INFO_GAP) * self.zoom;
+        Rect::from_min_max(
+            egui::pos2(left, row.top()),
+            egui::pos2(row.right(), row.bottom()),
+        )
     }
 
     /// The rect of one section of a row with explicit proportions.
@@ -1199,7 +1222,7 @@ pub struct SushiEditor {
     /// continuous layout.
     snap_zoom: bool,
     /// Where the right-click zoom menu is open, if it is open.
-    zoom_menu: Option<Pos2>,
+    zoom_menu: Option<(Pos2, MenuPanel)>,
     /// The number of arpeggiator triggers.
     arp_led: Arc<AtomicUsize>,
     /// The position of the arpeggiator in its pattern.
@@ -1632,7 +1655,9 @@ impl SushiEditor {
             Sense::click(),
         );
         if background.secondary_clicked() {
-            self.zoom_menu = ui.input(|input| input.pointer.interact_pos());
+            self.zoom_menu = ui
+                .input(|input| input.pointer.interact_pos())
+                .map(|pos| (pos, MenuPanel::Main));
         } else if background.clicked() {
             self.zoom_menu = None;
         }
@@ -1667,6 +1692,10 @@ impl SushiEditor {
             ui.reset_style();
             self.zoom = layout.zoom;
         }
+
+        // The octave readout of the info panel is taken before the borrow of
+        // the state that the pages need.
+        let octave_label = self.state.keyboard.label();
 
         {
             // Split the borrow of the editor, so that the parameters and the
@@ -1721,7 +1750,7 @@ impl SushiEditor {
                 }
             }
 
-            draw_footer(ui, &layout, ctx.state);
+            draw_info_bar(ui, &layout, ctx.state, &self.voice_count, &octave_label);
         }
 
         // The keyboard strip sits under the bands and above the footer. It is
@@ -1741,32 +1770,103 @@ impl SushiEditor {
         };
         keyboard.show(ui, keyboard_rect, layout.zoom, &held_keys, send);
 
-        // The zoom menu is drawn last, so it covers everything.
-        if let Some(pos) = self.zoom_menu {
-            let chosen = zoom_menu(ui, pos, layout.zoom, self.zoom_level);
-            if let Some(level) = chosen {
-                self.zoom_level = level;
-                self.zoom_cap = ZOOM_LEVELS[level];
-                self.zoom_menu = None;
-                ui.ctx().request_repaint();
+        // The menu is drawn last, so it covers everything.
+        if let Some((pos, panel)) = self.zoom_menu {
+            match panel_menu(ui, pos, layout.zoom, panel, self.zoom_level) {
+                Some(MenuAction::Zoom(level)) => {
+                    self.zoom_level = level;
+                    self.zoom_cap = ZOOM_LEVELS[level];
+                    self.zoom_menu = None;
+                    ui.ctx().request_repaint();
+                }
+                Some(MenuAction::Open(panel)) => {
+                    self.zoom_menu = Some((pos, panel));
+                    ui.ctx().request_repaint();
+                }
+                Some(MenuAction::Close) => self.zoom_menu = None,
+                None => {}
             }
-        } else if ui.input(|input| input.pointer.any_click()) {
-            // A click anywhere else keeps the menu of the previous frame from
-            // coming back.
         }
     }
 }
 
-/// The right-click menu of the panel: the levels of the zoom.
+/// Which panel of the right-click menu is open.
+#[derive(Clone, Copy, PartialEq)]
+pub enum MenuPanel {
+    /// `Zoom` and `Shortcuts`.
+    Main,
+    /// The zoom levels, opened from `Zoom`.
+    Zoom,
+    /// The list of mouse and keyboard shortcuts.
+    Help,
+}
+
+/// What a click in the menu asked for.
+#[derive(Clone)]
+pub enum MenuAction {
+    Zoom(usize),
+    Open(MenuPanel),
+    Close,
+}
+
+/// The lines of the shortcut panel: a key and what it does.
+const SHORTCUTS: [(&str, &str); 8] = [
+    ("DRAG", "change a value"),
+    ("WHEEL", "change a value"),
+    ("SHIFT+WHEEL", "fine steps"),
+    ("RIGHT-CLICK", "type a value"),
+    ("DBL-CLICK", "reset a value"),
+    ("A S D F ...", "play the white keys"),
+    ("W E T Y U O P", "play the black keys"),
+    ("Z / X", "octave down / up"),
+];
+
+/// Draws the menu of the panel and reports what was clicked.
 ///
-/// It returns the level that was picked in this frame, if any. The menu is
-/// drawn with the painter instead of an egui window, so it keeps the flat look
-/// of the panel and its own 1 px border.
-fn zoom_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, current: usize) -> Option<usize> {
-    let row_height = 22.0 * zoom;
-    let width = 118.0 * zoom;
+/// The menu has two panels behind one level of nesting: `Zoom` opens the list
+/// of levels, `Shortcuts` opens the help panel. Every command of the panel is
+/// reachable from here, so the panel itself needs no legend.
+fn panel_menu(
+    ui: &mut egui::Ui,
+    pos: Pos2,
+    zoom: f32,
+    panel: MenuPanel,
+    current: usize,
+) -> Option<MenuAction> {
+    let row = 22.0 * zoom;
     let pad = 4.0 * zoom;
-    let height = row_height * ZOOM_LEVELS.len() as f32 + 2.0 * pad;
+
+    // The rows of the panel that is open, as (label, action).
+    let rows: Vec<(String, Option<MenuAction>)> = match panel {
+        MenuPanel::Main => vec![
+            ("Zoom".to_string(), Some(MenuAction::Open(MenuPanel::Zoom))),
+            (
+                "Shortcuts".to_string(),
+                Some(MenuAction::Open(MenuPanel::Help)),
+            ),
+        ],
+        MenuPanel::Zoom => ZOOM_LEVELS
+            .iter()
+            .enumerate()
+            .map(|(index, level)| {
+                (
+                    format!("{:.0}%", level * 100.0),
+                    Some(MenuAction::Zoom(index)),
+                )
+            })
+            .collect(),
+        MenuPanel::Help => SHORTCUTS
+            .iter()
+            .map(|(key, what)| (format!("{key}   {what}"), None))
+            .collect(),
+    };
+
+    let width = match panel {
+        MenuPanel::Main => 118.0 * zoom,
+        MenuPanel::Zoom => 74.0 * zoom,
+        MenuPanel::Help => 230.0 * zoom,
+    };
+    let height = row * rows.len() as f32 + 2.0 * pad;
 
     let screen = ui.ctx().content_rect();
     let x = pos.x.min(screen.right() - width - 4.0).max(screen.left() + 4.0);
@@ -1782,109 +1882,165 @@ fn zoom_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, current: usize) -> Option<
         egui::StrokeKind::Inside,
     );
 
-    let mut chosen = None;
-    for (index, level) in ZOOM_LEVELS.iter().enumerate() {
-        let row = Rect::from_min_size(
-            egui::pos2(rect.left() + pad, rect.top() + pad + row_height * index as f32),
-            egui::vec2(width - 2.0 * pad, row_height),
+    let mut action = None;
+    for (index, (label, row_action)) in rows.iter().enumerate() {
+        let cell = Rect::from_min_size(
+            egui::pos2(rect.left() + pad, rect.top() + pad + row * index as f32),
+            egui::vec2(width - 2.0 * pad, row),
         );
         let response = ui.interact(
-            row,
-            ui.scope_id().with(("sushi-zoom-menu", index)),
-            Sense::click(),
+            cell,
+            ui.scope_id().with(("sushi-menu", panel as u8, index)),
+            if row_action.is_some() {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
         );
-        if response.hovered() {
-            painter.rect_filled(row, CornerRadius::ZERO, palette().track);
+        let hovered = response.hovered();
+        if hovered && row_action.is_some() {
+            painter.rect_filled(cell, CornerRadius::ZERO, palette().track);
         }
-        if index == current {
+
+        // The dot marks the zoom level that is in use.
+        let checked = panel == MenuPanel::Zoom && index == current;
+        if checked {
             painter.circle_filled(
-                egui::pos2(row.left() + 8.0 * zoom, row.center().y),
+                egui::pos2(cell.left() + 7.0 * zoom, cell.center().y),
                 2.5 * zoom,
                 palette().accent,
             );
         }
+
         painter.text(
-            egui::pos2(row.left() + 18.0 * zoom, row.center().y),
+            egui::pos2(
+                cell.left() + if panel == MenuPanel::Zoom { 16.0 * zoom } else { 6.0 * zoom },
+                cell.center().y,
+            ),
             Align2::LEFT_CENTER,
-            format!("Zoom {:.0}%", level * 100.0),
-            FontId::new(font_size(10.5, zoom), label_family()),
-            if index == current {
+            label,
+            FontId::new(
+                font_size(if panel == MenuPanel::Help { 9.0 } else { 10.5 }, zoom),
+                if panel == MenuPanel::Help {
+                    egui::FontFamily::Monospace
+                } else {
+                    label_family()
+                },
+            ),
+            if checked || hovered {
                 palette().text
             } else {
                 palette().muted
             },
         );
+
+        // `Zoom` opens its list on hover, like a submenu.
+        if panel == MenuPanel::Main && hovered && index == 0 {
+            action = Some(MenuAction::Open(MenuPanel::Zoom));
+        }
         if response.clicked() {
-            chosen = Some(index);
+            action = row_action.clone();
         }
     }
-    chosen
+
+    // A click outside of the panel closes it.
+    if action.is_none() && ui.input(|input| input.pointer.any_click()) {
+        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+            if !rect.contains(pointer) {
+                action = Some(MenuAction::Close);
+            }
+        }
+    }
+    action
 }
 
-/// The footer silkscreen: the model name, the readout of the last parameter
-/// and the shortcuts that are not visible on the faceplate.
-fn draw_footer(ui: &mut egui::Ui, layout: &Layout, state: &EditorState) {
-    let painter = ui.painter_at(layout.panel);
+
+/// The info panel at the left of the bottom row.
+///
+/// There is no footer any more: the readout of the last parameter and the two
+/// live numbers that used to be spread over the bottom edge of the panel now
+/// share one block next to the keys.
+fn draw_info_bar(
+    ui: &mut egui::Ui,
+    layout: &Layout,
+    state: &EditorState,
+    voice_count: &AtomicUsize,
+    octave: &str,
+) {
     let zoom = layout.zoom;
-    let panel = layout.panel;
-    let y = panel.bottom() - (FOOTER_HEIGHT - 4.0) * zoom;
-    painter.line_segment(
-        [
-            egui::pos2(panel.left(), panel.bottom() - FOOTER_HEIGHT * zoom),
-            egui::pos2(panel.right(), panel.bottom() - FOOTER_HEIGHT * zoom),
-        ],
-        Stroke::new(1.0, palette().rule),
-    );
+    let rect = layout.info();
+    let painter = ui.painter_at(rect);
+    flat_box(&painter, rect, palette().paper);
+    let inner = rect.shrink(8.0 * zoom);
 
-    tracked_text(
-        &painter,
-        egui::pos2(panel.left() + 12.0 * zoom, y),
-        Align2::LEFT_TOP,
-        "SUSHI / MODEL 101",
-        FontId::monospace(font_size(7.0, zoom)),
-        palette().muted,
-        1.1 * zoom,
-    );
-    tracked_text(
-        &painter,
-        egui::pos2(panel.right() - 12.0 * zoom, y),
-        Align2::RIGHT_TOP,
-        "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
-        FontId::monospace(font_size(6.8, zoom)),
-        palette().muted,
-        0.4 * zoom,
-    );
-
-    // The live parameter readout: the reference's central value box.
+    // The readout of the last parameter that was touched, or the name of the
+    // sound when nothing has been moved yet.
     let (label, value) = state
         .readout
         .clone()
         .unwrap_or_else(|| ("PATCH".to_string(), display_text(state)));
-    let box_rect = Rect::from_center_size(
-        egui::pos2(panel.center().x, panel.bottom() - 10.0 * zoom),
-        egui::vec2(300.0, 15.0) * zoom,
-    );
-    flat_box(&painter, box_rect, palette().paper);
-    let label = truncate_name(&label, 22);
     tracked_text(
         &painter,
-        egui::pos2(box_rect.left() + 7.0 * zoom, box_rect.center().y),
-        Align2::LEFT_CENTER,
-        &label,
+        inner.left_top(),
+        Align2::LEFT_TOP,
+        &truncate_name(&label, 24),
         FontId::new(font_size(7.5, zoom), label_family()),
         palette().title_blue,
         0.6 * zoom,
     );
     tracked_text(
         &painter,
-        egui::pos2(box_rect.right() - 7.0 * zoom, box_rect.center().y),
-        Align2::RIGHT_CENTER,
-        &value,
-        FontId::new(font_size(10.0, zoom), value_family()),
+        egui::pos2(inner.left(), inner.top() + 26.0 * zoom),
+        Align2::LEFT_TOP,
+        &truncate_name(&value, 16),
+        FontId::new(font_size(15.0, zoom), value_family()),
         palette().text,
         0.2 * zoom,
     );
+
+    // The two live numbers along the bottom of the block: the octave of the
+    // computer keyboard and the voices that are playing.
+    let bottom = inner.bottom() - 4.0 * zoom;
+    let cell = inner.width() * 0.5;
+    let voices = voice_count.load(Ordering::Relaxed).min(VOICE_LEDS);
+    for (index, (name, value)) in [
+        ("OCT", octave.to_string()),
+        ("VOICES", voices.to_string()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let left = inner.left() + cell * index as f32;
+        tracked_text(
+            &painter,
+            egui::pos2(left, bottom),
+            Align2::LEFT_BOTTOM,
+            name,
+            FontId::new(font_size(7.5, zoom), label_family()),
+            palette().muted,
+            0.8 * zoom,
+        );
+        tracked_text(
+            &painter,
+            egui::pos2(left + 46.0 * zoom, bottom),
+            Align2::LEFT_BOTTOM,
+            &value,
+            FontId::new(font_size(9.5, zoom), value_family()),
+            palette().lcd_fg,
+            0.2 * zoom,
+        );
+    }
+
+    // A hairline between the two numbers, so the block reads as two cells.
+    painter.line_segment(
+        [
+            egui::pos2(inner.left() + cell - 4.0 * zoom, bottom - 12.0 * zoom),
+            egui::pos2(inner.left() + cell - 4.0 * zoom, bottom),
+        ],
+        Stroke::new(1.0, palette().rule),
+    );
 }
+
 
 /// Draws the sad face that tells the user that the window is too small for
 /// the panel. It works at every size, even at a tiny one.
@@ -2011,11 +2167,11 @@ fn header_rects(rect: Rect, zoom: f32) -> HeaderRects {
         egui::vec2(PAGE_BUTTON_WIDTH, 28.0) * zoom,
     );
 
-    // The meter that shows how many voices are playing. It sits in the free
-    // space between the page tabs and the lights of the activity meter.
+    // The voice meter takes the free space between the page tabs and the
+    // oscilloscope, so the header has no hole in it.
     let meter = Rect::from_min_max(
-        egui::pos2(fx_page.right() + 8.0 * zoom, rect.top()),
-        egui::pos2(rect.right() - 220.0 * zoom, rect.bottom()),
+        egui::pos2(fx_page.right() + 14.0 * zoom, rect.top()),
+        egui::pos2(rect.right() - (SCOPE_WIDTH + 16.0) * zoom, rect.bottom()),
     );
 
     HeaderRects {
@@ -2150,48 +2306,21 @@ fn header(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
         zoom,
     );
 
-    // The oscilloscope and the two lights.
-    let scope = Rect::from_min_size(
-        egui::pos2(rect.right() - 154.0 * zoom, rect.top() + 5.0 * zoom),
-        egui::vec2(150.0, 38.0) * zoom,
-    );
-    small_scope(&painter, scope, ctx.history, zoom);
+    // The oscilloscope fills the right-hand end of the header. The activity
+    // and clipping lights are gone: the trace and the voice meter are the only
+    // live things in the header.
+    small_scope(&painter, header_scope_rect(rect, zoom), ctx.history, zoom);
+}
 
-    let activity = egui::pos2(rect.right() - 202.0 * zoom, rect.top() + 16.0 * zoom);
-    led(
-        &painter,
-        activity,
-        palette().led_on,
-        ctx.state.activity > 0.002,
-        zoom,
-    );
-    tracked_text(
-        &painter,
-        egui::pos2(activity.x, rect.top() + 28.0 * zoom),
-        Align2::CENTER_CENTER,
-        "ACT",
-        FontId::new(font_size(7.2, zoom), label_family()),
-        palette().muted,
-        0.8 * zoom,
-    );
-
-    let clipping = egui::pos2(rect.right() - 172.0 * zoom, rect.top() + 16.0 * zoom);
-    led(
-        &painter,
-        clipping,
-        palette().led_red,
-        ctx.state.clipping > 0.5,
-        zoom,
-    );
-    tracked_text(
-        &painter,
-        egui::pos2(clipping.x, rect.top() + 28.0 * zoom),
-        Align2::CENTER_CENTER,
-        "CLIP",
-        FontId::new(font_size(7.2, zoom), label_family()),
-        palette().muted,
-        0.8 * zoom,
-    );
+/// The oscilloscope at the right end of the header.
+fn header_scope_rect(rect: Rect, zoom: f32) -> Rect {
+    Rect::from_min_size(
+        egui::pos2(
+            rect.right() - SCOPE_WIDTH * zoom - 2.0 * zoom,
+            rect.top() + 5.0 * zoom,
+        ),
+        egui::vec2(SCOPE_WIDTH, HEADER_HEIGHT - 10.0) * zoom,
+    )
 }
 
 // --- The rows of sections ------------------------------------------------
@@ -3167,40 +3296,60 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         palette().text,
     );
 
+    // Two readings, not three: what the target reads right now (with the live
+    // contribution of the source next to it, in the same units) and how far
+    // the amount lets it travel. The trip of the source lives in the bar
+    // below, so a number that copied it would only be a second animation.
     let current = target_current_text(dest, ctx.params);
-    let range = target_range_text(dest, amount);
-    let live = target_live_text(source, dest, amount, ctx.mod_feedback);
+    let travel = target_range_text(dest, amount);
     let source_live = live_source_value(source, ctx.mod_feedback);
-    let live_color = if source_live.is_some() {
-        palette().text
-    } else {
-        palette().muted
-    };
+    let live_offset = source_live.map(|value| target_offset_text(dest, value * amount));
 
-    for (row, (label, value, color)) in [
-        ("CURRENT", current.as_str(), palette().text),
-        ("RANGE", range.as_str(), palette().text),
-        ("LIVE", live.as_str(), live_color),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let y = top + line * (row as f32 + 1.5);
-        painter.text(
-            egui::pos2(left, y),
-            Align2::LEFT_CENTER,
-            label,
-            label_font.clone(),
-            palette().muted,
-        );
-        painter.text(
-            egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y),
-            Align2::LEFT_CENTER,
-            value,
-            value_font.clone(),
-            color,
-        );
-    }
+    let y = top + line * 1.5;
+    painter.text(
+        egui::pos2(left, y),
+        Align2::LEFT_CENTER,
+        "NOW",
+        label_font.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y),
+        Align2::LEFT_CENTER,
+        current.clone(),
+        value_font.clone(),
+        palette().text,
+    );
+    let current_width = text_width(&painter, &current, &value_font);
+    let (offset_text, offset_color) = match &live_offset {
+        Some(offset) => (offset.clone(), palette().accent),
+        None => ("per-voice".to_string(), palette().muted),
+    };
+    painter.text(
+        egui::pos2(
+            left + TARGET_LABEL_WIDTH * zoom + current_width + TARGET_AMOUNT_GAP * zoom,
+            y,
+        ),
+        Align2::LEFT_CENTER,
+        offset_text,
+        value_font.clone(),
+        offset_color,
+    );
+
+    painter.text(
+        egui::pos2(left, y + line),
+        Align2::LEFT_CENTER,
+        "TRAVEL",
+        label_font.clone(),
+        palette().muted,
+    );
+    painter.text(
+        egui::pos2(left + TARGET_LABEL_WIDTH * zoom, y + line),
+        Align2::LEFT_CENTER,
+        travel,
+        value_font.clone(),
+        palette().text,
+    );
 
     // The target axis: the current parameter position, the travel that the
     // amount allows and the live contribution of the source.
@@ -3217,20 +3366,6 @@ fn target_inspector(ui: &mut egui::Ui, ctx: &mut Ctx) {
         half: 0.0,
         live: 0.0,
     });
-    painter.text(
-        egui::pos2(range_left, top + line * 0.5),
-        Align2::LEFT_CENTER,
-        "POSITION",
-        label_font.clone(),
-        palette().muted,
-    );
-    painter.text(
-        egui::pos2(range_right, top + line * 0.5),
-        Align2::RIGHT_CENTER,
-        "LIVE",
-        label_font.clone(),
-        palette().muted,
-    );
     painter.rect_filled(bar, CornerRadius::ZERO, palette().track);
     painter.rect_stroke(
         bar,
@@ -6011,14 +6146,6 @@ fn format_signed_number(value: f32, decimals: usize) -> String {
 }
 
 /// The live value of a global source. Two decimals are kept, because an LFO
-/// moves continuously even when its rounded value would look still.
-fn format_live_source_value(value: f32) -> String {
-    if value.abs() < 0.005 {
-        "0.00".to_string()
-    } else {
-        format!("{value:+.2}")
-    }
-}
 
 /// A whole percentage without a sign. It is used for the absolute value of a
 /// `0..1` target such as resonance or a pulse width.
@@ -6180,25 +6307,6 @@ fn target_offset_text(dest: ModDest, value: f32) -> String {
 
 /// The live line of the inspector. A global source has one value that the
 /// editor can read and one contribution that the route makes. A per-voice
-/// source has neither outside a note, so it says so instead of inventing one.
-fn target_live_text(
-    source: ModSource,
-    dest: ModDest,
-    amount: f32,
-    feedback: &ModFeedback,
-) -> String {
-    if source == ModSource::Off || dest == ModDest::Off {
-        return "No modulation".to_string();
-    }
-    match live_source_value(source, feedback) {
-        Some(value) => format!(
-            "{} > {}",
-            format_live_source_value(value),
-            target_offset_text(dest, value * amount)
-        ),
-        None => "per-voice".to_string(),
-    }
-}
 
 /// The source, destination and amount of one route of the matrix.
 fn mod_route_values(params: &SushiParams, slot: usize) -> (ModSource, ModDest, f32) {
@@ -6835,22 +6943,9 @@ fn tab_button(
 fn small_scope(painter: &egui::Painter, rect: Rect, history: &VecDeque<f32>, zoom: f32) {
     // A dark instrument screen with a quiet grid, even while the sound is
     // silent. It is the one live object in the header.
+    // Nothing but the trace: the grid of the old screen is gone.
     flat_box(painter, rect, palette().lcd_bg);
     let inner = rect.shrink(3.0 * zoom);
-    for index in 1..4 {
-        let x = inner.left() + inner.width() * index as f32 / 4.0;
-        painter.line_segment(
-            [egui::pos2(x, inner.top()), egui::pos2(x, inner.bottom())],
-            Stroke::new(1.0, palette().rule),
-        );
-    }
-    for index in 1..3 {
-        let y = inner.top() + inner.height() * index as f32 / 3.0;
-        painter.line_segment(
-            [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
-            Stroke::new(1.0, palette().rule),
-        );
-    }
 
     let length = history.len();
     if length < 2 {
@@ -7234,6 +7329,21 @@ mod tests {
         }
     }
 
+    /// A frame that only moves the pointer.
+    fn moved(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(pos)]
+    }
+
+    /// A frame that presses or releases a button at a position.
+    fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> Vec<egui::Event> {
+        vec![egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        }]
+    }
+
     fn input(events: Vec<egui::Event>) -> egui::RawInput {
         input_at(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT), events)
     }
@@ -7536,15 +7646,16 @@ mod tests {
             }
         }
 
-        // The serial print of the footer and the hints are the technical
-        // monospace text of the instrument.
-        for needle in ["SUSHI / MODEL 101", "Z/X"] {
-            let style = one(needle);
-            assert_eq!(
-                style.family,
-                egui::FontFamily::Monospace,
-                "{needle:?} is not in the monospace weight"
-            );
+        // The live numbers of the info panel use the value weight too, so they
+        // read like every other reading of the instrument.
+        for needle in ["C3"] {
+            for style in style_of(&styles, needle) {
+                assert_eq!(
+                    style.family,
+                    family(VALUE_FAMILY),
+                    "{needle:?} is not in the value weight"
+                );
+            }
         }
 
         // The faces of the popups use the label weight through the button
@@ -8244,27 +8355,31 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_has_no_history_buttons() {
+    fn the_info_panel_holds_the_readout_of_the_panel() {
         let (ctx, mut editor, _params) = make_editor();
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
 
-        // The footer keeps the model name, the readout and the hints, but the
-        // two history buttons are gone.
+        // There is no footer any more: the readout, the octave and the voice
+        // count share one panel next to the keys.
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for gone in ["UNDO", "REDO"] {
+        for gone in [
+            "SUSHI / MODEL 101",
+            "DBL-CLICK = RESET   RIGHT-CLICK = VALUE",
+            "Z/X",
+            "ACT",
+            "CLIP",
+        ] {
             assert!(
                 !names.contains(&gone.to_string()),
-                "the footer still shows {gone}: {names:?}"
+                "the panel still shows {gone}: {names:?}"
             );
         }
-        assert!(
-            names.contains(&"SUSHI / MODEL 101".to_string()),
-            "{names:?}"
-        );
-        assert!(
-            names.contains(&"DBL-CLICK = RESET   RIGHT-CLICK = VALUE".to_string()),
-            "{names:?}"
-        );
+        for expected in ["OCT", "VOICES"] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "the info panel has no {expected}: {names:?}"
+            );
+        }
     }
 
     /// Right-clicks the cutoff slider, clears the editor and types `text`.
@@ -8925,20 +9040,15 @@ faders and the three macros; the VCA is main-page only"
             mod_wheel: 1.0,
         });
 
-        // The live line contains the source value and the exact contribution
-        // in the units of the destination.
+        // The live part of the reading is the contribution of the source in
+        // the units of the destination, and a per-voice source reports that
+        // instead of inventing a global value.
         assert_eq!(
-            target_live_text(ModSource::Lfo1, ModDest::Cutoff, 0.5, &feedback),
-            "+0.80 > +2 oct"
+            target_offset_text(ModDest::Cutoff, 0.8 * 0.5),
+            "+2 oct"
         );
-        assert_eq!(
-            target_live_text(ModSource::Macro1, ModDest::Pitch, 0.5, &feedback),
-            "+0.25 > +1.5 st"
-        );
-        assert_eq!(
-            target_live_text(ModSource::ModWheel, ModDest::Volume, 0.5, &feedback),
-            "+1.00 > +50%"
-        );
+        assert_eq!(target_offset_text(ModDest::Pitch, 0.25 * 0.5), "+1.5 st");
+        assert_eq!(target_offset_text(ModDest::Volume, 1.0 * 0.5), "+50%");
         for source in [
             ModSource::ModEnv,
             ModSource::AmpEnv,
@@ -8946,16 +9056,11 @@ faders and the three macros; the VCA is main-page only"
             ModSource::Key,
             ModSource::Random,
         ] {
-            assert_eq!(
-                target_live_text(source, ModDest::Cutoff, 0.5, &feedback),
-                "per-voice",
+            assert!(
+                live_source_value(source, &feedback).is_none(),
                 "{source:?} must not invent a global value"
             );
         }
-        assert_eq!(
-            target_live_text(ModSource::Off, ModDest::Cutoff, 0.5, &feedback),
-            "No modulation"
-        );
 
         // The same values appear in the panel for the selected route, and a
         // per-voice route replaces them with the explicit message.
@@ -8980,7 +9085,7 @@ faders and the three macros; the VCA is main-page only"
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(names.iter().any(|text| text == "+0.80 > +2 oct"));
+        assert!(names.iter().any(|text| text == "+2 oct"));
         assert!(names.iter().any(|text| text == "±2.5 octaves"));
 
         let rows = editor.state.mod_row_rects.clone();
@@ -9057,7 +9162,7 @@ faders and the three macros; the VCA is main-page only"
                 .filter(|(_, pos, _)| target.contains(*pos))
                 .map(|(text, pos, text_size)| (text, Rect::from_min_size(pos, text_size)))
                 .collect();
-            for expected in ["TARGET", "CURRENT", "RANGE", "LIVE", "±100%"] {
+            for expected in ["TARGET", "NOW", "TRAVEL", "±100%"] {
                 assert!(
                     target_texts.iter().any(|(text, _)| text == expected),
                     "the inspector has no {expected:?} at {percent}%: {target_texts:?}"
@@ -9165,7 +9270,7 @@ faders and the three macros; the VCA is main-page only"
         editor.state.mod_selected = 0;
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["POSITION", "LIVE", "LFO 1 > Cutoff", "CURRENT", "RANGE"] {
+        for expected in ["LFO 1 > Cutoff", "NOW", "TRAVEL"] {
             assert!(
                 names.iter().any(|text| text == expected),
                 "the inspector has no {expected:?}: {names:?}"
@@ -11770,7 +11875,6 @@ faders and the three macros; the VCA is main-page only"
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, height));
             let layout = Layout::for_rect(rect, TEST_ZOOM).expect("the window is big enough");
             let strip = layout.keyboard();
-            let zoom = layout.zoom;
 
             assert!(
                 layout.panel.contains_rect(strip),
@@ -11783,16 +11887,13 @@ faders and the three macros; the VCA is main-page only"
                 "the keyboard touches the last band: {strip:?} / {last_band:?}"
             );
             assert!(
-                strip.bottom() <= layout.panel.bottom() - FOOTER_HEIGHT * zoom + 0.01,
-                "the keyboard runs into the footer: {strip:?}"
+                layout.bottom().contains_rect(strip),
+                "the keyboard leaves the bottom row: {strip:?}"
             );
-            // It has the width of the bands.
-            let first_band = layout.group(0, 0);
+            // It ends at the right edge of the bands, after the info panel.
             assert!(
-                (strip.left() - first_band.left()).abs() < 0.01,
-                "the keyboard starts at {} instead of {} ({width} x {height})",
-                strip.left(),
-                first_band.left()
+                strip.left() > layout.info().right(),
+                "the keyboard starts before the info panel ({width} x {height})"
             );
             assert!(
                 (strip.right() - last_band.right()).abs() < 0.01,
@@ -11970,12 +12071,15 @@ faders and the three macros; the VCA is main-page only"
                 "the browser runs into the strip at {expected}: {pos:?} / {strip:?}"
             );
         }
-        for expected in ["OCT", "Z/X"] {
-            assert!(
-                names.iter().any(|(text, _)| text == expected),
-                "the strip lost its {expected} caption with the browser open: {names:?}"
-            );
-        }
+        // The octave readout lives in the info panel next to the keys now.
+        let (_, pos) = names
+            .iter()
+            .find(|(text, _)| text == "OCT")
+            .unwrap_or_else(|| panic!("the info panel has no OCT caption: {names:?}"));
+        assert!(
+            !strip.contains(*pos),
+            "the OCT caption is inside the keys: {pos:?} / {strip:?}"
+        );
     }
 
     #[test]
@@ -12278,8 +12382,8 @@ faders and the three macros; the VCA is main-page only"
         for expected in [
             "Mod Env > Resonance",
             "-25%",
-            "CURRENT",
-            "RANGE",
+            "NOW",
+            "TRAVEL",
             "per-voice",
         ] {
             assert!(
@@ -12291,8 +12395,8 @@ faders and the three macros; the VCA is main-page only"
             if [
                 "Mod Env > Resonance",
                 "-25%",
-                "CURRENT",
-                "RANGE",
+                "NOW",
+                "TRAVEL",
                 "per-voice",
             ]
             .contains(&text.as_str())
@@ -12452,47 +12556,54 @@ faders and the three macros; the VCA is main-page only"
     }
 
     #[test]
-    fn a_right_click_on_the_background_opens_the_zoom_menu() {
+    fn a_right_click_opens_the_menu_and_its_panels() {
         let (ctx, mut editor, _params) = make_editor();
-        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let _ = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         assert!(editor.zoom_menu.is_none());
-        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        assert!(
-            !names.iter().any(|name| name.starts_with("Zoom ")),
-            "the menu is open before the right click"
-        );
 
-        // A right click on a spot of the background, away from every widget.
-        let pos = egui::pos2(MARGIN + 4.0, WINDOW_HEIGHT - FOOTER_HEIGHT - 4.0);
+        // A right click on a spot of the background (the info panel next to
+        // the keys is painted, not interactive), high enough that the menu is
+        // not clamped at the bottom edge.
+        let pos = egui::pos2(MARGIN + 6.0, 590.0);
+        let _ = run_frames(&ctx, &mut editor, vec![input(moved(pos))]);
         let _ = run_frames(
             &ctx,
             &mut editor,
-            vec![input(vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Secondary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::default(),
-                },
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Secondary,
-                    pressed: false,
-                    modifiers: egui::Modifiers::default(),
-                },
-            ])],
+            vec![input(button(pos, egui::PointerButton::Secondary, true))],
         );
-        assert!(editor.zoom_menu.is_some(), "the right click opened no menu");
-
+        let _ = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(button(pos, egui::PointerButton::Secondary, false))],
+        );
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for level in ZOOM_LEVELS {
-            let label = format!("Zoom {:.0}%", level * 100.0);
+        for expected in ["Zoom", "Shortcuts"] {
             assert!(
-                names.contains(&label),
-                "the menu has no {label}: {names:?}"
+                names.contains(&expected.to_string()),
+                "the menu has no {expected}: {names:?}"
             );
         }
+
+        // `Shortcuts` opens the list of every shortcut of the panel.
+        let (menu_pos, _) = editor.zoom_menu.expect("the menu is closed");
+        let shortcuts = egui::pos2(menu_pos.x + 20.0, menu_pos.y + 22.0 + 11.0);
+        let _ = run_frames(&ctx, &mut editor, vec![input(moved(shortcuts))]);
+        let _ = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(button(shortcuts, egui::PointerButton::Primary, true))],
+        );
+        let _ = run_frames(
+            &ctx,
+            &mut editor,
+            vec![input(button(shortcuts, egui::PointerButton::Primary, false))],
+        );
+        let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
+        let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
+        assert!(
+            names.iter().any(|name| name.contains("DBL-CLICK")),
+            "the shortcut panel is not open: {names:?}"
+        );
     }
 }

@@ -18,18 +18,22 @@ A black plate, one orange accent and green for anything that reads as data:
 flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 
 - **Header**: preset LCD (click it for the patch browser), `<` `>`, `MUTATE`,
-  the `MOD` / `FX` tabs, the voice meter, the oscilloscope, `ACT` / `CLIP`
+  the `MOD` / `FX` tabs, the voice meter and the oscilloscope (the trace only,
+  no grid)
 - **Main page**, four bands: `VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`,
   `VCF | MOD ENV | AMP ENV`, `ARP | VOICE`, `MACROS | VCA`
-- **MOD page**: routing table and target inspector on the left (current value,
-  modulation range, live contribution), LFO 1 / LFO 2 / MOD ENV / AMP ENV /
-  MACROS down the right
+- **MOD page**: the routing table on the left, LFO 1 / LFO 2 / MOD ENV /
+  AMP ENV / MACROS down the right
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right
-- **Keyboard strip**: click or drag to play, velocity follows how high on the
-  key you click; `A S D F G H J K L ; '` white keys, `W E T Y U O P` black keys,
-  `Z` / `X` shift the octave
+- **Bottom row**: the info panel on the left (the readout of the last
+  parameter, the octave and the voice count) and the keys on the right —
+  click or drag to play, velocity follows how high on the key you click
+- **MOD page target inspector**: the route, the value that the target reads
+  right now with the live contribution of the source next to it, how far the
+  amount lets it travel, and one range bar where the band is the travel and
+  the moving tick is the live position
 
 | Input | Effect |
 |---|---|
@@ -37,7 +41,7 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 | Wheel / Shift+wheel | change / fine-tune |
 | Right-click a control | type a value |
 | Double-click | reset |
-| **Right-click the background** | **UI zoom 50–300%** |
+| **Right-click the background** | menu: `Zoom ▸` (50–300 %), `Shortcuts` (every key of the panel) |
 
 The panel always snaps to one of the zoom levels — it never stretches with the
 window. A level is a cap: if the window is smaller than the level you picked,

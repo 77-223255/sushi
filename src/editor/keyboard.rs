@@ -15,27 +15,21 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 
-use super::{flat_box, font_size, label_family, palette, tracked_text, value_family};
+use super::{flat_box, font_size, palette, value_family};
 use crate::keyboard::HeldKeys;
 
 // --- The design of the strip ------------------------------------------------
 
-/// The height of the whole strip, in the design size of the panel.
+/// The height of the whole strip, in the design size of the panel. Only the
+/// tests use it now: the panel sizes the strip from the bottom row.
+#[cfg(test)]
 pub const STRIP_HEIGHT: f32 = 72.0;
-/// The padding between the strip and its keys.
-const STRIP_PADDING: f32 = 4.0;
-/// The width of the column that holds the octave controls.
-const COLUMN_WIDTH: f32 = 52.0;
 /// How many octaves the strip shows.
 const OCTAVES: usize = 5;
 /// The height of a black key, as a share of the height of a white key.
 const BLACK_SHARE: f32 = 0.62;
 /// The width of a black key, as a share of the width of a white key.
 const BLACK_WIDTH_SHARE: f32 = 0.62;
-/// The height of the octave buttons.
-const OCTAVE_BUTTON_HEIGHT: f32 = 16.0;
-/// The width of the octave buttons.
-const OCTAVE_BUTTON_WIDTH: f32 = 20.0;
 
 /// The lowest octave that the computer keyboard can play.
 ///
@@ -206,51 +200,16 @@ impl KeyBed {
 #[derive(Clone, Copy, Debug)]
 struct Chrome {
     strip: Rect,
-    caption: Rect,
-    down: Rect,
-    up: Rect,
-    readout: Rect,
-    hint: Rect,
     keys: Rect,
 }
 
 impl Chrome {
-    fn new(rect: Rect, zoom: f32) -> Self {
-        let padding = STRIP_PADDING * zoom;
-        let inner = rect.shrink(padding);
-        let column = Rect::from_min_size(
-            inner.min,
-            vec2(COLUMN_WIDTH * zoom - padding, inner.height()),
-        );
-
-        // The column is a small stack: the caption, the two buttons, the
-        // octave readout and the shortcut hint. The rows never overlap, so a
-        // text of the strip cannot run into its neighbour.
-        let caption = Rect::from_min_size(column.min, vec2(column.width(), 10.0 * zoom));
-        let button = vec2(OCTAVE_BUTTON_WIDTH * zoom, OCTAVE_BUTTON_HEIGHT * zoom);
-        let down = Rect::from_min_size(pos2(column.left(), caption.bottom() + 3.0 * zoom), button);
-        let up = Rect::from_min_size(pos2(down.right() + 4.0 * zoom, down.top()), button);
-        let readout = Rect::from_min_size(
-            pos2(column.left(), down.bottom() + 3.0 * zoom),
-            vec2(column.width(), 14.0 * zoom),
-        );
-        let hint = Rect::from_min_size(
-            pos2(column.left(), column.bottom() - 11.0 * zoom),
-            vec2(column.width(), 11.0 * zoom),
-        );
-        let keys = Rect::from_min_size(
-            pos2(column.right() + 6.0 * zoom, inner.top()),
-            vec2(inner.right() - column.right() - 6.0 * zoom, inner.height()),
-        );
-
+    /// The strip is nothing but keys now: the octave controls and their
+    /// readout moved into the info panel next to the keys.
+    fn new(rect: Rect, _zoom: f32) -> Self {
         Self {
             strip: rect,
-            caption,
-            down,
-            up,
-            readout,
-            hint,
-            keys,
+            keys: rect,
         }
     }
 }
@@ -279,6 +238,11 @@ impl VirtualKeyboard {
     #[cfg(test)]
     pub fn octave(&self) -> i32 {
         self.octave
+    }
+
+    /// The note that the computer keyboard starts on, for the info panel.
+    pub fn label(&self) -> String {
+        note_name(self.base_note())
     }
 
     /// Moves the computer keyboard by whole octaves, as `Z` and `X` do.
@@ -317,34 +281,6 @@ impl VirtualKeyboard {
         let chrome = Chrome::new(rect, zoom);
         let painter = ui.painter_at(rect);
         flat_box(&painter, chrome.strip, palette().field_bg);
-
-        // The octave controls and their readout.
-        self.octave_buttons(ui, &chrome, zoom);
-        tracked_text(
-            &painter,
-            chrome.caption.center(),
-            Align2::CENTER_CENTER,
-            "OCT",
-            FontId::new(font_size(7.5, zoom), label_family()),
-            palette().muted,
-            0.8 * zoom,
-        );
-        painter.text(
-            chrome.readout.center(),
-            Align2::CENTER_CENTER,
-            note_name(self.base_note()),
-            FontId::new(font_size(11.0, zoom), value_family()),
-            palette().title_blue,
-        );
-        tracked_text(
-            &painter,
-            chrome.hint.center(),
-            Align2::CENTER_CENTER,
-            "Z/X",
-            FontId::monospace(font_size(7.2, zoom)),
-            palette().muted,
-            0.4 * zoom,
-        );
 
         // The typed octave is shifted before the notes are read, so a frame
         // that presses `X` already plays the new octave. A text field keeps
@@ -438,40 +374,6 @@ impl VirtualKeyboard {
         self.held = wanted_notes;
     }
 
-    /// The two octave buttons of the strip.
-    fn octave_buttons(&mut self, ui: &Ui, chrome: &Chrome, zoom: f32) {
-        for (rect, label, delta) in [(chrome.down, "<", -1), (chrome.up, ">", 1)] {
-            let response = ui.interact(
-                rect,
-                ui.scope_id().with(("sushi-keyboard-octave", label)),
-                Sense::click(),
-            );
-            let enabled = (self.octave + delta).clamp(MIN_OCTAVE, MAX_OCTAVE) != self.octave;
-            let fill = if !enabled {
-                palette().track
-            } else if response.is_pointer_button_down_on() {
-                palette().button_active
-            } else {
-                palette().button_bg
-            };
-            flat_box(&ui.painter_at(rect), rect, fill);
-            ui.painter_at(rect).text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                label,
-                FontId::new(font_size(9.0, zoom), value_family()),
-                if enabled {
-                    palette().text
-                } else {
-                    palette().muted
-                },
-            );
-
-            if response.clicked() && enabled {
-                self.shift_octave(delta);
-            }
-        }
-    }
 
     /// Draws the keys and the lights of the notes that sound.
     fn paint_keys(&self, painter: &egui::Painter, bed: &KeyBed, zoom: f32, down: &HeldKeys) {
@@ -836,40 +738,6 @@ mod tests {
             notes,
             vec![((MAX_OCTAVE + 1) as u8 * 12, TYPED_VELOCITY, true)]
         );
-    }
-
-    #[test]
-    fn the_octave_buttons_move_the_typed_keys() {
-        let mut harness = Harness::new();
-        let chrome = Chrome::new(strip(), 1.0);
-        let base = ((DEFAULT_OCTAVE + 1) * 12) as u8;
-
-        let up = chrome.up.center();
-        harness.frame(vec![moved(up)]);
-        harness.frame(vec![button(up, true)]);
-        harness.frame(vec![button(up, false)]);
-        assert_eq!(harness.keys.octave(), DEFAULT_OCTAVE + 1);
-
-        // The strip shows the new octave, and the readout names its C.
-        harness.frame(vec![]);
-        let names: Vec<String> = harness
-            .shapes
-            .iter()
-            .filter_map(|shape| match shape {
-                egui::Shape::Text(text) => Some(text.galley.text().to_string()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            names.contains(&note_name(base + 12)),
-            "the readout does not show the new octave: {names:?}"
-        );
-
-        let down = chrome.down.center();
-        harness.frame(vec![moved(down)]);
-        harness.frame(vec![button(down, true)]);
-        harness.frame(vec![button(down, false)]);
-        assert_eq!(harness.keys.octave(), DEFAULT_OCTAVE);
     }
 
     #[test]
