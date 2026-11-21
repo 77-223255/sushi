@@ -28,10 +28,10 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
   of the destination in green and, in orange, the span the route is sweeping
   right now (`568 Hz – 15.8 kHz`), both in the same units — the curve carries a
   dot at its live end, so the instant is a moving dot and the numbers to read
-  are the ones that hold still — while LFO 1 / LFO 2 / MOD ENV / AMP ENV /
-  MACROS sit down the right, each with a live strip at its foot: the recorded
-  history of that source (a green curve with a dot on its current sample) and,
-  for the macros, one level bar per macro
+  are the ones that hold still — while LFO 1 / LFO 2 / MOD ENV / AMP ENV sit
+  down the right. A source that belongs to one note (`Velocity`, `Key`,
+  `Random`) has no history, so it draws the curve it reads from instead — a dim
+  green line, with an orange dot on the value of the newest note
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right
@@ -88,7 +88,6 @@ belongs in `factory/`.
 ## Develop
 
 ```bash
-cargo test          # 327 tests: DSP, geometry, no overlapping text
 cargo build --release
 ```
 
@@ -96,14 +95,3 @@ cargo build --release
 
 MIT. The bundled Quicksand and JetBrains Mono fonts are SIL OFL 1.1.
 
-## Looking at the panel without a host
-
-The look of the panel can be checked offline: the tests can rasterize one frame
-of the real `egui` output — including the glyphs of the font atlas — into a PNG.
-
-```sh
-SUSHI_PREVIEW=/tmp/sushi.png cargo test --release render_preview
-SUSHI_PAGE=mod SUSHI_PREVIEW=/tmp/mod.png cargo test --release render_preview
-SUSHI_MENU=zoom SUSHI_PREVIEW=/tmp/menu.png cargo test --release render_preview
-SUSHI_HOVER=40,150 SUSHI_PREVIEW=/tmp/hover.png cargo test --release render_preview
-```
