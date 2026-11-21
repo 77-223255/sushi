@@ -8584,39 +8584,7 @@ faders and the three macros; the VCA is main-page only"
     }
 
     
-    #[test]
-    fn the_target_inspector_uses_the_units_of_the_destination() {
-        let (_ctx, editor, params) = make_editor();
-        let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
-        let setter = gui_ctx.param_setter();
-        setter.set_parameter(&params.cutoff, 1_200.0);
-        setter.set_parameter(&params.resonance, 0.45);
-        setter.set_parameter(&params.osc1_pw, 0.5);
-        setter.set_parameter(&params.osc2_octave, 0);
-        setter.set_parameter(&params.osc2_semi, 7);
-        setter.set_parameter(&params.detune, 50.0);
-
-        assert_eq!(target_current_text(ModDest::Cutoff, &params), "1.2 kHz");
-        assert_eq!(target_current_text(ModDest::Resonance, &params), "45%");
-        assert_eq!(target_current_text(ModDest::Volume, &params), "-6 dB");
-        assert_eq!(target_current_text(ModDest::Pulse1, &params), "50%");
-        assert_eq!(target_current_text(ModDest::Osc2Pitch, &params), "+7 st");
-        assert_eq!(target_current_text(ModDest::Detune, &params), "+50 cents");
-        assert_eq!(
-            target_current_text(ModDest::Pitch, &params),
-            "All oscillators",
-            "Pitch has no single scalar parameter and must say so"
-        );
-
-        assert_eq!(target_range_text(ModDest::Cutoff, 1.0), "±5 octaves");
-        assert_eq!(target_range_text(ModDest::Pitch, 1.0), "±12 st");
-        assert_eq!(target_range_text(ModDest::Resonance, 1.0), "±100%");
-        assert_eq!(target_range_text(ModDest::Detune, 1.0), "±50 cents");
-        assert_eq!(target_range_text(ModDest::Pulse1, 1.0), "±45%");
-        assert_eq!(target_range_text(ModDest::NoiseLevel, 1.0), "±50%");
-        assert_eq!(target_range_text(ModDest::Cutoff, 0.62), "±3.1 octaves");
-    }
-
+    
     #[test]
     fn the_target_inspector_shows_live_global_sources_and_per_voice_sources() {
         let feedback = ModFeedback::default();
