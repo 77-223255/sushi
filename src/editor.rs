@@ -1857,7 +1857,9 @@ fn panel_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, panel: MenuPanel, current
         );
         let response = ui.interact(cell, ui.scope_id().with(("sushi-menu", index)), Sense::click());
         let open = *opens == panel;
-        if response.hovered() || open {
+        if open {
+            painter.rect_filled(cell, CornerRadius::ZERO, palette().button_active);
+        } else if response.hovered() {
             painter.rect_filled(cell, CornerRadius::ZERO, palette().track);
         }
         painter.text(
@@ -1865,7 +1867,7 @@ fn panel_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, panel: MenuPanel, current
             Align2::LEFT_CENTER,
             *label,
             FontId::new(font_size(10.5, zoom), label_family()),
-            if open { palette().text } else { palette().muted },
+            if open { palette().accent } else { palette().muted },
         );
         // The chevron of a submenu, drawn with two lines.
         let (cx, cy) = (cell.right() - 10.0 * zoom, cell.center().y);
@@ -1929,21 +1931,13 @@ fn panel_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, panel: MenuPanel, current
                 ui.scope_id().with(("sushi-submenu", panel as u8, index)),
                 if item_action.is_some() { Sense::click() } else { Sense::hover() },
             );
-            if response.hovered() && item_action.is_some() {
+            if *checked {
+                painter.rect_filled(cell, CornerRadius::ZERO, palette().button_active);
+            } else if response.hovered() && item_action.is_some() {
                 painter.rect_filled(cell, CornerRadius::ZERO, palette().track);
             }
-            if *checked {
-                painter.circle_filled(
-                    egui::pos2(cell.left() + 8.0 * zoom, cell.center().y),
-                    2.5 * zoom,
-                    palette().accent,
-                );
-            }
             painter.text(
-                egui::pos2(
-                    cell.left() + if panel == MenuPanel::Zoom { 18.0 * zoom } else { 4.0 * zoom },
-                    cell.center().y,
-                ),
+                egui::pos2(cell.left() + 6.0 * zoom, cell.center().y),
                 Align2::LEFT_CENTER,
                 label,
                 FontId::new(
@@ -1954,7 +1948,13 @@ fn panel_menu(ui: &mut egui::Ui, pos: Pos2, zoom: f32, panel: MenuPanel, current
                         egui::FontFamily::Monospace
                     },
                 ),
-                if *checked || response.hovered() { palette().text } else { palette().muted },
+                if *checked {
+                    palette().accent
+                } else if response.hovered() {
+                    palette().text
+                } else {
+                    palette().muted
+                },
             );
             if response.clicked() {
                 action = item_action.clone();
