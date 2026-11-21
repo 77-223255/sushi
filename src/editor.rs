@@ -744,8 +744,8 @@ const VOICE_LEDS: usize = 16;
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
 /// The width of the `NOW` caption of a modulation row.
 const MOD_NOW_LABEL_WIDTH: f32 = 30.0;
-/// The gap between the two values of the NOW reading.
-const MOD_NOW_GAP: f32 = 10.0;
+/// The column of the centre value of the NOW reading.
+const MOD_NOW_BASE_WIDTH: f32 = 84.0;
 /// The width of the oscilloscope at the right end of the header.
 const SCOPE_WIDTH: f32 = 190.0;
 /// The number of cells of the level meter of the header.
@@ -2015,10 +2015,10 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
     // a bare control name never has to be guessed.
     tracked_text(
         &painter,
-        egui::pos2(inner.left(), inner.top() + 9.0 * zoom),
+        egui::pos2(inner.left(), inner.top() + 11.0 * zoom),
         Align2::LEFT_BOTTOM,
         &truncate_name(&module, 18),
-        FontId::new(font_size(8.5, zoom), label_family()),
+        FontId::new(font_size(10.0, zoom), label_family()),
         palette().led_on,
         0.9 * zoom,
     );
@@ -2027,18 +2027,18 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
     // value flush right, so the block reads like one line of an instrument.
     // The three rows of the block — module, reading, voices — sit on equal
     // thirds of it instead of leaving a hole in the middle.
-    let baseline = inner.top() + (inner.height() * 0.60).max(24.0 * zoom);
+    let baseline = inner.top() + (inner.height() * 0.66).max(26.0 * zoom);
     tracked_text(
         &painter,
         egui::pos2(inner.left(), baseline),
         Align2::LEFT_BOTTOM,
         &truncate_name(&label, 16),
-        FontId::new(font_size(12.5, zoom), label_family()),
+        FontId::new(font_size(14.0, zoom), label_family()),
         palette().title_blue,
         0.8 * zoom,
     );
     let value_text = truncate_name(&value, 14);
-    let value_font = FontId::new(font_size(17.0, zoom), value_family());
+    let value_font = FontId::new(font_size(21.0, zoom), value_family());
     let value_width = text_width(&painter, &value_text, &value_font);
     painter.text(
         egui::pos2(inner.right() - value_width, baseline),
@@ -2051,7 +2051,7 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
     // The voices along the bottom edge of the block: the light bar of the old
     // faceplate, one square per voice.
     let footer = inner.bottom();
-    let label_font = FontId::new(font_size(8.5, zoom), label_family());
+    let label_font = FontId::new(font_size(9.5, zoom), label_family());
     tracked_text(
         &painter,
         egui::pos2(inner.left(), footer),
@@ -2165,7 +2165,7 @@ fn draw_too_small(ui: &mut egui::Ui, rect: Rect) {
 pub const ZOOM_LEVELS: [f32; 8] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
 /// The level the panel starts on. The editor opens at exactly this level, so
 /// the panel fills the window on the first frame.
-const DEFAULT_ZOOM_LEVEL: usize = 3;
+const DEFAULT_ZOOM_LEVEL: usize = 4;
 /// The same level as a plain scale, for the initial size of the window.
 pub const DEFAULT_ZOOM_SCALE: f32 = ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL];
 /// The smallest level the panel can be drawn at.
@@ -2691,8 +2691,8 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
         if active {
             let live = live_source_value(source, ctx.mod_feedback);
             let row_middle = top + control_h + (row_height - control_h) * 0.5;
-            let reading = FontId::monospace(font_size(10.0, zoom));
-            let caption = FontId::new(font_size(8.5, zoom), label_family());
+            let reading = FontId::monospace(font_size(12.0, zoom));
+            let caption = FontId::new(font_size(9.0, zoom), label_family());
 
             // The curve of the source is its own history, from the audio
             // thread: it shows what the source really did, not its setting.
@@ -2737,8 +2737,9 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
             }
 
-            // The reading, flush with the right edge: the centre of the
-            // modulation in green and the value it holds right now in orange.
+            // The reading sits on the column of the amount bar, under it, so
+            // the two values start at a stable x instead of hanging off the
+            // right edge.
             let (live_text, live_color) = match live {
                 Some(value) => (
                     target_live_text(dest, ctx.params, value * amount),
@@ -2746,37 +2747,30 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 ),
                 None => ("per-voice".to_string(), palette().muted),
             };
-            let live_width = text_width(&painter, &live_text, &reading);
-            painter.text(
-                egui::pos2(value_right, row_middle),
-                Align2::RIGHT_CENTER,
-                live_text,
-                reading.clone(),
-                live_color,
-            );
-            let base_text = target_current_text(dest, ctx.params);
-            let base_width = text_width(&painter, &base_text, &reading);
-            painter.text(
-                egui::pos2(
-                    value_right - live_width - MOD_NOW_GAP * zoom,
-                    row_middle,
-                ),
-                Align2::RIGHT_CENTER,
-                base_text,
-                reading,
-                palette().led_on,
-            );
+            let now_x = bar_x.max(wave_right + 12.0 * zoom);
             tracked_text(
                 &painter,
-                egui::pos2(
-                    value_right - live_width - MOD_NOW_GAP * zoom - base_width - MOD_NOW_LABEL_WIDTH * zoom,
-                    row_middle,
-                ),
+                egui::pos2(now_x, row_middle),
                 Align2::LEFT_CENTER,
                 "NOW",
                 caption,
                 palette().muted,
                 0.8 * zoom,
+            );
+            let base_x = now_x + MOD_NOW_LABEL_WIDTH * zoom;
+            painter.text(
+                egui::pos2(base_x, row_middle),
+                Align2::LEFT_CENTER,
+                target_current_text(dest, ctx.params),
+                reading.clone(),
+                palette().led_on,
+            );
+            painter.text(
+                egui::pos2(base_x + MOD_NOW_BASE_WIDTH * zoom, row_middle),
+                Align2::LEFT_CENTER,
+                live_text,
+                reading,
+                live_color,
             );
         }
 
@@ -7509,6 +7503,11 @@ mod tests {
         };
         let (ctx, mut editor, _params) = make_editor();
         editor.snap_zoom = true;
+        let preview_zoom: f32 = std::env::var("SUSHI_ZOOM")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1.0);
+        let window = egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT) * preview_zoom;
         if std::env::var("SUSHI_PAGE").as_deref() == Ok("mod") {
             editor.state.page = Page::Mod;
             editor.state.mod_selected = 2;
@@ -7569,40 +7568,77 @@ mod tests {
             height: 0,
             pixels: Vec::new(),
         };
-        let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
+        let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input_at(window, vec![])], &mut atlas);
         if let Some(pos) = std::env::var("SUSHI_HOVER").ok().and_then(|value| {
             let mut parts = value.split(',');
             let x = parts.next()?.trim().parse::<f32>().ok()?;
             let y = parts.next()?.trim().parse::<f32>().ok()?;
             Some(egui::pos2(x, y))
         }) {
-            let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(moved(pos))], &mut atlas);
-            let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
+            let _ = run_frames_with_atlas(
+                &ctx,
+                &mut editor,
+                vec![input_at(window, vec![egui::Event::PointerMoved(pos)])],
+                &mut atlas,
+            );
+            let _ = run_frames_with_atlas(&ctx, &mut editor, vec![input_at(window, vec![])], &mut atlas);
         }
         if std::env::var("SUSHI_MENU").is_ok() {
-            let pos = egui::pos2(MARGIN + 6.0, 590.0);
+            let pos = egui::pos2(MARGIN + 6.0, 590.0) * preview_zoom;
             for frame in [
-                input(moved(pos)),
-                input(button(pos, egui::PointerButton::Secondary, true)),
-                input(button(pos, egui::PointerButton::Secondary, false)),
+                input_at(window, vec![egui::Event::PointerMoved(pos)]),
+                input_at(
+                    window,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    }],
+                ),
+                input_at(
+                    window,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                ),
             ] {
                 let _ = run_frames_with_atlas(&ctx, &mut editor, vec![frame], &mut atlas);
             }
             if std::env::var("SUSHI_MENU").as_deref() == Ok("zoom") {
                 // A click on the first row opens the panel of the zoom levels.
-                let row = egui::pos2(pos.x + 40.0, pos.y + 15.0);
+                let row = egui::pos2(pos.x + 40.0 * preview_zoom, pos.y + 15.0 * preview_zoom);
                 for frame in [
-                    input(moved(row)),
-                    input(button(row, egui::PointerButton::Primary, true)),
-                    input(button(row, egui::PointerButton::Primary, false)),
+                    input_at(window, vec![egui::Event::PointerMoved(row)]),
+                    input_at(
+                        window,
+                        vec![egui::Event::PointerButton {
+                            pos: row,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        }],
+                    ),
+                    input_at(
+                        window,
+                        vec![egui::Event::PointerButton {
+                            pos: row,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        }],
+                    ),
                 ] {
                     let _ = run_frames_with_atlas(&ctx, &mut editor, vec![frame], &mut atlas);
                 }
             }
         }
         let output =
-            run_frames_with_atlas(&ctx, &mut editor, vec![input(vec![])], &mut atlas);
-        let mut canvas = Canvas::new(WINDOW_WIDTH as usize, WINDOW_HEIGHT as usize);
+            run_frames_with_atlas(&ctx, &mut editor, vec![input_at(window, vec![])], &mut atlas);
+        let mut canvas = Canvas::new(window.x as usize, window.y as usize);
         for primitive in ctx.tessellate(output.shapes.clone(), 1.0) {
             paint_primitive(&mut canvas, &atlas, &primitive);
         }

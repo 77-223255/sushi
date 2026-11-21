@@ -47,7 +47,7 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
 The panel always snaps to one of the zoom levels — it never stretches with the
 window. Picking a level also asks the host to resize the plugin window to that
 level, so the level is reached immediately instead of only after a manual
-resize.
+resize. The panel opens at 150 %.
 
 ## Sound
 
