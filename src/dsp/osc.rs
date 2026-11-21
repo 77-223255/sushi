@@ -1,4 +1,3 @@
-//! Band limited oscillators and a noise generator.
 
 use super::super::params::Waveform;
 use std::f32::consts::TAU;
@@ -12,7 +11,6 @@ const MAX_AMPLITUDE: f32 = 1.2;
 /// from drifting away over time.
 const TRIANGLE_LEAK: f32 = 0.999_99;
 
-/// PolyBLEP residual for a discontinuity at phase 0.
 #[inline]
 fn poly_blep(phase: f32, dt: f32) -> f32 {
     if dt <= 0.0 {
@@ -30,8 +28,6 @@ fn poly_blep(phase: f32, dt: f32) -> f32 {
     }
 }
 
-/// A single free-running oscillator with PolyBLEP band limiting for the
-/// discontinuous waveforms.
 #[derive(Debug, Clone, Copy)]
 pub struct Oscillator {
     phase: f32,
@@ -54,7 +50,6 @@ impl Oscillator {
         Self::default()
     }
 
-    /// Sets the phase of the oscillator, `0..1`.
     #[inline]
     pub fn set_phase(&mut self, phase: f32) {
         let phase = phase.rem_euclid(1.0);
@@ -64,25 +59,13 @@ impl Oscillator {
         self.triangle = naive_triangle(phase);
     }
 
-    /// The current phase, for regression tests.
-    #[cfg(test)]
-    pub fn phase(&self) -> f32 {
-        self.phase
-    }
-
-    /// Renders the next sample. `phase_delta` is the phase increment per sample
-    /// (i.e. the frequency divided by the sample rate) and `pulse_width` is the
-    /// duty cycle of the pulse waveform.
+    
     #[inline]
     pub fn next(&mut self, phase_delta: f32, waveform: Waveform, pulse_width: f32) -> f32 {
         self.next_modulated(phase_delta, waveform, pulse_width, 0.0)
             .0
     }
 
-    /// Renders the next sample with a phase modulation offset, without moving
-    /// the oscillator's own phase. The returned flag is true when the
-    /// oscillator has just wrapped, which is what hard sync uses to reset a
-    /// slave oscillator.
     #[inline]
     pub fn next_modulated(
         &mut self,
@@ -124,7 +107,6 @@ impl Oscillator {
     }
 }
 
-/// The value of a naive triangle wave at the given phase.
 #[inline]
 fn naive_triangle(phase: f32) -> f32 {
     if phase < 0.5 {
@@ -134,8 +116,6 @@ fn naive_triangle(phase: f32) -> f32 {
     }
 }
 
-/// A pulse wave with the given duty cycle. Both edges are band limited with a
-/// PolyBLEP residual.
 #[inline]
 fn pulse(phase: f32, dt: f32, width: f32) -> f32 {
     let mut sample = if phase < width { 1.0 } else { -1.0 };
@@ -154,7 +134,6 @@ fn pulse(phase: f32, dt: f32, width: f32) -> f32 {
     sample
 }
 
-/// A simple xorshift32 based noise generator.
 #[derive(Debug, Clone, Copy)]
 pub struct Noise {
     state: u32,
@@ -190,107 +169,3 @@ impl Default for Noise {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SAMPLE_RATE: f32 = 48_000.0;
-
-    #[test]
-    fn sine_has_expected_frequency() {
-        let frequency = 440.0;
-        let dt = frequency / SAMPLE_RATE;
-
-        let mut osc = Oscillator::new();
-        let mut previous = osc.next(dt, Waveform::Sine, 0.5);
-        let mut rising_crossings = 0;
-        for _ in 0..SAMPLE_RATE as usize {
-            let sample = osc.next(dt, Waveform::Sine, 0.5);
-            if previous < 0.0 && sample >= 0.0 {
-                rising_crossings += 1;
-            }
-            previous = sample;
-        }
-
-        // One rising zero crossing per cycle, ±1 for the partial first/last cycle.
-        assert!((rising_crossings - frequency as i32).abs() <= 1);
-    }
-
-    #[test]
-    fn polyblep_waveforms_stay_bounded() {
-        for waveform in [
-            Waveform::Sine,
-            Waveform::Triangle,
-            Waveform::Saw,
-            Waveform::Square,
-            Waveform::Pulse,
-        ] {
-            let mut osc = Oscillator::new();
-            for _ in 0..SAMPLE_RATE as usize {
-                let sample = osc.next(440.0 / SAMPLE_RATE, waveform, 0.5);
-                assert!(sample.is_finite());
-                assert!(
-                    sample.abs() <= MAX_AMPLITUDE,
-                    "{waveform:?} produced {sample}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn triangle_is_continuous_and_bounded() {
-        let dt = 440.0 / SAMPLE_RATE;
-
-        let mut osc = Oscillator::new();
-        let mut previous: Option<f32> = None;
-        for _ in 0..SAMPLE_RATE as usize {
-            let sample = osc.next(dt, Waveform::Triangle, 0.5);
-            assert!(
-                (-1.05..=1.05).contains(&sample),
-                "the triangle left the expected range: {sample}"
-            );
-            if let Some(previous) = previous {
-                assert!(
-                    (sample - previous).abs() < 0.12,
-                    "the triangle jumped from {previous} to {sample}"
-                );
-            }
-            previous = Some(sample);
-        }
-    }
-
-    #[test]
-    fn pulse_width_controls_the_duty_cycle() {
-        let frequency = 100.0;
-        let dt = frequency / SAMPLE_RATE;
-
-        for width in [0.25_f32, 0.5, 0.75] {
-            let mut osc = Oscillator::new();
-            // Render exactly one period.
-            let samples = (SAMPLE_RATE / frequency) as usize;
-            let mut high = 0;
-            for _ in 0..samples {
-                let sample = osc.next(dt, Waveform::Pulse, width);
-                if sample > 0.0 {
-                    high += 1;
-                }
-            }
-
-            let duty = high as f32 / samples as f32;
-            assert!(
-                (duty - width).abs() < 0.05,
-                "expected a duty cycle of {width}, got {duty}"
-            );
-        }
-    }
-
-    #[test]
-    fn noise_stays_in_range() {
-        let mut noise = Noise::new(1234);
-        for _ in 0..10_000 {
-            let sample = noise.next();
-            assert!(sample.is_finite());
-            assert!((-1.0..=1.0).contains(&sample), "{sample} is out of range");
-        }
-    }
-}

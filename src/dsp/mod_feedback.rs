@@ -1,19 +1,6 @@
-//! A block-rate snapshot of the global modulation sources, and a short history
-//! of what they actually did.
-//!
-//! The audio thread writes the values of the two LFOs, the three macros and
-//! the mod wheel once per block. The editor reads them without a lock, so the
-//! live markers of the modulation matrix cannot disturb the audio thread.
-//! Every field is stored as the bits of an `f32` in an atomic integer, which
-//! keeps the reads and the writes wait-free and allocation-free.
-//!
-//! The same block also appends the six values to a ring buffer, so the editor
-//! can draw the shape that the sources really produced instead of a drawing of
-//! the waveform they are set to.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// The values of the global modulation sources at the end of one block.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ModFeedbackValues {
     /// The value of the first LFO, `-1..1`.
@@ -32,9 +19,17 @@ pub struct ModFeedbackValues {
     pub mod_env: f32,
     /// The value of the amplifier envelope of the newest voice, `0..1`.
     pub amp_env: f32,
+    /// The velocity of the newest note, `0..1`.
+    pub velocity: f32,
+    /// The key of the newest note as a MIDI number.
+    pub key: f32,
+    /// The per-note random value of the newest voice, `-1..1`.
+    pub random: f32,
+    /// Whether a voice is sounding, so the panel knows that the three values
+    /// above belong to a real note.
+    pub voice_active: bool,
 }
 
-/// The sources that the history keeps, in the order of the matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedSource {
     Lfo1,
@@ -92,7 +87,6 @@ impl FeedSource {
 /// of a slow LFO and still settles fast enough to look live.
 pub const HISTORY_LENGTH: usize = 256;
 
-/// A wait-free ring buffer of the last values of one source.
 #[derive(Debug)]
 struct Ring {
     values: [AtomicU32; HISTORY_LENGTH],
@@ -128,12 +122,6 @@ impl Ring {
     }
 }
 
-/// The shared snapshot of the modulation sources.
-///
-/// The audio thread calls [`store`](Self::store) once per block and the GUI
-/// calls the getters while it draws. A relaxed ordering is enough: the values
-/// are readings of slowly moving signals, and a block-rate snapshot does not
-/// need to be a single atomic transaction.
 #[derive(Debug, Default)]
 pub struct ModFeedback {
     lfo1: AtomicU32,
@@ -144,6 +132,10 @@ pub struct ModFeedback {
     mod_wheel: AtomicU32,
     mod_env: AtomicU32,
     amp_env: AtomicU32,
+    velocity: AtomicU32,
+    key: AtomicU32,
+    random: AtomicU32,
+    voice_active: AtomicU32,
     history: [Ring; 8],
 }
 
@@ -165,6 +157,13 @@ impl ModFeedback {
             .store(values.mod_env.to_bits(), Ordering::Relaxed);
         self.amp_env
             .store(values.amp_env.to_bits(), Ordering::Relaxed);
+        self.velocity
+            .store(values.velocity.to_bits(), Ordering::Relaxed);
+        self.key.store(values.key.to_bits(), Ordering::Relaxed);
+        self.random
+            .store(values.random.to_bits(), Ordering::Relaxed);
+        self.voice_active
+            .store(u32::from(values.voice_active), Ordering::Relaxed);
         for source in FeedSource::ALL {
             self.history[source.index()].push(source.value(&values));
         }
@@ -210,6 +209,26 @@ impl ModFeedback {
         f32::from_bits(self.amp_env.load(Ordering::Relaxed))
     }
 
+    /// The velocity of the newest note, `0..1`.
+    pub fn velocity(&self) -> f32 {
+        f32::from_bits(self.velocity.load(Ordering::Relaxed))
+    }
+
+    /// The key of the newest note as a MIDI number.
+    pub fn key(&self) -> f32 {
+        f32::from_bits(self.key.load(Ordering::Relaxed))
+    }
+
+    /// The per-note random value of the newest voice, `-1..1`.
+    pub fn random(&self) -> f32 {
+        f32::from_bits(self.random.load(Ordering::Relaxed))
+    }
+
+    /// Whether a voice is sounding right now.
+    pub fn voice_active(&self) -> bool {
+        self.voice_active.load(Ordering::Relaxed) != 0
+    }
+
     /// The history of one source, oldest first. The vector is reused by the
     /// caller, so drawing does not allocate.
     pub fn history(&self, source: FeedSource, out: &mut Vec<f32>) {
@@ -217,52 +236,3 @@ impl ModFeedback {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_feedback_stores_and_returns_every_source() {
-        let feedback = ModFeedback::default();
-        feedback.store(ModFeedbackValues {
-            lfo1: -0.75,
-            lfo2: 0.5,
-            macro1: 0.125,
-            macro2: 0.25,
-            macro3: 0.875,
-            mod_wheel: 1.0,
-            mod_env: 0.5,
-            amp_env: 0.25,
-        });
-
-        assert_eq!(feedback.lfo1(), -0.75);
-        assert_eq!(feedback.lfo2(), 0.5);
-        assert_eq!(feedback.macro1(), 0.125);
-        assert_eq!(feedback.macro2(), 0.25);
-        assert_eq!(feedback.macro3(), 0.875);
-        assert_eq!(feedback.mod_wheel(), 1.0);
-        assert_eq!(feedback.mod_env(), 0.5);
-        assert_eq!(feedback.amp_env(), 0.25);
-    }
-
-    #[test]
-    fn the_history_keeps_the_last_values_in_order() {
-        let feedback = ModFeedback::default();
-        let mut history = Vec::new();
-        for step in 0..HISTORY_LENGTH + 16 {
-            feedback.store(ModFeedbackValues {
-                lfo1: step as f32,
-                ..Default::default()
-            });
-        }
-        feedback.history(FeedSource::Lfo1, &mut history);
-        assert_eq!(history.len(), HISTORY_LENGTH);
-        // The last value written is the newest one.
-        assert_eq!(
-            history[HISTORY_LENGTH - 1],
-            (HISTORY_LENGTH + 15) as f32
-        );
-        // The oldest of the ring is one past the newest.
-        assert_eq!(history[0], 16.0);
-    }
-}

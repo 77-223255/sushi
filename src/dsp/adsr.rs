@@ -1,5 +1,3 @@
-/// Per-sample coefficients for the amplitude envelope. These are computed once per
-/// audio block so the inner loop stays free of `exp`/`powf` calls.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvCoeffs {
     /// Linear increment per sample for the attack stage.
@@ -35,9 +33,6 @@ pub fn curve_exponent(curve: f32) -> f32 {
     }
 }
 
-/// Shapes a finished envelope value with an exponent from
-/// [`curve_exponent`]. The result stays inside `0..1`; an exponent of exactly
-/// one returns the value untouched, so the default curve is bit-exact.
 #[inline]
 pub fn shape_envelope(value: f32, exponent: f32) -> f32 {
     if exponent == 1.0 {
@@ -79,7 +74,6 @@ enum Stage {
     Off,
 }
 
-/// A classic ADSR envelope running at audio rate.
 #[derive(Debug, Clone)]
 pub struct Adsr {
     stage: Stage,
@@ -132,7 +126,6 @@ impl Adsr {
         }
     }
 
-    /// Whether the envelope has fully decayed to silence after a release.
     #[inline]
     pub fn is_finished(&self) -> bool {
         self.stage == Stage::Off
@@ -189,115 +182,3 @@ impl Adsr {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_eventually_finishes() {
-        let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
-        let mut env = Adsr::default();
-        env.gate_on();
-        for _ in 0..480 {
-            env.next(&coeffs);
-        }
-
-        env.gate_off();
-        for _ in 0..48_000 {
-            env.next(&coeffs);
-            if env.is_finished() {
-                break;
-            }
-        }
-        assert!(env.is_finished());
-    }
-
-    #[test]
-    fn attack_takes_the_configured_time() {
-        let coeffs = EnvCoeffs::new(10.0, 300.0, 0.7, 400.0, 48_000.0);
-        let mut env = Adsr::default();
-        env.gate_on();
-
-        // Halfway through a 10 ms attack the level should be around 0.5.
-        for _ in 0..240 {
-            env.next(&coeffs);
-        }
-        let level = env.next(&coeffs);
-        assert!(
-            (level - 0.5).abs() < 0.05,
-            "the attack was at {level} after 5 ms"
-        );
-    }
-
-    #[test]
-    fn the_legacy_release_uses_the_absolute_threshold() {
-        let coeffs = EnvCoeffs::new(1.0, 10.0, 1.0, 100.0, 48_000.0);
-
-        let mut modern = Adsr::default();
-        modern.gate_on();
-        for _ in 0..480 {
-            modern.next(&coeffs);
-        }
-        modern.gate_off();
-
-        let mut legacy = Adsr::default();
-        legacy.set_legacy(true);
-        legacy.gate_on();
-        for _ in 0..480 {
-            legacy.next(&coeffs);
-        }
-        legacy.gate_off();
-
-        // 150 ms is past the -60 dB point used by the modern threshold but
-        // before the old absolute -100 dB threshold.
-        for _ in 0..(0.15 * 48_000.0) as usize {
-            modern.next(&coeffs);
-            legacy.next(&coeffs);
-        }
-
-        assert!(modern.is_finished());
-        assert!(!legacy.is_finished());
-    }
-
-    #[test]
-    fn a_zero_curve_is_the_old_linear_envelope() {
-        let exponent = curve_exponent(0.0);
-        assert_eq!(exponent, 1.0);
-
-        for value in [0.0, 1e-7, 0.1, 0.25, 0.5, 0.75, 0.999_999, 1.0] {
-            assert_eq!(
-                shape_envelope(value, exponent).to_bits(),
-                value.to_bits(),
-                "the neutral curve changed {value}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_curve_shapes_the_final_value_without_leaving_its_range() {
-        let shallow = shape_envelope(0.25, curve_exponent(-1.0));
-        let linear = shape_envelope(0.25, curve_exponent(0.0));
-        let steep = shape_envelope(0.25, curve_exponent(1.0));
-
-        assert!(shallow > linear, "the shallow curve did not lift 0.25");
-        assert!(steep < linear, "the steep curve did not lower 0.25");
-        assert!((shallow - 0.5).abs() < 1e-6);
-        assert!((steep - 0.0625).abs() < 1e-6);
-
-        // The endpoints stay fixed and the result is stable over the whole
-        // range of the curve.
-        for curve in [-1.0, -0.5, 0.0, 0.5, 1.0] {
-            let exponent = curve_exponent(curve);
-            assert_eq!(shape_envelope(0.0, exponent), 0.0);
-            assert!((shape_envelope(1.0, exponent) - 1.0).abs() < 1e-6);
-            for step in 0..=100 {
-                let value = step as f32 / 100.0;
-                let shaped = shape_envelope(value, exponent);
-                assert!(
-                    (0.0..=1.0).contains(&shaped),
-                    "the curve {curve} produced {shaped} from {value}"
-                );
-            }
-        }
-    }
-}

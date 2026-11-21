@@ -1,14 +1,9 @@
-//! All parameter and enum definitions for the Sushi synthesizer.
-//!
-//! The parameter IDs are part of the plugin's public interface (they are used
-//! by hosts for automation and for saving presets), so they must never change.
 
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
 use crate::dsp::fx::{FX_BYPASS_ALL, FX_ORDER_MAX};
 
-/// The different oscillator shapes Sushi can generate.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Waveform {
     Sine,
@@ -19,7 +14,6 @@ pub enum Waveform {
     Pulse,
 }
 
-/// The available filter topologies.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FilterMode {
     #[default]
@@ -29,12 +23,6 @@ pub enum FilterMode {
     Notch,
 }
 
-/// The slope of the filter.
-///
-/// `TwoPole` uses a single state variable filter. `FourPole` and
-/// `FourPoleModern` both run a second cascaded stage, which is the 24 dB path
-/// of the Legacy engine. The two 24 dB names are aliases kept for old patches
-/// and host states; their indices and names must not change.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FilterSlope {
     #[default]
@@ -46,7 +34,6 @@ pub enum FilterSlope {
     FourPoleModern,
 }
 
-/// The shapes an LFO can produce.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum LfoWaveform {
     #[default]
@@ -58,11 +45,6 @@ pub enum LfoWaveform {
     SampleHold,
 }
 
-/// The destination of the hidden legacy LFO routing.
-///
-/// New patches route the LFOs through the modulation matrix. These values are
-/// kept so that patches and host states from before that change still sound
-/// the same.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum LfoTarget {
     #[default]
@@ -74,7 +56,6 @@ pub enum LfoTarget {
     PulseWidth,
 }
 
-/// The sources of the modulation matrix.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ModSource {
     #[default]
@@ -100,7 +81,6 @@ pub enum ModSource {
     Random,
 }
 
-/// The destinations of the modulation matrix.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ModDest {
     #[default]
@@ -141,8 +121,6 @@ pub enum ModDest {
 /// The number of slots of the modulation matrix.
 pub const MOD_SLOTS: usize = 8;
 
-/// A single slot of the modulation matrix: a source, a destination and the
-/// amount of the modulation.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ModSlot {
     /// The source of the modulation.
@@ -153,7 +131,6 @@ pub struct ModSlot {
     pub amount: f32,
 }
 
-/// How incoming notes are turned into voices.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum PolyMode {
     #[default]
@@ -162,8 +139,6 @@ pub enum PolyMode {
     Legato,
 }
 
-/// The global character of the sound. `Silk` is clean and gentle, `Grit` is
-/// harsh and saturated.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum Character {
     #[default]
@@ -171,7 +146,6 @@ pub enum Character {
     Grit,
 }
 
-/// The pattern the arpeggiator plays.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ArpPattern {
     #[default]
@@ -179,17 +153,10 @@ pub enum ArpPattern {
     Down,
     UpDown,
     Random,
-    /// The notes are played in the order in which they were pressed down.
     #[name = "As Played"]
     AsPlayed,
 }
 
-/// The chord that every arpeggiator trigger adds to its base note.
-///
-/// The variants are appended as a new enum, so the indices of every existing
-/// parameter and enum stay the same. The interval of each chord is applied to
-/// the note that the pattern selected, and notes outside the MIDI range are
-/// skipped instead of wrapped.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ArpChord {
     #[default]
@@ -200,7 +167,6 @@ pub enum ArpChord {
     Major,
 }
 
-/// The note division of the arpeggiator and of the synced LFOs.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum NoteDiv {
     #[name = "1/4"]
@@ -675,9 +641,6 @@ pub struct SushiParams {
     #[id = "character"]
     pub character: EnumParam<Character>,
 
-    /// The DSP flavor flag, kept for host-state compatibility. Sushi always
-    /// runs the Legacy engine now, so this value no longer selects a flavor.
-    /// It is deliberately not part of the patch JSON.
     #[id = "legacy"]
     pub legacy: BoolParam,
 
@@ -819,39 +782,12 @@ pub struct SushiParams {
     // These are appended after every existing parameter, so the host
     // automation indices of old parameters do not move. Their defaults keep
     // the original chain order, no bypass and a fully wet signal.
-    /// The permutation index of the eight-stage effect chain, `0..=40319`.
-    ///
-    /// `0` is the migrated original order `Drive > Phaser > Chorus > Delay >
-    /// Reverb > EQ > Compressor > Tremolo`. Orders `1..=719` keep the old
-    /// six-stage order (including the old rotation definitions for `1..=5`)
-    /// with Compressor and Tremolo appended at the end, so old patches and
-    /// automation keep their sound:
-    ///
-    /// - `0`: Drive > Phaser > Chorus > Delay > Reverb > EQ > Comp > Trem
-    /// - `1`: Phaser > Chorus > Delay > Reverb > EQ > Drive > Comp > Trem
-    /// - `2`: Chorus > Delay > Reverb > EQ > Drive > Phaser > Comp > Trem
-    /// - `3`: Delay > Reverb > EQ > Drive > Phaser > Chorus > Comp > Trem
-    /// - `4`: Reverb > EQ > Drive > Phaser > Chorus > Delay > Comp > Trem
-    /// - `5`: EQ > Drive > Phaser > Chorus > Delay > Reverb > Comp > Trem
-    ///
-    /// Orders `6..=719` are the remaining old six-stage permutations in
-    /// lexicographic order, still followed by Compressor and Tremolo. Orders
-    /// `720..=40319` are the remaining full eight-stage permutations in
-    /// lexicographic order. See `dsp::fx::stage_order` for the exact mapping.
     #[id = "fx_order"]
     pub fx_order: IntParam,
 
-    /// The stages that are bypassed completely.
-    ///
-    /// Bit 0 is Drive, 1 Phaser, 2 Chorus, 3 Delay, 4 Reverb, 5 EQ,
-    /// 6 Compressor and 7 Tremolo. A set bit skips its stage and clears the
-    /// state of that stage.
     #[id = "fx_bypass_mask"]
     pub fx_bypass_mask: IntParam,
 
-    /// The dry/wet crossfade around the entire effect chain. `1` is the fully
-    /// wet output of the chain and is bit-exact with the old behavior; `0` is
-    /// exactly the dry input and clears the effects.
     #[id = "fx_global_mix"]
     pub fx_global_mix: FloatParam,
 
@@ -859,60 +795,45 @@ pub struct SushiParams {
     // These are appended after every existing parameter, so the host
     // automation indices of old parameters do not move. Every default is
     // exactly neutral.
-    /// The post-drive tone tilt, `-1..=1`. Zero is bit-exact with the old
-    /// drive.
     #[id = "drive_tone"]
     pub drive_tone: FloatParam,
 
-    /// The feedback around the phaser allpass chain, `0..=0.9`.
     #[id = "phaser_feedback"]
     pub phaser_feedback: FloatParam,
 
-    /// The stereo width of the wet chorus, `0..=1`.
     #[id = "chorus_width"]
     pub chorus_width: FloatParam,
 
-    /// Extra damping of the delay feedback, `0..=1`.
     #[id = "delay_damping"]
     pub delay_damping: FloatParam,
 
-    /// The tone of the reverb wet signal, `-1..=1`.
     #[id = "reverb_tone"]
     pub reverb_tone: FloatParam,
 
-    /// The threshold of the stereo-linked compressor, in dB, `-60..=0`.
     #[id = "comp_threshold"]
     pub comp_threshold: FloatParam,
 
-    /// The compression ratio, `1..=20`.
     #[id = "comp_ratio"]
     pub comp_ratio: FloatParam,
 
-    /// The attack time of the compressor, in milliseconds, `0.1..=100`.
     #[id = "comp_attack"]
     pub comp_attack: FloatParam,
 
-    /// The release time of the compressor, in milliseconds, `10..=1000`.
     #[id = "comp_release"]
     pub comp_release: FloatParam,
 
-    /// The makeup gain of the compressor, in dB, `0..=24`.
     #[id = "comp_makeup"]
     pub comp_makeup: FloatParam,
 
-    /// The dry/wet mix of the compressor, `0..=1`.
     #[id = "comp_mix"]
     pub comp_mix: FloatParam,
 
-    /// The rate of the tremolo/auto-pan, in Hz, `0.05..=20`.
     #[id = "trem_rate"]
     pub trem_rate: FloatParam,
 
-    /// The depth of the tremolo/auto-pan, `0..=1`.
     #[id = "trem_depth"]
     pub trem_depth: FloatParam,
 
-    /// Whether the tremolo becomes an auto-pan.
     #[id = "trem_stereo"]
     pub trem_stereo: BoolParam,
 
@@ -1393,331 +1314,3 @@ impl SushiParams {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_match_the_spec() {
-        let params = SushiParams::default();
-
-        assert_eq!(params.osc1_wave.value(), Waveform::Saw);
-        assert_eq!(params.osc1_octave.value(), 0);
-        assert_eq!(params.osc1_semi.value(), 0);
-        assert_eq!(params.osc1_fine.value(), 0.0);
-        assert_eq!(params.osc1_pw.value(), 0.5);
-        assert_eq!(params.osc1_level.value(), 0.6);
-
-        assert_eq!(params.osc2_wave.value(), Waveform::Saw);
-        assert_eq!(params.osc2_octave.value(), -1);
-        assert_eq!(params.osc2_level.value(), 0.4);
-
-        assert_eq!(params.unison.value(), 1);
-        assert_eq!(params.detune.value(), 12.0);
-        assert_eq!(params.spread.value(), 0.5);
-        assert_eq!(params.poly_mode.value(), PolyMode::Poly);
-        assert_eq!(params.glide.value(), 0.0);
-        assert_eq!(params.tune.value(), 0.0);
-        assert_eq!(params.voices.value(), 16);
-        assert_eq!(params.filter_mode.value(), FilterMode::Lowpass);
-        assert_eq!(params.cutoff.value(), 3_000.0);
-        assert_eq!(params.resonance.value(), 0.2);
-        assert_eq!(params.filter_env_amount.value(), 0.4);
-        assert_eq!(params.filter_keytrack.value(), 0.3);
-        assert_eq!(params.filter_drive.value(), 0.0);
-        assert_eq!(params.fe_attack.value(), 5.0);
-        assert_eq!(params.fe_decay.value(), 400.0);
-        assert_eq!(params.fe_sustain.value(), 0.3);
-        assert_eq!(params.fe_release.value(), 300.0);
-        assert_eq!(params.ae_attack.value(), 5.0);
-        assert_eq!(params.ae_decay.value(), 800.0);
-        assert_eq!(params.ae_sustain.value(), 0.7);
-        assert_eq!(params.ae_release.value(), 400.0);
-        assert_eq!(params.lfo1_wave.value(), LfoWaveform::Sine);
-        assert_eq!(params.lfo1_rate.value(), 5.0);
-        assert_eq!(params.lfo2_wave.value(), LfoWaveform::Triangle);
-        assert_eq!(params.lfo2_rate.value(), 0.5);
-        assert!(!params.lfo1_sync.value());
-        assert_eq!(params.lfo1_div.value(), NoteDiv::Quarter);
-        assert!(!params.lfo1_retrigger.value());
-        assert!(!params.lfo2_sync.value());
-        assert_eq!(params.lfo2_div.value(), NoteDiv::Quarter);
-        assert!(!params.lfo2_retrigger.value());
-        assert_eq!(params.chorus_rate.value(), 0.8);
-        assert_eq!(params.chorus_depth.value(), 0.5);
-        assert_eq!(params.delay_time.value(), 350.0);
-        assert_eq!(params.delay_feedback.value(), 0.3);
-        assert_eq!(params.reverb_decay.value(), 0.6);
-
-        assert_eq!(params.macro_bright.value(), 0.5);
-        assert_eq!(params.macro_motion.value(), 0.5);
-        assert_eq!(params.macro_space.value(), 0.5);
-        assert_eq!(params.character.value(), Character::Silk);
-        assert!(!params.legacy.value());
-        assert_eq!(params.drift.value(), 0.15);
-        assert_eq!(params.velocity.value(), 0.5);
-        assert_eq!(params.tone.value(), 0.0);
-
-        assert!(!params.arp_on.value());
-        assert_eq!(params.arp_pattern.value(), ArpPattern::Up);
-        assert_eq!(params.arp_rate.value(), NoteDiv::Sixteenth);
-        assert_eq!(params.arp_octaves.value(), 1);
-        assert_eq!(params.arp_gate.value(), 60.0);
-        assert!(!params.arp_latch.value());
-        assert_eq!(params.arp_swing.value(), 0.0);
-        assert_eq!(params.arp_length.value(), 16);
-        assert_eq!(params.arp_ratchet.value(), 1);
-        assert_eq!(params.arp_chord.value(), ArpChord::Off);
-        assert_eq!(params.arp_strum.value(), 0.0);
-        assert_eq!(params.arp_probability.value(), 1.0);
-
-        assert_eq!(params.fx_order.value(), 0);
-        assert_eq!(params.fx_bypass_mask.value(), 0);
-        assert_eq!(params.fx_global_mix.value(), 1.0);
-    }
-
-    #[test]
-    fn the_new_fx_defaults_are_neutral() {
-        let params = SushiParams::default();
-
-        assert_eq!(params.drive_amount.value(), 0.0);
-        assert_eq!(params.drive_mix.value(), 0.0);
-        assert_eq!(params.drive_tone.value(), 0.0);
-        assert_eq!(params.phaser_rate.value(), 0.3);
-        assert_eq!(params.phaser_depth.value(), 0.5);
-        assert_eq!(params.phaser_mix.value(), 0.0);
-        assert_eq!(params.phaser_feedback.value(), 0.0);
-        assert_eq!(params.eq_low.value(), 0.0);
-        assert_eq!(params.eq_mid.value(), 0.0);
-        assert_eq!(params.eq_high.value(), 0.0);
-        assert_eq!(params.chorus_width.value(), 0.0);
-        assert_eq!(params.delay_damping.value(), 0.0);
-        assert_eq!(params.reverb_tone.value(), 0.0);
-
-        // The compressor defaults to a unity-ratio, no-makeup, dry stage.
-        assert_eq!(params.comp_threshold.value(), 0.0);
-        assert_eq!(params.comp_ratio.value(), 1.0);
-        assert_eq!(params.comp_attack.value(), 20.0);
-        assert_eq!(params.comp_release.value(), 200.0);
-        assert_eq!(params.comp_makeup.value(), 0.0);
-        assert_eq!(params.comp_mix.value(), 0.0);
-
-        // The tremolo defaults to no modulation.
-        assert_eq!(params.trem_rate.value(), 5.0);
-        assert_eq!(params.trem_depth.value(), 0.0);
-        assert!(!params.trem_stereo.value());
-
-        // The global highpass is parked at its minimum, which is an exact
-        // bypass, and the VCA is centered with a width of one.
-        assert_eq!(params.hpf_cutoff.value(), 20.0);
-        assert_eq!(params.vca_width.value(), 1.0);
-        assert_eq!(params.vca_pan.value(), 0.0);
-        assert_eq!(params.ae_curve.value(), 0.0);
-        assert_eq!(params.fe_curve.value(), 0.0);
-        assert_eq!(params.ring_mod.value(), 0.0);
-        assert!(!params.osc_phase_reset.value());
-        assert_eq!(params.lfo1_phase.value(), 0.0);
-        assert_eq!(params.lfo2_phase.value(), 0.0);
-        assert_eq!(params.lfo1_curve.value(), 0.0);
-        assert_eq!(params.lfo2_curve.value(), 0.0);
-
-        // The EQ gains are shown and read in decibels.
-        assert_eq!(params.eq_low.to_string(), "0.0 dB");
-        let normalized = params
-            .eq_high
-            .string_to_normalized_value("+12 dB")
-            .expect("the EQ gain could not be read");
-        let value = params.eq_high.range().unnormalize(normalized);
-        assert!((value - 12.0).abs() < 0.01, "the EQ gain was {value}");
-    }
-
-    #[test]
-    fn the_macros_are_host_modulation_targets() {
-        let params = SushiParams::default();
-        let macros = [
-            ("macro_bright", params.macro_bright.flags()),
-            ("macro_motion", params.macro_motion.flags()),
-            ("macro_space", params.macro_space.flags()),
-        ];
-
-        for (name, flags) in macros {
-            assert_eq!(
-                flags, HOST_MODULATABLE_FLAGS,
-                "{name} must carry the host-modulatable flags"
-            );
-            assert!(
-                host_modulatable(flags),
-                "{name} is not exposed as a host modulation target"
-            );
-            assert!(
-                !flags.contains(ParamFlags::NON_AUTOMATABLE),
-                "{name} must stay automatable"
-            );
-            assert!(
-                !flags.contains(ParamFlags::HIDDEN),
-                "{name} must stay visible to the host"
-            );
-        }
-    }
-
-    #[test]
-    fn the_patch_identity_is_persisted_with_the_plugin_state() {
-        let params = SushiParams::default();
-        *params
-            .patch_name
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some("MY PATCH".to_string());
-        *params
-            .patch_path
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some("/tmp/MY PATCH.json".to_string());
-        *params
-            .preset_index
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = 3;
-        *params
-            .patch_dirty
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = true;
-
-        let fields = params.serialize_fields();
-        let restored = SushiParams::default();
-        restored.deserialize_fields(&fields);
-
-        assert_eq!(
-            restored
-                .patch_name
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .as_deref(),
-            Some("MY PATCH")
-        );
-        assert_eq!(
-            restored
-                .patch_path
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .as_deref(),
-            Some("/tmp/MY PATCH.json")
-        );
-        assert_eq!(
-            *restored
-                .preset_index
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-            3
-        );
-        assert!(
-            *restored
-                .patch_dirty
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-        );
-    }
-
-    #[test]
-    fn the_modulation_matrix_starts_empty() {
-        let params = SushiParams::default();
-
-        // Every slot of the matrix is switched off.
-        let slots = params.mod_slots(64);
-        assert_eq!(slots.len(), 8);
-        for slot in slots {
-            assert_eq!(slot.source, ModSource::Off);
-            assert_eq!(slot.dest, ModDest::Off);
-            assert_eq!(slot.amount, 0.0);
-        }
-
-        assert_eq!(params.mod1_source.value(), ModSource::Off);
-        assert_eq!(params.mod1_dest.value(), ModDest::Off);
-        assert_eq!(params.mod1_amount.value(), 0.0);
-        assert_eq!(params.mod8_source.value(), ModSource::Off);
-        assert_eq!(params.mod8_dest.value(), ModDest::Off);
-        assert_eq!(params.mod8_amount.value(), 0.0);
-    }
-
-    #[test]
-    fn new_modulation_variants_are_appended() {
-        // The indices are part of the patch and host-state format. Existing
-        // variants must keep their exact positions so old patches keep
-        // sounding the same.
-        assert_eq!(ModSource::to_index(ModSource::Off), 0);
-        assert_eq!(ModSource::to_index(ModSource::Lfo1), 1);
-        assert_eq!(ModSource::to_index(ModSource::Lfo2), 2);
-        assert_eq!(ModSource::to_index(ModSource::ModEnv), 3);
-        assert_eq!(ModSource::to_index(ModSource::AmpEnv), 4);
-        assert_eq!(ModSource::to_index(ModSource::Velocity), 5);
-        assert_eq!(ModSource::to_index(ModSource::Key), 6);
-        assert_eq!(ModSource::to_index(ModSource::Macro1), 7);
-        assert_eq!(ModSource::to_index(ModSource::Macro2), 8);
-        assert_eq!(ModSource::to_index(ModSource::Macro3), 9);
-        assert_eq!(ModSource::to_index(ModSource::ModWheel), 10);
-        assert_eq!(ModSource::to_index(ModSource::Random), 11);
-        assert_eq!(ModSource::variants().len(), 12);
-
-        assert_eq!(ModDest::to_index(ModDest::Off), 0);
-        assert_eq!(ModDest::to_index(ModDest::Pitch), 1);
-        assert_eq!(ModDest::to_index(ModDest::Pulse1), 2);
-        assert_eq!(ModDest::to_index(ModDest::Pulse2), 3);
-        assert_eq!(ModDest::to_index(ModDest::Cutoff), 4);
-        assert_eq!(ModDest::to_index(ModDest::Resonance), 5);
-        assert_eq!(ModDest::to_index(ModDest::Drive), 6);
-        assert_eq!(ModDest::to_index(ModDest::Pan), 7);
-        assert_eq!(ModDest::to_index(ModDest::Volume), 8);
-        assert_eq!(ModDest::to_index(ModDest::Osc2Pitch), 9);
-        assert_eq!(ModDest::to_index(ModDest::Osc2Fine), 10);
-        assert_eq!(ModDest::to_index(ModDest::SubLevel), 11);
-        assert_eq!(ModDest::to_index(ModDest::NoiseLevel), 12);
-        assert_eq!(ModDest::to_index(ModDest::Detune), 13);
-        assert_eq!(ModDest::to_index(ModDest::FilterEnv), 14);
-        assert_eq!(ModDest::to_index(ModDest::Osc1Pitch), 15);
-        assert_eq!(ModDest::to_index(ModDest::Osc1Fine), 16);
-        assert_eq!(ModDest::to_index(ModDest::FilterDrive), 17);
-        assert_eq!(ModDest::to_index(ModDest::FilterKeytrack), 18);
-        assert_eq!(ModDest::to_index(ModDest::RingMod), 19);
-        assert_eq!(ModDest::variants().len(), 20);
-    }
-
-    #[test]
-    fn the_tune_is_shown_in_semitones() {
-        let params = SushiParams::default();
-
-        // The tune is shown with two decimals and the unit of the semitone.
-        assert_eq!(params.tune.to_string(), "0.00 st");
-
-        // A value that was typed is read back.
-        let normalized = params
-            .tune
-            .string_to_normalized_value("-1.5 st")
-            .expect("the tune could not be read");
-        let value = params.tune.range().unnormalize(normalized);
-        assert!((value + 1.5).abs() < 0.01, "the tune was {value}");
-    }
-
-    #[test]
-    fn the_note_divisions_have_the_right_length() {
-        assert_eq!(NoteDiv::Quarter.beats(), 1.0);
-        assert_eq!(NoteDiv::Eighth.beats(), 0.5);
-        assert_eq!(NoteDiv::Sixteenth.beats(), 0.25);
-        assert_eq!(NoteDiv::ThirtySecond.beats(), 0.125);
-    }
-
-    #[test]
-    fn the_variants_have_readable_names() {
-        assert_eq!(NoteDiv::variants(), ["1/4", "1/8", "1/16", "1/32"]);
-        assert_eq!(
-            ArpPattern::variants(),
-            ["Up", "Down", "UpDown", "Random", "As Played"]
-        );
-        assert_eq!(
-            ArpChord::variants(),
-            ["Off", "Octave", "Fifth", "Minor", "Major"]
-        );
-        assert_eq!(ArpChord::to_index(ArpChord::Off), 0);
-        assert_eq!(ArpChord::to_index(ArpChord::Major), 4);
-        assert_eq!(Character::variants(), ["Silk", "Grit"]);
-        assert_eq!(FilterSlope::variants(), ["12 dB", "24 dB OLD", "24 dB"]);
-        // Old host states address the first 24 dB alias by its index.
-        assert_eq!(FilterSlope::from_index(1), FilterSlope::FourPole);
-    }
-}

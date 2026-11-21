@@ -1,10 +1,3 @@
-//! The palette of the panel: black plate, one orange accent, green for data.
-//!
-//! Every surface is a flat fill with a single 1 px line, so the palette only
-//! has to describe the inks: the plate, the rules, the type, the one accent
-//! and the green of the readouts, the LEDs and the trace. The palette is a
-//! plain static, because all painting happens on the GUI thread and several
-//! plugin instances can be open in the same process.
 
 use egui::Color32;
 

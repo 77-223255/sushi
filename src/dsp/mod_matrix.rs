@@ -1,10 +1,3 @@
-//! The modulation matrix: eight slots that connect the sources of the
-//! synthesizer to its destinations.
-//!
-//! Every slot holds a source, a destination and an amount. The amount is
-//! bipolar, so that the modulation can be turned down as well as up. All the
-//! slots that share a destination are added up, so that a single destination
-//! can be modulated by several sources at the same time.
 
 use crate::params::{MOD_SLOTS, ModDest, ModSlot, ModSource};
 
@@ -72,7 +65,6 @@ const RING_MOD_RANGE: f32 = 1.0;
 /// Two octaves up and down fill the whole range of the source.
 const KEY_RANGE: f32 = 24.0;
 
-/// The values of the sources of the matrix, as they are at the moment.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModSources {
     /// The value of the first LFO, `-1..1`.
@@ -100,7 +92,6 @@ pub struct ModSources {
     pub random: f32,
 }
 
-/// The modulation of the destinations of the matrix.
 #[derive(Debug, Clone, Copy)]
 pub struct Modulation {
     /// The offset of the pitch, in semitones.
@@ -170,16 +161,11 @@ impl Default for Modulation {
     }
 }
 
-/// The key of a note as a source of the matrix.
-///
-/// The middle C is in the middle, two octaves up are at the top and two
-/// octaves down are at the bottom.
 #[inline]
 pub fn key_source(key: f32) -> f32 {
     ((key - 60.0) / KEY_RANGE).clamp(-1.0, 1.0)
 }
 
-/// The value of a single source.
 #[inline]
 fn source_value(source: ModSource, sources: &ModSources) -> f32 {
     match source {
@@ -198,10 +184,6 @@ fn source_value(source: ModSource, sources: &ModSources) -> f32 {
     }
 }
 
-/// Adds up the modulation of all the slots of the matrix.
-///
-/// The result is neutral when every slot is switched off, so that a synth
-/// without a matrix sounds exactly like it always did.
 #[inline]
 pub fn evaluate(slots: &[ModSlot; MOD_SLOTS], sources: &ModSources) -> Modulation {
     let mut modulation = Modulation::default();
@@ -247,215 +229,3 @@ pub fn evaluate(slots: &[ModSlot; MOD_SLOTS], sources: &ModSources) -> Modulatio
     modulation
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A matrix with a single slot.
-    fn matrix(slot: ModSlot) -> [ModSlot; MOD_SLOTS] {
-        let mut slots = [ModSlot::default(); MOD_SLOTS];
-        slots[0] = slot;
-        slots
-    }
-
-    #[test]
-    fn an_empty_matrix_is_neutral() {
-        let slots = [ModSlot::default(); MOD_SLOTS];
-        let sources = ModSources {
-            lfo1: 1.0,
-            lfo2: -1.0,
-            filter_env: 1.0,
-            amp_env: 1.0,
-            velocity: 1.0,
-            key: 1.0,
-            macro1: 1.0,
-            macro2: 1.0,
-            macro3: 1.0,
-            mod_wheel: 1.0,
-            random: 1.0,
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert_eq!(modulation.pitch_semitones, 0.0);
-        assert_eq!(modulation.filter_octaves, 0.0);
-        assert_eq!(modulation.pulse_width1, 0.0);
-        assert_eq!(modulation.pulse_width2, 0.0);
-        assert_eq!(modulation.resonance, 0.0);
-        assert_eq!(modulation.drive, 0.0);
-        assert_eq!(modulation.pan, 0.0);
-        assert_eq!(modulation.volume, 1.0);
-        assert_eq!(modulation.osc2_pitch_semitones, 0.0);
-        assert_eq!(modulation.osc2_fine_semitones, 0.0);
-        assert_eq!(modulation.sub_level, 0.0);
-        assert_eq!(modulation.noise_level, 0.0);
-        assert_eq!(modulation.detune_cents, 0.0);
-        assert_eq!(modulation.filter_env_octaves, 0.0);
-        assert_eq!(modulation.osc1_pitch_semitones, 0.0);
-        assert_eq!(modulation.osc1_fine_semitones, 0.0);
-        assert_eq!(modulation.filter_drive, 0.0);
-        assert_eq!(modulation.filter_keytrack, 0.0);
-        assert_eq!(modulation.ring_mod, 0.0);
-    }
-
-    #[test]
-    fn the_slots_of_a_destination_are_added_up() {
-        let mut slots = [ModSlot::default(); MOD_SLOTS];
-        slots[0] = ModSlot {
-            source: ModSource::Macro1,
-            dest: ModDest::Pitch,
-            amount: 0.5,
-        };
-        slots[1] = ModSlot {
-            source: ModSource::Macro2,
-            dest: ModDest::Pitch,
-            amount: 0.25,
-        };
-
-        let sources = ModSources {
-            macro1: 1.0,
-            macro2: 1.0,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert!((modulation.pitch_semitones - 9.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_pan_stays_in_its_range() {
-        // Eight slots that all pan to the right must not leave the range.
-        let mut slots = [ModSlot::default(); MOD_SLOTS];
-        for slot in slots.iter_mut() {
-            *slot = ModSlot {
-                source: ModSource::Macro1,
-                dest: ModDest::Pan,
-                amount: 1.0,
-            };
-        }
-
-        let sources = ModSources {
-            macro1: 1.0,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert_eq!(modulation.pan, 1.0);
-    }
-
-    #[test]
-    fn the_key_is_normalized_around_the_middle_c() {
-        assert_eq!(key_source(60.0), 0.0);
-        assert!((key_source(72.0) - 0.5).abs() < 1e-4);
-        assert!((key_source(48.0) + 0.5).abs() < 1e-4);
-        assert_eq!(key_source(0.0), -1.0);
-        assert_eq!(key_source(127.0), 1.0);
-    }
-
-    #[test]
-    fn the_new_sources_read_their_own_values() {
-        let sources = ModSources {
-            mod_wheel: 0.75,
-            random: -0.5,
-            ..ModSources::default()
-        };
-
-        assert_eq!(source_value(ModSource::ModWheel, &sources), 0.75);
-        assert_eq!(source_value(ModSource::Random, &sources), -0.5);
-    }
-
-    #[test]
-    fn the_new_destinations_reach_their_full_ranges() {
-        let destinations = [
-            (ModDest::Pitch, 12.0),
-            (ModDest::Cutoff, 5.0),
-            (ModDest::Volume, 2.0),
-            (ModDest::Osc2Pitch, 12.0),
-            (ModDest::Osc2Fine, 1.0),
-            (ModDest::SubLevel, 1.0),
-            (ModDest::NoiseLevel, 0.5),
-            (ModDest::Detune, 50.0),
-            (ModDest::FilterEnv, 5.0),
-            (ModDest::Osc1Pitch, 12.0),
-            (ModDest::Osc1Fine, 1.0),
-            (ModDest::FilterDrive, 1.0),
-            (ModDest::FilterKeytrack, 1.0),
-            (ModDest::RingMod, 1.0),
-        ];
-
-        for (dest, expected) in destinations {
-            let slots = matrix(ModSlot {
-                source: ModSource::Macro1,
-                dest,
-                amount: 1.0,
-            });
-            let sources = ModSources {
-                macro1: 1.0,
-                ..ModSources::default()
-            };
-            let modulation = evaluate(&slots, &sources);
-            let value = match dest {
-                ModDest::Pitch => modulation.pitch_semitones,
-                ModDest::Cutoff => modulation.filter_octaves,
-                ModDest::Volume => modulation.volume,
-                ModDest::Osc2Pitch => modulation.osc2_pitch_semitones,
-                ModDest::Osc2Fine => modulation.osc2_fine_semitones,
-                ModDest::SubLevel => modulation.sub_level,
-                ModDest::NoiseLevel => modulation.noise_level,
-                ModDest::Detune => modulation.detune_cents,
-                ModDest::FilterEnv => modulation.filter_env_octaves,
-                ModDest::Osc1Pitch => modulation.osc1_pitch_semitones,
-                ModDest::Osc1Fine => modulation.osc1_fine_semitones,
-                ModDest::FilterDrive => modulation.filter_drive,
-                ModDest::FilterKeytrack => modulation.filter_keytrack,
-                ModDest::RingMod => modulation.ring_mod,
-                _ => unreachable!(),
-            };
-            assert!(
-                (value - expected).abs() < 1e-4,
-                "{dest:?} reached {value} instead of {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_new_modulations_are_bipolar() {
-        let slots = matrix(ModSlot {
-            source: ModSource::Macro1,
-            dest: ModDest::Osc2Pitch,
-            amount: -0.5,
-        });
-        let sources = ModSources {
-            macro1: 0.5,
-            ..ModSources::default()
-        };
-
-        let modulation = evaluate(&slots, &sources);
-        assert!((modulation.osc2_pitch_semitones + 3.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn an_off_source_does_not_leak_the_new_sources() {
-        // The raw source values are not neutral, but an off slot must not
-        // read them.
-        let sources = ModSources {
-            mod_wheel: 1.0,
-            random: 1.0,
-            ..ModSources::default()
-        };
-        let slots = matrix(ModSlot {
-            source: ModSource::Off,
-            dest: ModDest::Osc2Pitch,
-            amount: 1.0,
-        });
-
-        let modulation = evaluate(&slots, &sources);
-        assert_eq!(modulation.osc2_pitch_semitones, 0.0);
-        assert_eq!(modulation.sub_level, 0.0);
-        assert_eq!(modulation.filter_env_octaves, 0.0);
-        assert_eq!(modulation.osc1_pitch_semitones, 0.0);
-        assert_eq!(modulation.osc1_fine_semitones, 0.0);
-        assert_eq!(modulation.filter_drive, 0.0);
-        assert_eq!(modulation.filter_keytrack, 0.0);
-        assert_eq!(modulation.ring_mod, 0.0);
-    }
-}

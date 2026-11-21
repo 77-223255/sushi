@@ -1,25 +1,10 @@
-//! First order antiderivative anti-aliasing (ADAA) for the tanh stages.
-//!
-//! A memoryless `tanh(x)` generates a lot of aliasing when it is driven hard.
-//! The first order ADAA form replaces the pointwise value with the average of
-//! the nonlinearity over the interval between the previous and the current
-//! input sample:
-//!
-//! `y[n] = (F(x[n]) - F(x[n - 1])) / (x[n] - x[n - 1])`
-//!
-//! where `F` is an antiderivative of the nonlinearity. The extra `ln`/`exp`
-//! pair per sample is much cheaper than running the whole voice at 2x or 4x
-//! the sample rate, and it removes most of the aliasing from the saturators.
 
-/// The natural logarithm of `cosh(x)`, written in a form that stays finite for
-/// large `x` without overflowing `exp`.
 #[inline]
 fn ln_cosh(x: f32) -> f32 {
     let absolute = x.abs();
     absolute + (1.0 + (-2.0 * absolute).exp()).ln() - std::f32::consts::LN_2
 }
 
-/// A first order ADAA tanh.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AdaaTanh {
     previous_input: f32,

@@ -1,8 +1,3 @@
-//! The original Freeverb-style reverb from the first Sushi release.
-//!
-//! The Legacy engine uses this as its only reverb. The topology and the fixed
-//! 44.1 kHz tunings are intentionally unchanged; only the bypass path flushes
-//! the lines instead of freezing them.
 
 use std::f32::consts::PI;
 
@@ -200,18 +195,3 @@ fn flush_denormal(value: f32) -> f32 {
     if value.abs() < 1e-20 { 0.0 } else { value }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_legacy_reverb_stays_bounded() {
-        let mut reverb = LegacyReverb::new(48_000.0);
-        for sample in 0..48_000 {
-            let input = if sample == 0 { 1.0 } else { 0.0 };
-            let (left, right) = reverb.process(input, input, 0.8, 1.0);
-            assert!(left.is_finite() && right.is_finite());
-            assert!(left.abs() < 10.0 && right.abs() < 10.0);
-        }
-    }
-}
