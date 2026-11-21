@@ -1111,6 +1111,8 @@ pub struct SushiEditor {
     zoom_cap: f32,
     /// How the panel asks the host for a bigger or a smaller window.
     resize_window: Option<Arc<dyn Fn(f32, f32) + Send + Sync>>,
+    /// Whether the window was already asked for the size of the opening level.
+    asked_for_size: bool,
     /// Whether the panel snaps to a level instead of following the window
     /// continuously. The geometry tests turn this off to measure the
     /// continuous layout.
@@ -1156,6 +1158,7 @@ impl SushiEditor {
             zoom_level: DEFAULT_ZOOM_LEVEL,
             zoom_cap: ZOOM_LEVELS[DEFAULT_ZOOM_LEVEL],
             resize_window,
+            asked_for_size: false,
             snap_zoom: true,
             zoom_menu: None,
             state: EditorState {
@@ -1492,6 +1495,23 @@ impl SushiEditor {
                 .map(|pos| (pos, MenuPanel::Main));
         } else if background.clicked() {
             self.zoom_menu = None;
+        }
+
+        // The window of the host is asked for the size of the level once per
+        // opening. A host that keeps its own size would otherwise show the
+        // panel of a smaller level inside a bigger frame, which reads as a
+        // black border around the panel.
+        if !self.asked_for_size {
+            self.asked_for_size = true;
+            let target = (
+                WINDOW_WIDTH * self.zoom_cap,
+                WINDOW_HEIGHT * self.zoom_cap,
+            );
+            let differs =
+                (full.width() - target.0).abs() > 2.0 || (full.height() - target.1).abs() > 2.0;
+            if differs && let Some(resize) = &self.resize_window {
+                resize(target.0, target.1);
+            }
         }
 
         // The panel is always drawn at one of the levels of the menu: the
@@ -3238,7 +3258,7 @@ fn random_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
             ctx.check(ui, "random_unipolar", &p.random_unipolar, "UNI");
         }
         Part::Body => {
-            column_row_fixed(ui, "random", 3, COLUMN_GAP, 48.0, zoom, |index, ui| {
+            column_row_fill(ui, "random", 3, WIDE_COLUMN_GAP, zoom, |index, ui| {
                 let p = ctx.params;
                 match index {
                     0 => ctx.float(
@@ -6954,6 +6974,7 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
         );
     }
 }
+
 
 
 
