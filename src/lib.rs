@@ -2014,6 +2014,12 @@ impl Plugin for Sushi {
         // draws a live marker from this snapshot; the audio path never reads
         // it back. The macros are already block-rate values, while the LFOs
         // and the mod wheel are the last samples of the block.
+        // The envelopes belong to the voices, so the newest sounding voice
+        // speaks for all of them.
+        let (mod_env, amp_env) = match self.voices.iter().flatten().next_back() {
+            Some(voice) => (voice.mod_env_level(), voice.amp_env_level()),
+            None => (0.0, 0.0),
+        };
         self.mod_feedback.store(ModFeedbackValues {
             lfo1: last_lfo1,
             lfo2: last_lfo2,
@@ -2021,6 +2027,8 @@ impl Plugin for Sushi {
             macro2: motion,
             macro3: space,
             mod_wheel: self.mod_wheel,
+            mod_env,
+            amp_env,
         });
 
         // The number of voices that are playing, for the meter of the editor.

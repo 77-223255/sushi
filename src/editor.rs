@@ -39,9 +39,9 @@ use nice_plug::prelude::*;
 use nice_plug_egui::NiceEguiApp;
 
 use crate::dsp::fx::{FX_STAGE_COUNT, FxStage, stage_order, stage_order_index};
-use crate::dsp::mod_feedback::ModFeedback;
+use crate::dsp::mod_feedback::{FeedSource, ModFeedback};
 use crate::keyboard::{HeldKeys, KeyboardNote};
-use crate::params::{LfoWaveform, ModDest, ModSource, SushiParams};
+use crate::params::{ModDest, ModSource, SushiParams};
 use std::cell::RefCell;
 
 thread_local! {
@@ -303,7 +303,6 @@ const MOD_SELECTED_LINE_WIDTH: f32 = 2.0;
 const TARGET_PITCH_RANGE: f32 = 12.0;
 const TARGET_PULSE_WIDTH_RANGE: f32 = 0.45;
 const TARGET_CUTOFF_RANGE: f32 = 5.0;
-const TARGET_UNIT_RANGE: f32 = 1.0;
 const TARGET_NOISE_RANGE: f32 = 0.5;
 const TARGET_FINE_RANGE: f32 = 100.0;
 const TARGET_DETUNE_RANGE: f32 = 50.0;
@@ -745,10 +744,8 @@ const VOICE_LEDS: usize = 16;
 const PAGE_BUTTON_WIDTH: f32 = 44.0;
 /// The width of the `NOW` caption of a modulation row.
 const MOD_NOW_LABEL_WIDTH: f32 = 30.0;
-/// The column of the centre value of a destination, the green one.
-const MOD_NOW_BASE_WIDTH: f32 = 54.0;
-/// The width of the `TRAVEL` caption of a modulation row.
-const MOD_TRAVEL_LABEL_WIDTH: f32 = 44.0;
+/// The gap between the two values of the NOW reading.
+const MOD_NOW_GAP: f32 = 10.0;
 /// The width of the oscilloscope at the right end of the header.
 const SCOPE_WIDTH: f32 = 190.0;
 /// The number of cells of the level meter of the header.
@@ -1715,6 +1712,9 @@ impl SushiEditor {
                 mod_feedback,
                 slider_width: layout.slider_width(),
                 zoom: layout.zoom,
+                wave_history: Vec::with_capacity(
+                    crate::dsp::mod_feedback::HISTORY_LENGTH,
+                ),
             };
 
             if ctx.state.patch_open {
@@ -2025,7 +2025,9 @@ fn draw_info_bar(ui: &mut egui::Ui, layout: &Layout, state: &EditorState, voice_
 
     // The label and the value share one baseline: the label on the left, the
     // value flush right, so the block reads like one line of an instrument.
-    let baseline = inner.top() + 26.0 * zoom;
+    // The three rows of the block — module, reading, voices — sit on equal
+    // thirds of it instead of leaving a hole in the middle.
+    let baseline = inner.top() + (inner.height() * 0.60).max(24.0 * zoom);
     tracked_text(
         &painter,
         egui::pos2(inner.left(), baseline),
@@ -2534,7 +2536,6 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
         // the lower one.
         let control_h = (row_height * 0.62).min(MOD_POPUP_HEIGHT * zoom * 1.7);
         let control_y = top + control_h * 0.5;
-        let read_y = top + control_h + (row_height - control_h) * 0.62;
         let source = sources[slot].value();
         let dest = dests[slot].value();
         let amount = amounts[slot].value();
@@ -2684,45 +2685,60 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             },
         );
 
-        // The readings of the route, on the line under its controls: the
-        // centre value of the destination in green, the value it reads right
-        // now in orange, the shape of the source under the destination box it
-        // belongs to, and the travel of the amount.
+        // The readings of the route, on the line under its controls: the real
+        // history of the source on the left, and what it does to the
+        // destination on the right.
         if active {
-            let time = ui.input(|input| input.time) as f32;
             let live = live_source_value(source, ctx.mod_feedback);
-            let rate = match source {
-                ModSource::Lfo1 => ctx.params.lfo1_rate.value(),
-                ModSource::Lfo2 => ctx.params.lfo2_rate.value(),
-                _ => 1.0,
-            };
-            // The phase of the source at the wall clock of the panel: the
-            // preview moves with the modulation, so a stopped source stands
-            // still.
-            let phase = (time * rate).rem_euclid(1.0);
-            let caption = FontId::new(font_size(8.0, zoom), label_family());
-            let reading = FontId::monospace(font_size(8.5, zoom));
+            let row_middle = top + control_h + (row_height - control_h) * 0.5;
+            let reading = FontId::monospace(font_size(10.0, zoom));
+            let caption = FontId::new(font_size(8.5, zoom), label_family());
 
-            tracked_text(
-                &painter,
-                egui::pos2(index_x, read_y),
-                Align2::LEFT_CENTER,
-                "NOW",
-                caption.clone(),
-                palette().muted,
-                0.8 * zoom,
+            // The curve of the source is its own history, from the audio
+            // thread: it shows what the source really did, not its setting.
+            let wave_left = source_x;
+            let wave_right = dest_x + MOD_DEST_WIDTH * zoom;
+            let wave_h = ((row_height - control_h) * 0.72).max(9.0 * zoom);
+            let wave = Rect::from_min_size(
+                egui::pos2(wave_left, row_middle - wave_h * 0.5),
+                egui::vec2(wave_right - wave_left, wave_h),
             );
-            // The centre of the modulation: the value the destination holds
-            // without this route.
-            painter.text(
-                egui::pos2(index_x + MOD_NOW_LABEL_WIDTH * zoom, read_y),
-                Align2::LEFT_CENTER,
-                target_current_text(dest, ctx.params),
-                reading.clone(),
-                palette().led_on,
-            );
-            // The value of the destination right now, in the same units as the
-            // centre next to it.
+            let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
+            let floor_y = if unipolar {
+                wave.bottom()
+            } else {
+                wave.center().y
+            };
+            let span = if unipolar {
+                wave.height()
+            } else {
+                wave.height() * 0.5
+            };
+            let history = source_history(source, ctx.mod_feedback, &mut ctx.wave_history);
+            if let Some(history) = history {
+                let last = history.len().saturating_sub(1).max(1) as f32;
+                let points: Vec<egui::Pos2> = history
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        egui::pos2(
+                            wave.left() + wave.width() * index as f32 / last,
+                            floor_y - value.clamp(-1.0, 1.0) * span,
+                        )
+                    })
+                    .collect();
+                painter.line_segment(
+                    [
+                        egui::pos2(wave.left(), floor_y),
+                        egui::pos2(wave.right(), floor_y),
+                    ],
+                    Stroke::new(1.0, palette().rule),
+                );
+                painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+            }
+
+            // The reading, flush with the right edge: the centre of the
+            // modulation in green and the value it holds right now in orange.
             let (live_text, live_color) = match live {
                 Some(value) => (
                     target_live_text(dest, ctx.params, value * amount),
@@ -2730,80 +2746,34 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 ),
                 None => ("per-voice".to_string(), palette().muted),
             };
+            let live_width = text_width(&painter, &live_text, &reading);
             painter.text(
-                egui::pos2(
-                    index_x + (MOD_NOW_LABEL_WIDTH + MOD_NOW_BASE_WIDTH) * zoom,
-                    read_y,
-                ),
-                Align2::LEFT_CENTER,
+                egui::pos2(value_right, row_middle),
+                Align2::RIGHT_CENTER,
                 live_text,
                 reading.clone(),
                 live_color,
             );
-
-            // The shape of the source, on the same column as the destination
-            // box above it and just as wide.
-            let wave_h = ((row_height - control_h) * 0.78).max(9.0 * zoom);
-            let wave = Rect::from_min_size(
-                egui::pos2(dest_x, read_y - wave_h * 0.5),
-                egui::vec2(MOD_DEST_WIDTH * zoom, wave_h),
-            );
-            let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
-            let floor_y = if unipolar {
-                wave.bottom() - 2.0 * zoom
-            } else {
-                wave.center().y
-            };
-            let span = if unipolar {
-                wave.height() - 4.0 * zoom
-            } else {
-                wave.height() * 0.5 - 2.0 * zoom
-            };
-            let steps = (wave.width() / (2.0 * zoom)).max(8.0) as usize;
-            let points: Vec<egui::Pos2> = (0..=steps)
-                .map(|step| {
-                    let t = step as f32 / steps as f32;
-                    let value = source_shape(source, ctx, t + phase).unwrap_or_else(|| {
-                        // A hand control has no shape of its own: its line sits
-                        // at the value it is sending.
-                        live.unwrap_or(0.0)
-                    });
-                    egui::pos2(
-                        wave.left() + wave.width() * t,
-                        floor_y - value.clamp(-1.0, 1.0) * span,
-                    )
-                })
-                .collect();
-            // No plate and no moving block under the curve: the line itself is
-            // a rule, and the baseline is the floor of the shape.
-            painter.line_segment(
-                [
-                    egui::pos2(wave.left(), wave.bottom() - zoom),
-                    egui::pos2(wave.right(), wave.bottom() - zoom),
-                ],
-                Stroke::new(1.0, palette().rule),
-            );
-            painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
-
-            // The travel sits flush with the right edge, under the amount
-            // value, so the line has one reading on each side of the curve.
-            let travel = target_range_text(dest, amount);
-            let travel_width = text_width(&painter, &travel, &reading);
+            let base_text = target_current_text(dest, ctx.params);
+            let base_width = text_width(&painter, &base_text, &reading);
             painter.text(
-                egui::pos2(value_right, read_y),
+                egui::pos2(
+                    value_right - live_width - MOD_NOW_GAP * zoom,
+                    row_middle,
+                ),
                 Align2::RIGHT_CENTER,
-                travel,
+                base_text,
                 reading,
-                palette().muted,
+                palette().led_on,
             );
             tracked_text(
                 &painter,
                 egui::pos2(
-                    value_right - travel_width - (MOD_TRAVEL_LABEL_WIDTH + 6.0) * zoom,
-                    read_y,
+                    value_right - live_width - MOD_NOW_GAP * zoom - base_width - MOD_NOW_LABEL_WIDTH * zoom,
+                    row_middle,
                 ),
                 Align2::LEFT_CENTER,
-                "TRAVEL",
+                "NOW",
                 caption,
                 palette().muted,
                 0.8 * zoom,
@@ -4187,6 +4157,8 @@ struct Ctx<'a, 'b> {
     slider_width: f32,
     /// The zoom of the panel: how much bigger it is than its design size.
     zoom: f32,
+    /// The scratch buffer of the history of a modulation source.
+    wave_history: Vec<f32>,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -5972,12 +5944,12 @@ fn live_source_value(source: ModSource, feedback: &ModFeedback) -> Option<f32> {
         ModSource::Macro2 => Some(feedback.macro2()),
         ModSource::Macro3 => Some(feedback.macro3()),
         ModSource::ModWheel => Some(feedback.mod_wheel()),
-        ModSource::Off
-        | ModSource::ModEnv
-        | ModSource::AmpEnv
-        | ModSource::Velocity
-        | ModSource::Key
-        | ModSource::Random => None,
+        // The envelopes belong to the voices. The audio thread publishes the
+        // newest sounding voice, so a route can show a real value for them.
+        ModSource::ModEnv => Some(feedback.mod_env()),
+        ModSource::AmpEnv => Some(feedback.amp_env()),
+        // These belong to one note and have no single value for the panel.
+        ModSource::Off | ModSource::Velocity | ModSource::Key | ModSource::Random => None,
     }
 }
 
@@ -6030,10 +6002,6 @@ fn format_signed_percent(value: f32) -> String {
 }
 
 /// A percentage range, always symmetrical around the current target.
-fn format_percent_range(value: f32) -> String {
-    let percent = (value.abs() * 100.0).round();
-    format!("±{percent:.0}%")
-}
 
 /// A frequency in the compact units of the panel: hertz below one kilohertz
 /// and kilohertz above it.
@@ -6051,14 +6019,6 @@ fn format_cents(cents: f32) -> String {
 }
 
 /// A range in octaves. The singular is kept for a range of exactly one.
-fn format_octave_range(octaves: f32) -> String {
-    let text = format_number(octaves.abs(), 1);
-    if text == "1" {
-        format!("±{text} octave")
-    } else {
-        format!("±{text} octaves")
-    }
-}
 
 /// The current value of the parameter that a destination modulates.
 ///
@@ -6189,148 +6149,47 @@ fn target_live_text(dest: ModDest, params: &SushiParams, contribution: f32) -> S
     }
 }
 
+/// The recorded history of one source of the matrix, oldest first. The hand
+/// controls and the envelopes have a history too, so a route always draws what
+/// its source really did. `None` means the source has no value the panel can
+/// read, which is true of the sources that belong to one note.
+fn source_history<'a>(
+    source: ModSource,
+    feedback: &ModFeedback,
+    scratch: &'a mut Vec<f32>,
+) -> Option<&'a [f32]> {
+    let feed = match source {
+        ModSource::Lfo1 => FeedSource::Lfo1,
+        ModSource::Lfo2 => FeedSource::Lfo2,
+        ModSource::ModEnv => FeedSource::ModEnv,
+        ModSource::AmpEnv => FeedSource::AmpEnv,
+        ModSource::Macro1 => FeedSource::Macro1,
+        ModSource::Macro2 => FeedSource::Macro2,
+        ModSource::Macro3 => FeedSource::Macro3,
+        ModSource::ModWheel => FeedSource::ModWheel,
+        _ => return None,
+    };
+    feedback.history(feed, scratch);
+    Some(scratch)
+}
+
 /// The shape of one LFO waveform at a phase in `0..1`, with the curve of the
 /// oscillator applied. It is the same shape the DSP renders, so the preview of
 /// the route is not a drawing of a different oscillator.
-fn lfo_shape(waveform: LfoWaveform, phase: f32, curve: f32) -> f32 {
-    let phase = phase.rem_euclid(1.0);
-    let value = match waveform {
-        LfoWaveform::Sine => (phase * std::f32::consts::TAU).sin(),
-        LfoWaveform::Triangle => {
-            if phase < 0.5 {
-                4.0 * phase - 1.0
-            } else {
-                3.0 - 4.0 * phase
-            }
-        }
-        LfoWaveform::Saw => 2.0 * phase - 1.0,
-        LfoWaveform::Square => {
-            if phase < 0.5 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        // A sample & hold is one value per cycle, so the preview shows a step
-        // instead of a slope.
-        LfoWaveform::SampleHold => {
-            if phase < 0.5 {
-                0.6
-            } else {
-                -0.4
-            }
-        }
-    };
-    if curve == 0.0 {
-        value
-    } else {
-        value.signum() * value.abs().powf(2f32.powf(curve.clamp(-1.0, 1.0)))
-    }
-}
 
 /// The contour of an envelope over one note, in `0..1`: the attack, the decay,
 /// the plateau of the sustain and the release, scaled to the window of the
 /// preview. The times of the envelope are not in the window of a cycle, so they
 /// are normalized to the whole contour.
-fn envelope_shape(
-    attack: f32,
-    decay: f32,
-    sustain: f32,
-    release: f32,
-    curve: f32,
-    position: f32,
-) -> f32 {
-    let hold = (attack + decay + release) * 0.4 + 1.0;
-    let total = (attack + decay + hold + release).max(1.0);
-    let (attack_end, decay_end, hold_end) = (
-        attack / total,
-        (attack + decay) / total,
-        (attack + decay + hold) / total,
-    );
-    let position = position.rem_euclid(1.0);
-    let value = if position < attack_end {
-        position / attack_end.max(1e-6)
-    } else if position < decay_end {
-        let t = (position - attack_end) / (decay_end - attack_end).max(1e-6);
-        1.0 - (1.0 - sustain) * t
-    } else if position < hold_end {
-        sustain
-    } else {
-        let t = (position - hold_end) / (1.0 - hold_end).max(1e-6);
-        sustain * (1.0 - t)
-    };
-    // The curve of the envelope bends the contour, like the DSP does.
-    if curve == 0.0 {
-        value
-    } else {
-        value.powf(2f32.powf(-curve.clamp(-1.0, 1.0)))
-    }
-}
 
 /// One sample of the shape that a source applies to its route, in `-1..1`, and
 /// the phase of its cycle. The two LFOs are the only sources with a travelling
 /// shape; the envelopes are drawn as their own contour and the hand controls as
 /// a flat line.
-fn source_shape(source: ModSource, ctx: &Ctx, phase: f32) -> Option<f32> {
-    let params = ctx.params;
-    match source {
-        ModSource::ModEnv => Some(envelope_shape(
-            params.fe_attack.value(),
-            params.fe_decay.value(),
-            params.fe_sustain.value(),
-            params.fe_release.value(),
-            params.fe_curve.value(),
-            phase,
-        )),
-        ModSource::AmpEnv => Some(envelope_shape(
-            params.ae_attack.value(),
-            params.ae_decay.value(),
-            params.ae_sustain.value(),
-            params.ae_release.value(),
-            params.ae_curve.value(),
-            phase,
-        )),
-        ModSource::Lfo1 => Some(lfo_shape(
-            params.lfo1_wave.value(),
-            phase + params.lfo1_phase.value(),
-            params.lfo1_curve.value(),
-        )),
-        ModSource::Lfo2 => Some(lfo_shape(
-            params.lfo2_wave.value(),
-            phase + params.lfo2_phase.value(),
-            params.lfo2_curve.value(),
-        )),
-        _ => None,
-    }
-}
 
 /// The range that a route can add to its target. The amount scales the full
 /// range of the destination, and the sign of the amount does not change the
 /// width of the range.
-fn target_range_text(dest: ModDest, amount: f32) -> String {
-    let scale = amount.abs();
-    match dest {
-        ModDest::Off => "0".to_string(),
-        ModDest::Pitch | ModDest::Osc2Pitch | ModDest::Osc1Pitch => {
-            format!("±{} st", format_number(TARGET_PITCH_RANGE * scale, 1))
-        }
-        ModDest::Pulse1 | ModDest::Pulse2 => format_percent_range(TARGET_PULSE_WIDTH_RANGE * scale),
-        ModDest::Cutoff | ModDest::FilterEnv => format_octave_range(TARGET_CUTOFF_RANGE * scale),
-        ModDest::Resonance
-        | ModDest::Drive
-        | ModDest::Pan
-        | ModDest::Volume
-        | ModDest::SubLevel
-        | ModDest::FilterDrive
-        | ModDest::FilterKeytrack
-        | ModDest::RingMod => format_percent_range(TARGET_UNIT_RANGE * scale),
-        ModDest::NoiseLevel => format_percent_range(TARGET_NOISE_RANGE * scale),
-        ModDest::Osc2Fine | ModDest::Osc1Fine => {
-            format!("±{} cents", format_number(TARGET_FINE_RANGE * scale, 1))
-        }
-        ModDest::Detune => format!("±{} cents", format_number(TARGET_DETUNE_RANGE * scale, 1)),
-    }
-}
 
 /// The modulation that one route currently adds to its target, in the units
 /// of that target. The value is the normalized matrix value multiplied by the
@@ -7653,13 +7512,28 @@ mod tests {
         if std::env::var("SUSHI_PAGE").as_deref() == Ok("mod") {
             editor.state.page = Page::Mod;
             editor.state.mod_selected = 2;
-            editor.mod_feedback.store(ModFeedbackValues {
-                lfo1: 0.6,
-                lfo2: -0.3,
-                macro1: 0.4,
-                mod_wheel: 0.5,
-                ..Default::default()
-            });
+            // A few blocks of a real signal, so the preview shows the history
+            // that the audio thread would have written.
+            let blocks = crate::dsp::mod_feedback::HISTORY_LENGTH + 8;
+            for step in 0..blocks {
+                let t = step as f32 / 24.0;
+                let phase = t.rem_euclid(1.0);
+                let triangle = if phase < 0.5 {
+                    4.0 * phase - 1.0
+                } else {
+                    3.0 - 4.0 * phase
+                };
+                editor.mod_feedback.store(ModFeedbackValues {
+                    lfo1: (t * std::f32::consts::TAU).sin() * 0.8,
+                    lfo2: triangle * 0.6,
+                    macro1: 0.4,
+                    macro2: 0.6,
+                    macro3: 0.2,
+                    mod_wheel: 0.5,
+                    mod_env: (1.0 - (step as f32 / blocks as f32)).max(0.0) * 0.7,
+                    amp_env: 0.4,
+                });
+            }
             let gui_ctx = editor.gui_ctx.clone().expect("the editor has no host");
             let setter = gui_ctx.param_setter();
             for (slot, source, dest, amount) in [
@@ -7804,6 +7678,7 @@ mod tests {
             mod_feedback: &editor.mod_feedback,
             slider_width: SLIDER_WIDTH,
             zoom: 1.0,
+            wave_history: Vec::new(),
         }
     }
 
@@ -9434,12 +9309,10 @@ faders and the three macros; the VCA is main-page only"
         setter.set_parameter(&params.mod3_dest, ModDest::Pitch);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let names: Vec<String> = texts(&output).into_iter().map(|(text, _)| text).collect();
-        for expected in ["NOW", "TRAVEL"] {
-            assert!(
-                names.iter().any(|text| text == expected),
-                "the row lost its {expected} reading: {names:?}"
-            );
-        }
+        assert!(
+            names.iter().any(|text| text == "NOW"),
+            "the row lost its reading: {names:?}"
+        );
         assert_eq!(editor.state.mod_selected, 2);
     }
 
@@ -9455,6 +9328,8 @@ faders and the three macros; the VCA is main-page only"
             macro2: 0.5,
             macro3: 0.75,
             mod_wheel: 1.0,
+            mod_env: 0.5,
+            amp_env: 0.25,
         });
 
         // The live part of the reading is the value that the destination
@@ -9468,13 +9343,7 @@ faders and the three macros; the VCA is main-page only"
             target_live_text(ModDest::Pitch, &SushiParams::default(), 0.25 * 0.5),
             "+1.5 st"
         );
-        for source in [
-            ModSource::ModEnv,
-            ModSource::AmpEnv,
-            ModSource::Velocity,
-            ModSource::Key,
-            ModSource::Random,
-        ] {
+        for source in [ModSource::Velocity, ModSource::Key, ModSource::Random] {
             assert!(
                 live_source_value(source, &feedback).is_none(),
                 "{source:?} must not invent a global value"
@@ -9489,7 +9358,7 @@ faders and the three macros; the VCA is main-page only"
         setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
         setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
         setter.set_parameter(&params.mod1_amount, 0.5);
-        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_source, ModSource::Velocity);
         setter.set_parameter(&params.mod2_dest, ModDest::Volume);
         setter.set_parameter(&params.mod2_amount, 0.5);
         editor.state.page = Page::Mod;
@@ -9500,6 +9369,8 @@ faders and the three macros; the VCA is main-page only"
             macro2: 0.5,
             macro3: 0.75,
             mod_wheel: 1.0,
+            mod_env: 0.5,
+            amp_env: 0.25,
         });
         run_frames(&ctx, &mut editor, vec![input(vec![])]);
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);
@@ -9512,7 +9383,6 @@ faders and the three macros; the VCA is main-page only"
         assert!(names.iter().any(|text| text == &centre), "{names:?}");
         assert!(names.iter().any(|text| text == &live), "{names:?}");
         assert!(cutoff > 0.0);
-        assert!(names.iter().any(|text| text == "±2.5 octaves"));
 
         let rows = editor.state.mod_row_rects.clone();
         run_frames(
@@ -9588,7 +9458,7 @@ faders and the three macros; the VCA is main-page only"
         setter.set_parameter(&params.mod1_source, ModSource::Lfo1);
         setter.set_parameter(&params.mod1_dest, ModDest::Cutoff);
         setter.set_parameter(&params.mod1_amount, 0.5);
-        setter.set_parameter(&params.mod2_source, ModSource::ModEnv);
+        setter.set_parameter(&params.mod2_source, ModSource::Velocity);
         setter.set_parameter(&params.mod2_dest, ModDest::Volume);
         setter.set_parameter(&params.mod2_amount, 0.5);
         editor.mod_feedback.store(ModFeedbackValues {
@@ -9598,6 +9468,8 @@ faders and the three macros; the VCA is main-page only"
             macro2: 0.4,
             macro3: 0.6,
             mod_wheel: 0.3,
+            mod_env: 0.5,
+            amp_env: 0.25,
         });
 
         let output = run_frames(&ctx, &mut editor, vec![input(vec![])]);

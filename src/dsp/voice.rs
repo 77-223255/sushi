@@ -352,6 +352,8 @@ pub struct Voice {
     control_counter: u32,
     /// The current level of the filter envelope.
     filter_env_level: f32,
+    /// The current level of the amplifier envelope.
+    amp_env_level: f32,
     /// The phase increment of the unison voices of the first oscillator.
     phase_delta1: [f32; MAX_UNISON],
     /// The phase increment of the unison voices of the second oscillator.
@@ -497,6 +499,7 @@ impl Voice {
             hf_right: LegacyHfShelf::default(),
             control_counter: CONTROL_RATE - 1,
             filter_env_level: 0.0,
+            amp_env_level: 0.0,
             phase_delta1: [0.0; MAX_UNISON],
             phase_delta2: [0.0; MAX_UNISON],
             g: 0.0,
@@ -627,6 +630,18 @@ impl Voice {
         self.filter_env.gate_off();
     }
 
+    /// The level of the modulation envelope of the voice right now, `0..1`.
+    #[inline]
+    pub fn mod_env_level(&self) -> f32 {
+        self.filter_env_level
+    }
+
+    /// The level of the amplifier envelope of the voice right now, `0..1`.
+    #[inline]
+    pub fn amp_env_level(&self) -> f32 {
+        self.amp_env_level
+    }
+
     /// Whether the voice has completely died.
     #[inline]
     pub fn is_finished(&self) -> bool {
@@ -680,6 +695,7 @@ impl Voice {
         self.amp_env.set_legacy(settings.legacy);
         self.filter_env.set_legacy(settings.legacy);
         let amp = shape_envelope(self.amp_env.next(&settings.amp_env), settings.amp_env_curve);
+        self.amp_env_level = amp;
         self.filter_env_level = shape_envelope(
             self.filter_env.next(&settings.filter_env),
             settings.filter_env_curve,

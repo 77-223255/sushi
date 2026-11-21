@@ -22,12 +22,12 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
   orange and red with the level) and the oscilloscope (the trace only, no grid)
 - **Main page**, four bands: `VCO 1 | VCO 2 | PULSE WIDTH | SOURCE MIXER`,
   `VCF | MOD ENV | AMP ENV`, `ARP | VOICE`, `MACROS | VCA`
-- **MOD page**: the routing table fills the left column — every route carries
-  its own readings under its controls: `NOW` is the centre value of the
-  destination in green and the value it reads right now in orange, both in the
-  same units, the shape of the source is drawn under the destination box it
-  modulates, and `TRAVEL` is how far the amount lets it go — while LFO 1 /
-  LFO 2 / MOD ENV / AMP ENV / MACROS sit down the right
+- **MOD page**: the routing table fills the left column — under the controls of
+  every route runs the recorded history of its source (what the modulation
+  really did, block by block, live) and, on the right, `NOW`: the centre value
+  of the destination in green and the value it reads right now in orange, both
+  in the same units — while LFO 1 / LFO 2 / MOD ENV / AMP ENV / MACROS sit
+  down the right
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the
   right
