@@ -33,8 +33,18 @@ impl SmoothRandom {
         source
     }
 
+    /// Restarts the sequence from a seed. The same seed always draws the same
+    /// random values, so a sound can be recalled.
+    pub fn reseed(&mut self, seed: u32) {
+        self.rng = if seed == 0 { 0x9E37_79B9 } else { seed.wrapping_mul(2_654_435_761) };
+        self.target = self.next_random();
+        self.current = self.target;
+        self.phase = 0.0;
+    }
+
     /// The value of one block. `rate` is the cycle rate in Hz, `smooth` is the
-    /// glide in `0..1`, and `seconds` is the length of the block.
+    /// glide in `0..1`, and `seconds` is the length of the block. With
+    /// `unipolar` the output rises from zero instead of swinging around it.
     pub fn next(&mut self, rate: f32, smooth: f32, seconds: f32) -> f32 {
         let seconds = seconds.max(0.0);
         self.phase += rate.max(0.0) * seconds;

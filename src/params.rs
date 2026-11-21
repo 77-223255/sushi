@@ -627,6 +627,14 @@ pub struct SushiParams {
     #[id = "random_smooth"]
     pub random_smooth: FloatParam,
 
+    /// Whether the random source swings around zero or rises from it.
+    #[id = "random_unipolar"]
+    pub random_unipolar: BoolParam,
+
+    /// The seed of the random sequence. Changing it draws a new sequence.
+    #[id = "random_seed"]
+    pub random_seed: IntParam,
+
     // --- Macros ------------------------------------------------------------
     // These are host modulation targets. nice-plug exposes them as
     // automatable and modulatable because `macro_param` keeps their flags
@@ -1109,6 +1117,8 @@ impl Default for SushiParams {
             // --- Random source -------------------------------------------------
             random_rate: frequency_param("Random Rate", 3.0, 0.02, 20.0, -2.0),
             random_smooth: percentage_param("Random Smooth", 0.55),
+            random_unipolar: BoolParam::new("Random Unipolar", false),
+            random_seed: IntParam::new("Random Seed", 1, IntRange::Linear { min: 1, max: 999 }),
 
             // --- Macros -------------------------------------------------------
             macro_bright: macro_param("Macro Bright", 0.5),

@@ -2529,16 +2529,20 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                 egui::pos2(wave_left, row_middle - wave_h * 0.5),
                 egui::vec2(wave_right - wave_left, wave_h),
             );
-            let unipolar = !matches!(source, ModSource::Lfo1 | ModSource::Lfo2);
+            let unipolar = match source {
+                ModSource::Lfo1 | ModSource::Lfo2 => false,
+                ModSource::Random => ctx.params.random_unipolar.value(),
+                _ => true,
+            };
             let floor_y = if unipolar {
                 wave.bottom()
             } else {
                 wave.center().y
             };
             let span = if unipolar {
-                wave.height()
+                wave.height() - 2.0 * zoom
             } else {
-                wave.height() * 0.5
+                wave.height() * 0.5 - 2.0 * zoom
             };
             // A source that belongs to one note has no history of its own, so
             // each of them draws what it is: the velocity as a level bar, the
@@ -2573,9 +2577,11 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
                     .iter()
                     .enumerate()
                     .map(|(index, value)| {
+                        let x = wave.left() + wave.width() * index as f32 / last;
+                        let y = floor_y - value.clamp(-1.0, 1.0) * span;
                         egui::pos2(
-                            wave.left() + wave.width() * index as f32 / last,
-                            floor_y - value.clamp(-1.0, 1.0) * span,
+                            x.clamp(wave.left(), wave.right()),
+                            y.clamp(wave.top() + zoom, wave.bottom() - zoom),
                         )
                     })
                     .collect();
@@ -3227,9 +3233,12 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
 fn random_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
     let zoom = ctx.zoom;
     group(ui, rect, "RANDOM", zoom, |ui, part| match part {
-        Part::Header => {}
+        Part::Header => {
+            let p = ctx.params;
+            ctx.check(ui, "random_unipolar", &p.random_unipolar, "UNI");
+        }
         Part::Body => {
-            column_row_fixed(ui, "random", 2, COLUMN_GAP, 58.0, zoom, |index, ui| {
+            column_row_fixed(ui, "random", 3, COLUMN_GAP, 48.0, zoom, |index, ui| {
                 let p = ctx.params;
                 match index {
                     0 => ctx.float(
@@ -3239,12 +3248,19 @@ fn random_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
                         &p.random_rate,
                         &Knob::logarithmic(0.02, 20.0, 2),
                     ),
-                    _ => ctx.float(
+                    1 => ctx.float(
                         ui,
                         "random_smooth",
                         "Smooth",
                         &p.random_smooth,
                         &Knob::percent(),
+                    ),
+                    _ => ctx.int(
+                        ui,
+                        "random_seed",
+                        "Seed",
+                        &p.random_seed,
+                        &Knob::plain(1.0, 999.0, 0),
                     ),
                 }
             });
@@ -6938,6 +6954,7 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
         );
     }
 }
+
 
 
 

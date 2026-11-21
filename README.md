@@ -35,8 +35,10 @@ flat 1 px outlines everywhere, no gradients or shadows, 120 fps.
   back in about a fifth of a second), the key as one vivid bar whose colour
   travels along the rainbow with the note instead of jumping, and the random as
   a smooth curve of its own. The right column ends with the `RANDOM` module —
-  `RATE` and `SMOOTH` — so the random source is a musical wander instead of a
-  jitter. `Macro 1–3` are not sources of the matrix: the macros are a
+  `RATE` (how often a value is drawn), `SMOOTH` (the glide, from a clean sample
+  and hold to a slow wander), `SEED` (a new sequence from the same seed every
+  time) and `UNI` (rise from zero instead of swinging around it) — so the random
+  source is a musical control instead of a jitter. `Macro 1–3` are not sources of the matrix: the macros are a
   performance control of the main page.
 - **FX page**: eight draggable chain tiles (any of the 8! orders) plus
   `GLOBAL WET` and `CHAIN PRESET` on the left, a fixed 2 × 4 module grid on the

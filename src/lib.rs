@@ -331,6 +331,8 @@ pub struct Sushi {
     random_source: dsp::random_source::SmoothRandom,
     /// The last value of the random source, `-1..1`.
     random_value: f32,
+    /// The seed of the last block, so a new seed can be noticed.
+    random_seed: u32,
     /// The smoothed pitch bend and mod wheel values.
     pitch_bend: f32,
     pitch_bend_target: f32,
@@ -382,6 +384,7 @@ impl Default for Sushi {
             lfo1: Lfo::new(LFO1_SEED),
             random_source: dsp::random_source::SmoothRandom::new(0x51ED_270B),
             random_value: 0.0,
+            random_seed: 0,
             lfo2: Lfo::new(LFO2_SEED),
             // The default synced division is a quarter note at 120 BPM.
             lfo1_sync_rate: 2.0,
@@ -1686,11 +1689,25 @@ impl Plugin for Sushi {
         // The random source walks once per block, which is plenty for a slow
         // control signal.
         let block_seconds = num_samples as f32 / self.sample_rate.max(1.0);
-        self.random_value = self.random_source.next(
+        // A new seed restarts the sequence; the same seed always draws the same
+        // values, so a sound can be recalled.
+        let seed = self.params.random_seed.value().max(1) as u32;
+        if seed != self.random_seed {
+            self.random_seed = seed;
+            self.random_source.reseed(seed);
+        }
+        let random = self.random_source.next(
             self.params.random_rate.smoothed.next(),
             self.params.random_smooth.smoothed.next(),
             block_seconds,
         );
+        // The unipolar mode lifts the swing out of the middle, which is what
+        // most sources of a synth offer as a switch.
+        self.random_value = if self.params.random_unipolar.value() {
+            random * 0.5 + 0.5
+        } else {
+            random
+        };
         for sample_idx in 0..num_samples {
             // The notes of the panel are applied at the start of the block,
             // like an event that the host sends at sample zero.
