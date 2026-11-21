@@ -173,6 +173,8 @@ pub struct VoiceSettings {
     pub legacy: bool,
     /// The eight slots of the modulation matrix.
     pub mod_slots: [ModSlot; MOD_SLOTS],
+    /// The value of the random source at the start of the block, `-1..1`.
+    pub random: f32,
     /// The value of the first macro, `0..1`. It is a source of the modulation
     /// matrix.
     pub macro1: f32,
@@ -191,6 +193,7 @@ impl Default for VoiceSettings {
                 ..OscSettings::default()
             },
             sub_level: 0.0,
+            random: 0.0,
             osc_sync: false,
             fm_amount: 0.0,
             noise_level: 0.0,
@@ -636,11 +639,6 @@ impl Voice {
         self.key.number_or_middle_c() as f32
     }
 
-    /// The per-note random value, `-1..1`.
-    #[inline]
-    pub fn random_value(&self) -> f32 {
-        self.random_value
-    }
 
     #[inline]
     pub fn is_finished(&self) -> bool {
@@ -886,7 +884,7 @@ impl Voice {
             macro2: settings.macro2,
             macro3: settings.macro3,
             mod_wheel: settings.mod_wheel,
-            random: self.random_value,
+            random: settings.random,
         }
     }
 

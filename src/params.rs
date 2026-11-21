@@ -618,6 +618,15 @@ pub struct SushiParams {
     #[id = "mod8_amount"]
     pub mod8_amount: FloatParam,
 
+    // --- Random source ----------------------------------------------------
+    /// How often the random source picks a new value.
+    #[id = "random_rate"]
+    pub random_rate: FloatParam,
+
+    /// How much the random source glides between two values.
+    #[id = "random_smooth"]
+    pub random_smooth: FloatParam,
+
     // --- Macros ------------------------------------------------------------
     // These are host modulation targets. nice-plug exposes them as
     // automatable and modulatable because `macro_param` keeps their flags
@@ -1096,6 +1105,10 @@ impl Default for SushiParams {
             mod8_source: EnumParam::new("MOD 8 Source", ModSource::Off),
             mod8_dest: EnumParam::new("MOD 8 Dest", ModDest::Off),
             mod8_amount: bipolar_param("MOD 8 Amount", 0.0),
+
+            // --- Random source -------------------------------------------------
+            random_rate: frequency_param("Random Rate", 3.0, 0.02, 20.0, -2.0),
+            random_smooth: percentage_param("Random Smooth", 0.55),
 
             // --- Macros -------------------------------------------------------
             macro_bright: macro_param("Macro Bright", 0.5),

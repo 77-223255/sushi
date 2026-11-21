@@ -297,7 +297,7 @@ const MOD_MODULE_GAP: f32 = 6.0;
 /// The relative heights of the five modules of the right-hand column. They sum
 /// to the height of the four bands minus the four module gaps, so the column
 /// fills the whole workspace.
-const MOD_MODULE_WEIGHTS: [f32; 4] = [110.0, 110.0, 94.0, 94.0];
+const MOD_MODULE_WEIGHTS: [f32; 5] = [108.0, 108.0, 92.0, 92.0, 88.0];
 /// The heights of the four rows of sections. They are the proportions of the
 /// rows and are scaled with the zoom of the panel.
 const ROW_HEIGHTS: [f32; 4] = [123.0, 123.0, 123.0, 123.0];
@@ -1006,6 +1006,10 @@ enum Page {
 
 /// The state that only the editor needs.
 struct EditorState {
+    /// The ballistic level of the velocity strips, per route.
+    velocity_meter: [f32; crate::params::MOD_SLOTS],
+    /// The animated hue of the key strips, per route.
+    key_hue: [f32; crate::params::MOD_SLOTS],
     /// The text buffers of the numeric value fields, keyed by parameter id.
     texts: HashMap<&'static str, String>,
     /// The parameters that currently have an open automation gesture.
@@ -1155,6 +1159,8 @@ impl SushiEditor {
             snap_zoom: true,
             zoom_menu: None,
             state: EditorState {
+                velocity_meter: [0.0; crate::params::MOD_SLOTS],
+                key_hue: [210.0; crate::params::MOD_SLOTS],
                 texts: HashMap::new(),
                 gestures: HashSet::new(),
                 preset_index: 0,
@@ -2219,7 +2225,8 @@ fn mod_page(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
         match index {
             0 | 1 => lfo_group(ui, rect, zoom, ctx, index),
             2 => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::mod_env(ctx.params)),
-            _ => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::amp_env(ctx.params)),
+            3 => envelope_group(ui, rect, zoom, ctx, &EnvelopeSpec::amp_env(ctx.params)),
+            _ => random_group(ui, rect, ctx),
         }
     }
 }
@@ -2537,11 +2544,27 @@ fn mod_routing_table(ui: &mut egui::Ui, table: Rect, ctx: &mut Ctx) {
             // each of them draws what it is: the velocity as a level bar, the
             // key as a strip of the keyboard, the random as the steps of the
             // notes that were played.
-            if matches!(
-                source,
-                ModSource::Velocity | ModSource::Key | ModSource::Random
-            ) {
-                draw_note_source(&painter, wave, source, ctx, zoom);
+            if matches!(source, ModSource::Velocity | ModSource::Key) {
+                let seconds = ui.input(|input| input.stable_dt).clamp(0.0, 0.1);
+                let voice = (
+                    ctx.mod_feedback.voice_active(),
+                    ctx.mod_feedback.velocity(),
+                    ctx.mod_feedback.key(),
+                );
+                let bunch = (
+                    &mut ctx.state.velocity_meter[slot],
+                    &mut ctx.state.key_hue[slot],
+                );
+                draw_note_source(
+                    &painter,
+                    wave,
+                    source,
+                    voice,
+                    bunch.0,
+                    bunch.1,
+                    zoom,
+                    seconds,
+                );
             }
             let history = source_history(source, ctx.mod_feedback, &mut ctx.wave_history);
             if let Some(history) = history {
@@ -3195,6 +3218,37 @@ fn row_d(ui: &mut egui::Ui, layout: &Layout, ctx: &mut Ctx) {
                 });
             }
         }),
+    });
+}
+
+/// The random source: how often it draws a new value and how far it glides to
+/// it. The value itself is the same one the matrix reads, so the row that uses
+/// it and this module can never disagree.
+fn random_group(ui: &mut egui::Ui, rect: Rect, ctx: &mut Ctx) {
+    let zoom = ctx.zoom;
+    group(ui, rect, "RANDOM", zoom, |ui, part| match part {
+        Part::Header => {}
+        Part::Body => {
+            column_row_fixed(ui, "random", 2, COLUMN_GAP, 58.0, zoom, |index, ui| {
+                let p = ctx.params;
+                match index {
+                    0 => ctx.float(
+                        ui,
+                        "random_rate",
+                        "Rate",
+                        &p.random_rate,
+                        &Knob::logarithmic(0.02, 20.0, 2),
+                    ),
+                    _ => ctx.float(
+                        ui,
+                        "random_smooth",
+                        "Smooth",
+                        &p.random_smooth,
+                        &Knob::percent(),
+                    ),
+                }
+            });
+        }
     });
 }
 
@@ -5749,7 +5803,7 @@ fn live_source_value(source: ModSource, feedback: &ModFeedback) -> Option<f32> {
         ModSource::Key => feedback
             .voice_active()
             .then(|| key_source_value(feedback.key())),
-        ModSource::Random => feedback.voice_active().then(|| feedback.random()),
+        ModSource::Random => Some(feedback.random()),
         ModSource::Off => None,
     }
 }
@@ -5954,6 +6008,7 @@ fn source_span(
         ModSource::ModEnv => feedback.history(FeedSource::ModEnv, history),
         ModSource::AmpEnv => feedback.history(FeedSource::AmpEnv, history),
         ModSource::ModWheel => feedback.history(FeedSource::ModWheel, history),
+        ModSource::Random => feedback.history(FeedSource::Random, history),
         _ => return None,
     }
     for value in history.iter() {
@@ -5971,23 +6026,41 @@ fn source_span(
 /// The strip of a source that belongs to one note. It has no history to draw,
 /// so it shows what the source is: a level bar for the velocity, the strip of
 /// the keyboard for the key and the steps of the played notes for the random.
+#[allow(clippy::too_many_arguments)]
 fn draw_note_source(
     painter: &egui::Painter,
     cell: Rect,
     source: ModSource,
-    ctx: &mut Ctx,
+    voice: (bool, f32, f32),
+    shown_velocity: &mut f32,
+    shown_hue: &mut f32,
     zoom: f32,
+    seconds: f32,
 ) {
-    // The three strips share one band in the middle of the cell, so a row of
-    // any source keeps the same reading height.
+    let (voice_active, velocity_now, key_now) = voice;
+    // The strips share one band in the middle of the cell, so a row of any
+    // source keeps the same reading height.
     let height = cell.height() * 0.62;
-    let track = Rect::from_center_size(
-        cell.center(),
-        egui::vec2(cell.width(), height),
-    );
+    let track = Rect::from_center_size(cell.center(), egui::vec2(cell.width(), height));
     match source {
         ModSource::Velocity => {
-            let velocity = ctx.mod_feedback.velocity().clamp(0.0, 1.0);
+            // A level meter, not a sample: the bar jumps to the velocity of the
+            // new note at once and then falls back quickly, like the meter of a
+            // mixer.
+            let target = if voice_active {
+                velocity_now.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let shown = shown_velocity;
+            if target > *shown {
+                *shown = target;
+            } else {
+                // About a quarter of a second to fall from full scale.
+                let fall = 1.0 - (-seconds / 0.22).exp();
+                *shown += (target - *shown) * fall;
+            }
+            let velocity = shown.clamp(0.0, 1.0);
             painter.rect_filled(track, CornerRadius::ZERO, palette().field_bg);
             painter.rect_stroke(
                 track,
@@ -5995,8 +6068,6 @@ fn draw_note_source(
                 Stroke::new(1.0, palette().line),
                 egui::StrokeKind::Inside,
             );
-            // The bar grows to the right with the velocity of the newest note,
-            // exactly like a level meter.
             let fill = Rect::from_min_max(
                 egui::pos2(track.left() + zoom, track.top() + zoom),
                 egui::pos2(
@@ -6006,62 +6077,22 @@ fn draw_note_source(
             );
             painter.rect_filled(fill, CornerRadius::ZERO, palette().accent);
         }
-        ModSource::Key => {
-            // A quiet spectrum across the two octaves of the source, with a
-            // marker on the note that is playing.
-            let steps = 48;
-            for step in 0..steps {
-                let t = step as f32 / steps as f32;
-                let hue = 265.0 * (1.0 - t);
-                let band = Rect::from_min_size(
-                    egui::pos2(
-                        track.left() + track.width() * step as f32 / steps as f32,
-                        track.top(),
-                    ),
-                    egui::vec2(track.width() / steps as f32 + 0.5, track.height()),
-                );
-                let color = spectrum_color(hue, 0.30);
-                painter.rect_filled(band, CornerRadius::ZERO, color);
-            }
-            let key = ((ctx.mod_feedback.key() - 36.0) / 48.0).clamp(0.0, 1.0);
-            let x = track.left() + track.width() * key;
-            painter.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(x - zoom, track.top()),
-                    egui::pos2(x + zoom, track.bottom()),
-                ),
-                CornerRadius::ZERO,
-                palette().text,
-            );
-        }
         _ => {
-            // The random values of the notes that were played, as a sample and
-            // hold curve.
-            ctx.mod_feedback
-                .note_random_history(&mut ctx.wave_history);
-            painter.line_segment(
-                [
-                    egui::pos2(cell.left(), cell.center().y),
-                    egui::pos2(cell.right(), cell.center().y),
-                ],
-                Stroke::new(1.0, palette().rule),
-            );
-            // The last sixteen notes, so every step is wide enough to read as a
-            // step instead of a blur.
-            let values = &ctx.wave_history;
-            if values.is_empty() {
-                return;
+            // One vivid bar for the key. Its hue follows the note along the
+            // rainbow, and the hue travels to the new colour instead of
+            // jumping, so a played melody is a smooth sweep of colour.
+            let target = ((key_now - 36.0) / 48.0).clamp(0.0, 1.0) * 300.0;
+            let shown = shown_hue;
+            // The shortest way around the circle, at about a twentieth of a
+            // second, which reads as a quick fade and never as a step.
+            let mut difference = (target - *shown).rem_euclid(360.0);
+            if difference > 180.0 {
+                difference -= 360.0;
             }
-            let values = &values[values.len().saturating_sub(16)..];
-            let width = cell.width() / values.len() as f32;
-            let mut points = Vec::with_capacity(values.len() * 2);
-            for (index, value) in values.iter().enumerate() {
-                let x = cell.left() + width * index as f32;
-                let y = cell.center().y - value.clamp(-1.0, 1.0) * (cell.height() * 0.44);
-                points.push(egui::pos2(x, y));
-                points.push(egui::pos2(x + width, y));
-            }
-            painter.add(egui::Shape::line(points, Stroke::new(1.0, palette().accent)));
+            let travel = 1.0 - (-seconds / 0.05).exp();
+            *shown = (*shown + difference * travel).rem_euclid(360.0);
+            let color = spectrum_color(*shown, 0.92);
+            painter.rect_filled(track, CornerRadius::ZERO, color);
         }
     }
 }
@@ -6118,6 +6149,7 @@ fn source_history<'a>(
         ModSource::ModEnv => FeedSource::ModEnv,
         ModSource::AmpEnv => FeedSource::AmpEnv,
         ModSource::ModWheel => FeedSource::ModWheel,
+        ModSource::Random => FeedSource::Random,
         _ => return None,
     };
     feedback.history(feed, scratch);
@@ -6906,6 +6938,7 @@ fn draw_check_box(painter: &egui::Painter, rect: Rect, checked: bool, zoom: f32)
         );
     }
 }
+
 
 
 

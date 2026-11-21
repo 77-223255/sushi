@@ -327,6 +327,10 @@ pub struct Sushi {
     /// The host transport position at the start of the last block. It is used
     /// to detect loops and jumps so the arpeggiator can rephase.
     arp_last_position: Option<f64>,
+    /// The random source of the modulation matrix.
+    random_source: dsp::random_source::SmoothRandom,
+    /// The last value of the random source, `-1..1`.
+    random_value: f32,
     /// The smoothed pitch bend and mod wheel values.
     pitch_bend: f32,
     pitch_bend_target: f32,
@@ -376,6 +380,8 @@ impl Default for Sushi {
             voice_limit: NUM_VOICES,
 
             lfo1: Lfo::new(LFO1_SEED),
+            random_source: dsp::random_source::SmoothRandom::new(0x51ED_270B),
+            random_value: 0.0,
             lfo2: Lfo::new(LFO2_SEED),
             // The default synced division is a quarter note at 120 BPM.
             lfo1_sync_rate: 2.0,
@@ -528,6 +534,8 @@ impl Sushi {
             legacy: false,
             // The slots of the modulation matrix are read once per block.
             mod_slots,
+            // The random source of the matrix, running at the block rate.
+            random: self.random_value,
             // The macros are the sources of the modulation matrix.
             macro1: macros.bright,
             macro2: macros.motion,
@@ -1675,6 +1683,14 @@ impl Plugin for Sushi {
         // here so the editor can show them without another read of the LFOs.
         let mut last_lfo1 = 0.0;
         let mut last_lfo2 = 0.0;
+        // The random source walks once per block, which is plenty for a slow
+        // control signal.
+        let block_seconds = num_samples as f32 / self.sample_rate.max(1.0);
+        self.random_value = self.random_source.next(
+            self.params.random_rate.smoothed.next(),
+            self.params.random_smooth.smoothed.next(),
+            block_seconds,
+        );
         for sample_idx in 0..num_samples {
             // The notes of the panel are applied at the start of the block,
             // like an event that the host sends at sample zero.
@@ -2002,7 +2018,7 @@ impl Plugin for Sushi {
         // The note sources speak with the voice of the newest note, so the
         // panel can show what velocity, key and random are doing right now.
         let (velocity, key, random) = match newest {
-            Some(voice) => (voice.velocity_value(), voice.key_number(), voice.random_value()),
+            Some(voice) => (voice.velocity_value(), voice.key_number(), self.random_value),
             None => (0.0, 60.0, 0.0),
         };
         self.mod_feedback.store(ModFeedbackValues {

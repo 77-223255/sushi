@@ -8,6 +8,7 @@ pub mod fx;
 pub mod highpass;
 pub mod lfo;
 pub mod mod_feedback;
+pub mod random_source;
 pub mod mod_matrix;
 pub mod osc;
 pub mod reverb_legacy;
